@@ -1,11 +1,11 @@
-use std::collections::HashMap;
 use js_sys::{Array, Object, Reflect};
-use wasm_bindgen::{prelude::*, JsCast};
+use std::collections::HashMap;
 use wacore_binary::{
     builder::NodeBuilder,
     marshal::{marshal, unmarshal_ref},
-    node::{Node, NodeContent},
+    node::{Node, NodeContent, NodeContentRef, NodeRef},
 };
+use wasm_bindgen::{JsCast, prelude::*};
 
 // -----------------------------
 // JS <-> internal Node conversion (zero intermediate struct)
@@ -24,17 +24,23 @@ fn js_attrs_to_hashmap(attrs_val: &JsValue) -> Result<HashMap<String, String>, J
     for key in keys.iter() {
         let k = key.as_string().unwrap_or_default();
         let v_val = Reflect::get(&obj, &key)?;
-        let v = v_val.as_string().ok_or_else(|| JsValue::from_str("attribute values must be strings"))?;
+        let v = v_val
+            .as_string()
+            .ok_or_else(|| JsValue::from_str("attribute values must be strings"))?;
         map.insert(k, v);
     }
     Ok(map)
 }
 
 fn js_value_to_node(node_val: &JsValue) -> Result<Node, JsValue> {
-    if !node_val.is_object() { return Err(JsValue::from_str("node must be an object")); }
+    if !node_val.is_object() {
+        return Err(JsValue::from_str("node must be an object"));
+    }
     // tag
     let tag_val = Reflect::get(node_val, &JsValue::from_str("tag"))?;
-    let tag = tag_val.as_string().ok_or_else(|| JsValue::from_str("tag must be a string"))?;
+    let tag = tag_val
+        .as_string()
+        .ok_or_else(|| JsValue::from_str("tag must be a string"))?;
     // attrs
     let attrs_val = Reflect::get(node_val, &JsValue::from_str("attrs"))?;
     let attrs = js_attrs_to_hashmap(&attrs_val)?;
@@ -62,28 +68,38 @@ fn js_value_to_node(node_val: &JsValue) -> Result<Node, JsValue> {
     Ok(builder.build())
 }
 
-fn node_to_js_value(node: &Node) -> Result<JsValue, JsValue> {
+// Zero-copy conversion from NodeRef (borrowed view over input buffer) directly to JsValue
+fn node_ref_to_js_value(node: &NodeRef) -> Result<JsValue, JsValue> {
     let obj = Object::new();
-    Reflect::set(&obj, &JsValue::from_str("tag"), &JsValue::from_str(&node.tag))?;
-    // attrs
+    Reflect::set(
+        &obj,
+        &JsValue::from_str("tag"),
+        &JsValue::from_str(node.tag.as_ref()),
+    )?;
     if !node.attrs.is_empty() {
         let attrs_obj = Object::new();
         for (k, v) in &node.attrs {
-            Reflect::set(&attrs_obj, &JsValue::from_str(k), &JsValue::from_str(v))?;
+            Reflect::set(
+                &attrs_obj,
+                &JsValue::from_str(k.as_ref()),
+                &JsValue::from_str(v.as_ref()),
+            )?;
         }
         Reflect::set(&obj, &JsValue::from_str("attrs"), &attrs_obj.into())?;
     }
-    if let Some(content) = &node.content {
-        let js_content = match content {
-            NodeContent::Nodes(children) => {
+    if let Some(content_ref) = node.content.as_deref() {
+        let js_content = match content_ref {
+            NodeContentRef::Nodes(children) => {
                 let arr = Array::new();
-                for ch in children { arr.push(&node_to_js_value(ch)?); }
+                for ch in children.iter() {
+                    arr.push(&node_ref_to_js_value(ch)?);
+                }
                 arr.into()
             }
-            NodeContent::Bytes(bytes) => match std::str::from_utf8(bytes) {
-                Ok(s) => JsValue::from_str(s),
-                Err(_) => js_sys::Uint8Array::from(bytes.as_slice()).into(),
-            },
+            NodeContentRef::Bytes(bytes_cow) => {
+                // Return raw bytes as Uint8Array to avoid UTF-8 validation & allocations
+                js_sys::Uint8Array::from(bytes_cow.as_ref()).into()
+            }
         };
         Reflect::set(&obj, &JsValue::from_str("content"), &js_content)?;
     }
@@ -103,8 +119,7 @@ pub fn marshal_node(node_val: JsValue) -> Result<Vec<u8>, JsValue> {
 #[wasm_bindgen(js_name = unmarshal)]
 pub fn unmarshal_node(data: &[u8]) -> Result<JsValue, JsValue> {
     let node_ref = unmarshal_ref(data).map_err(|e| JsValue::from_str(&e.to_string()))?;
-    let owned_node = node_ref.to_owned();
-    node_to_js_value(&owned_node)
+    node_ref_to_js_value(&node_ref)
 }
 
 // -----------------------------
@@ -120,25 +135,45 @@ pub struct WasmNodeBuilder {
 #[wasm_bindgen(js_class = NodeBuilder)]
 impl WasmNodeBuilder {
     #[wasm_bindgen(constructor)]
-    pub fn new(tag: String) -> Self { Self { tag, attrs: HashMap::new(), content: None } }
+    pub fn new(tag: String) -> Self {
+        Self {
+            tag,
+            attrs: HashMap::new(),
+            content: None,
+        }
+    }
 
-    pub fn attr(mut self, key: String, value: String) -> Self { self.attrs.insert(key, value); self }
+    pub fn attr(mut self, key: String, value: String) -> Self {
+        self.attrs.insert(key, value);
+        self
+    }
 
     #[wasm_bindgen(js_name = children)]
     pub fn set_children(mut self, children_val: JsValue) -> Result<WasmNodeBuilder, JsValue> {
-        if !Array::is_array(&children_val) { return Err(JsValue::from_str("children must be an array")); }
+        if !Array::is_array(&children_val) {
+            return Err(JsValue::from_str("children must be an array"));
+        }
         let arr: Array = children_val.unchecked_into();
         let mut internal_children = Vec::with_capacity(arr.length() as usize);
-        for child in arr.iter() { internal_children.push(js_value_to_node(&child)?); }
+        for child in arr.iter() {
+            internal_children.push(js_value_to_node(&child)?);
+        }
         self.content = Some(NodeContent::Nodes(internal_children));
         Ok(self)
     }
 
     #[wasm_bindgen(js_name = bytes)]
-    pub fn set_bytes(mut self, bytes: Vec<u8>) -> Self { self.content = Some(NodeContent::Bytes(bytes)); self }
+    pub fn set_bytes(mut self, bytes: Vec<u8>) -> Self {
+        self.content = Some(NodeContent::Bytes(bytes));
+        self
+    }
 
     pub fn build(self) -> Result<Vec<u8>, JsValue> {
-        let node = Node { tag: self.tag, attrs: self.attrs, content: self.content };
+        let node = Node {
+            tag: self.tag,
+            attrs: self.attrs,
+            content: self.content,
+        };
         marshal(&node).map_err(|e| JsValue::from_str(&e.to_string()))
     }
 }
