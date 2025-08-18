@@ -16,7 +16,7 @@
     }
   },
   "files": [
-    "dist"
+    "dist/**/*"
   ],
   "scripts": {
     "build:wasm": "wasm-pack build --target web --out-dir pkg --no-pack",
