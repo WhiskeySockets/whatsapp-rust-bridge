@@ -1,11 +1,10 @@
-import {
+import initWasm, {
   unmarshal as unmarshal_node,
   marshal as marshal_node,
   type INode,
   NodeBuilder as WasmNodeBuilder,
-  initSync,
 } from "../pkg/whatsapp_rust_bridge.js";
-import wasm from "../pkg/whatsapp_rust_bridge_bg.wasm";
+import wasmUrl from "../pkg/whatsapp_rust_bridge_bg.wasm";
 
 async function readRelativeFile(
   relativePath: string,
@@ -33,9 +32,9 @@ async function readRelativeFile(
 }
 
 export async function init(): Promise<void> {
-  const wasmBytes = await readRelativeFile(wasm as any, import.meta.url);
+  const wasmBytes = await readRelativeFile(wasmUrl as any, import.meta.url);
   const wasmModule = new WebAssembly.Module(wasmBytes);
-  initSync(wasmModule);
+  await initWasm(wasmModule);
 }
 
 export type { INode };

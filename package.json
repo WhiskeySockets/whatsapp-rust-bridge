@@ -9,15 +9,16 @@
     "url": "https://github.com/jlucaso1/whatsapp-rust-bridge.git"
   },
   "type": "module",
+  "files": [
+    "dist/**/*",
+    "pkg/whatsapp_rust_bridge.d.ts"
+  ],
   "exports": {
-    "binary": {
+    "./binary": {
       "import": "./dist/binary.js",
       "types": "./dist/binary.d.ts"
     }
   },
-  "files": [
-    "dist/**/*"
-  ],
   "scripts": {
     "build:wasm": "wasm-pack build --target web --out-dir pkg --no-pack",
     "build:ts": "tsc -p tsconfig.json --outDir dist --noEmit false --declaration && bun build --outdir dist ts/binary.ts -e \"node:*\"",
@@ -29,6 +30,5 @@
     "@types/node": "^24.3.0",
     "typescript": "^5.9.2"
   },
-  "module": "index.ts",
   "private": false
 }

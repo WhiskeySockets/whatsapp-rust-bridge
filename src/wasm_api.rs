@@ -7,25 +7,32 @@ use wacore_binary::{
 };
 use wasm_bindgen::prelude::*;
 
-use crate::wasm_types::WasmNode;
+use crate::wasm_types::{WasmNode, WasmNodeContent};
 
 fn to_wasm_node(node: &Node) -> WasmNode {
     let content = match &node.content {
-        Some(NodeContent::Nodes(nodes)) => Some(nodes.iter().map(to_wasm_node).collect()),
-        _ => None,
+        Some(NodeContent::Nodes(nodes)) => Some(WasmNodeContent::Nodes(nodes.iter().map(to_wasm_node).collect())),
+        Some(NodeContent::Bytes(bytes)) => match std::str::from_utf8(bytes) {
+            Ok(s) => Some(WasmNodeContent::Text(s.to_string())),
+            Err(_) => None, // keep binary bytes unsupported for now
+        },
+        None => None,
     };
-    WasmNode {
-        tag: node.tag.clone(),
-        attrs: node.attrs.clone(),
-        content,
-    }
+    WasmNode { tag: node.tag.clone(), attrs: node.attrs.clone(), content }
 }
 
 fn to_internal_node(wasm_node: &WasmNode) -> Node {
     let mut builder = NodeBuilder::new(wasm_node.tag.clone()).attrs(wasm_node.attrs.clone());
 
-    if let Some(children) = &wasm_node.content {
-        builder = builder.children(children.iter().map(to_internal_node));
+    if let Some(content) = &wasm_node.content {
+        match content {
+            WasmNodeContent::Nodes(children) => {
+                builder = builder.children(children.iter().map(to_internal_node));
+            }
+            WasmNodeContent::Text(text) => {
+                builder = builder.bytes(text.as_bytes());
+            }
+        }
     }
 
     builder.build()
