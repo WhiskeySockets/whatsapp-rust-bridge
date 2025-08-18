@@ -1,5 +1,3 @@
-use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
 use wasm_bindgen::prelude::*;
 
 #[wasm_bindgen(typescript_custom_section)]
@@ -14,22 +12,10 @@ const T_NODE: &'static str = r#"
 export interface INode {
     tag: string;
     attrs?: Record<string, string>;
-    content?: INode[] | string;
+    content?: INode[] | string | Uint8Array;
 }
 "#;
 
-#[derive(Debug, Serialize, Deserialize, Clone)]
-#[serde(untagged)]
-pub enum WasmNodeContent {
-    Nodes(Vec<WasmNode>),
-    Text(String),
-}
-
-#[derive(Debug, Serialize, Deserialize, Clone)]
-pub struct WasmNode {
-    pub tag: String,
-    #[serde(default, skip_serializing_if = "HashMap::is_empty")]
-    pub attrs: HashMap<String, String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub content: Option<WasmNodeContent>,
-}
+// The previous Rust-side WasmNode structs were removed to avoid double
+// serialization overhead. Conversion is now handled manually in wasm_api.rs
+// directly between JsValue and the internal Node representation for performance.

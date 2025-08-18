@@ -351,6 +351,7 @@ dependencies = [
 name = "whatsapp-rust-bridge"
 version = "0.1.0"
 dependencies = [
+ "js-sys",
  "serde",
  "serde-wasm-bindgen",
  "serde_json",
