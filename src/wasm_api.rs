@@ -1,130 +1,95 @@
-use js_sys::{Array, Object, Reflect};
+use js_sys::Array;
+use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use wacore_binary::{
-    builder::NodeBuilder,
     marshal::{marshal, unmarshal_ref},
     node::{Node, NodeContent, NodeContentRef, NodeRef},
 };
-use wasm_bindgen::{JsCast, prelude::*};
+use wasm_bindgen::prelude::*;
 
-// -----------------------------
-// JS <-> internal Node conversion (zero intermediate struct)
-// -----------------------------
-
-fn js_attrs_to_hashmap(attrs_val: &JsValue) -> Result<HashMap<String, String>, JsValue> {
-    if attrs_val.is_undefined() || attrs_val.is_null() {
-        return Ok(HashMap::new());
-    }
-    if !attrs_val.is_object() {
-        return Err(JsValue::from_str("attrs must be an object"));
-    }
-    let obj: Object = attrs_val.clone().unchecked_into();
-    let keys = Object::keys(&obj);
-    let mut map = HashMap::with_capacity(keys.length() as usize);
-    for key in keys.iter() {
-        let k = key.as_string().unwrap_or_default();
-        let v_val = Reflect::get(&obj, &key)?;
-        let v = v_val
-            .as_string()
-            .ok_or_else(|| JsValue::from_str("attribute values must be strings"))?;
-        map.insert(k, v);
-    }
-    Ok(map)
+// --------------------------------------------------
+// Serde-friendly JS <-> Rust bridge structs
+// --------------------------------------------------
+#[derive(Serialize, Deserialize)]
+struct JsNode {
+    tag: String,
+    #[serde(default = "HashMap::new", skip_serializing_if = "HashMap::is_empty")]
+    attrs: HashMap<String, String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    content: Option<JsNodeContent>,
 }
 
-fn js_value_to_node(node_val: &JsValue) -> Result<Node, JsValue> {
-    if !node_val.is_object() {
-        return Err(JsValue::from_str("node must be an object"));
-    }
-    // tag
-    let tag_val = Reflect::get(node_val, &JsValue::from_str("tag"))?;
-    let tag = tag_val
-        .as_string()
-        .ok_or_else(|| JsValue::from_str("tag must be a string"))?;
-    // attrs
-    let attrs_val = Reflect::get(node_val, &JsValue::from_str("attrs"))?;
-    let attrs = js_attrs_to_hashmap(&attrs_val)?;
-    let mut builder = NodeBuilder::new(tag).attrs(attrs);
-    // content
-    let content_val = Reflect::get(node_val, &JsValue::from_str("content"))?;
-    if !content_val.is_undefined() && !content_val.is_null() {
-        // String content
-        if let Some(s) = content_val.as_string() {
-            builder = builder.bytes(s.as_bytes());
-        } else if content_val.is_instance_of::<js_sys::Uint8Array>() {
-            let u8arr: js_sys::Uint8Array = content_val.clone().unchecked_into();
-            builder = builder.bytes(u8arr.to_vec());
-        } else if Array::is_array(&content_val) {
-            let arr: Array = content_val.unchecked_into();
-            let mut children = Vec::with_capacity(arr.length() as usize);
-            for child in arr.iter() {
-                children.push(js_value_to_node(&child)?);
-            }
-            builder = builder.children(children);
-        } else {
-            return Err(JsValue::from_str("unsupported content type"));
-        }
-    }
-    Ok(builder.build())
+#[derive(Serialize, Deserialize)]
+#[serde(untagged)]
+enum JsNodeContent {
+    // Array of child nodes
+    Nodes(Vec<JsNode>),
+    // Raw bytes (Uint8Array in JS)
+    Bytes(#[serde(with = "serde_bytes")] Vec<u8>),
+    // Convenience: allow passing a JS string which we treat as UTF-8 bytes
+    String(String),
 }
 
-// Zero-copy conversion from NodeRef (borrowed view over input buffer) directly to JsValue
-fn node_ref_to_js_value(node: &NodeRef) -> Result<JsValue, JsValue> {
-    let obj = Object::new();
-    Reflect::set(
-        &obj,
-        &JsValue::from_str("tag"),
-        &JsValue::from_str(node.tag.as_ref()),
-    )?;
-    if !node.attrs.is_empty() {
-        let attrs_obj = Object::new();
-        for (k, v) in &node.attrs {
-            Reflect::set(
-                &attrs_obj,
-                &JsValue::from_str(k.as_ref()),
-                &JsValue::from_str(v.as_ref()),
-            )?;
-        }
-        Reflect::set(&obj, &JsValue::from_str("attrs"), &attrs_obj.into())?;
-    }
-    if let Some(content_ref) = node.content.as_deref() {
-        let js_content = match content_ref {
+impl From<&NodeRef<'_>> for JsNode {
+    fn from(node_ref: &NodeRef) -> Self {
+        let attrs = node_ref
+            .attrs
+            .iter()
+            .map(|(k, v)| (k.to_string(), v.to_string()))
+            .collect::<HashMap<_, _>>();
+
+        let content = node_ref.content.as_deref().map(|c| match c {
             NodeContentRef::Nodes(children) => {
-                let arr = Array::new();
-                for ch in children.iter() {
-                    arr.push(&node_ref_to_js_value(ch)?);
-                }
-                arr.into()
+                JsNodeContent::Nodes(children.iter().map(JsNode::from).collect())
             }
-            NodeContentRef::Bytes(bytes_cow) => {
-                // Return raw bytes as Uint8Array to avoid UTF-8 validation & allocations
-                js_sys::Uint8Array::from(bytes_cow.as_ref()).into()
-            }
-        };
-        Reflect::set(&obj, &JsValue::from_str("content"), &js_content)?;
+            NodeContentRef::Bytes(bytes) => JsNodeContent::Bytes(bytes.to_vec()),
+        });
+
+        Self {
+            tag: node_ref.tag.to_string(),
+            attrs,
+            content,
+        }
     }
-    Ok(obj.into())
 }
 
-// -----------------------------
-// Public WASM API
-// -----------------------------
+impl From<JsNode> for Node {
+    fn from(js_node: JsNode) -> Self {
+        let content = js_node.content.map(|c| match c {
+            JsNodeContent::Nodes(nodes) => {
+                NodeContent::Nodes(nodes.into_iter().map(Node::from).collect())
+            }
+            JsNodeContent::Bytes(bytes) => NodeContent::Bytes(bytes),
+            JsNodeContent::String(s) => NodeContent::Bytes(s.into_bytes()),
+        });
+        Node {
+            tag: js_node.tag,
+            attrs: js_node.attrs,
+            content,
+        }
+    }
+}
 
+// --------------------------------------------------
+// Public WASM API (bulk serde conversion)
+// --------------------------------------------------
 #[wasm_bindgen(js_name = marshal)]
 pub fn marshal_node(node_val: JsValue) -> Result<Vec<u8>, JsValue> {
-    let internal_node = js_value_to_node(&node_val)?;
-    marshal(&internal_node).map_err(|e| JsValue::from_str(&e.to_string()))
+    let js_node: JsNode = serde_wasm_bindgen::from_value(node_val)?;
+    let internal: Node = js_node.into();
+    marshal(&internal).map_err(|e| JsValue::from_str(&e.to_string()))
 }
 
 #[wasm_bindgen(js_name = unmarshal)]
 pub fn unmarshal_node(data: &[u8]) -> Result<JsValue, JsValue> {
     let node_ref = unmarshal_ref(data).map_err(|e| JsValue::from_str(&e.to_string()))?;
-    node_ref_to_js_value(&node_ref)
+    let js_node = JsNode::from(&node_ref);
+    serde_wasm_bindgen::to_value(&js_node).map_err(|e| JsValue::from_str(&e.to_string()))
 }
 
-// -----------------------------
-// Fluent NodeBuilder exposed to JS (avoids serde for children array)
-// -----------------------------
+// --------------------------------------------------
+// Fluent NodeBuilder exposed to JS (kept for ergonomic incremental build)
+// --------------------------------------------------
 #[wasm_bindgen(js_name = NodeBuilder)]
 pub struct WasmNodeBuilder {
     tag: String,
@@ -150,14 +115,12 @@ impl WasmNodeBuilder {
 
     #[wasm_bindgen(js_name = children)]
     pub fn set_children(&mut self, children_val: JsValue) -> Result<(), JsValue> {
+        // Accept an array of plain JS node objects and deserialize in bulk.
         if !Array::is_array(&children_val) {
             return Err(JsValue::from_str("children must be an array"));
         }
-        let arr: Array = children_val.unchecked_into();
-        let mut internal_children = Vec::with_capacity(arr.length() as usize);
-        for child in arr.iter() {
-            internal_children.push(js_value_to_node(&child)?);
-        }
+        let nodes: Vec<JsNode> = serde_wasm_bindgen::from_value(children_val)?;
+        let internal_children = nodes.into_iter().map(Node::from).collect();
         self.content = Some(NodeContent::Nodes(internal_children));
         Ok(())
     }
