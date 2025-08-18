@@ -274,7 +274,7 @@ checksum = "5a5f39404a5da50712a4c1eecf25e90dd62b613502b7e925fd4e4d19b5c96512"
 [[package]]
 name = "wacore-binary"
 version = "0.1.0"
-source = "git+https://github.com/jlucaso1/whatsapp-rust.git#1c571882648a7ad59c7a72c1b69fcc54de107168"
+source = "git+https://github.com/jlucaso1/whatsapp-rust.git#af6e617e02f95d429c328b4a16f9d06f9b3503e1"
 dependencies = [
  "arrayvec",
  "flate2",

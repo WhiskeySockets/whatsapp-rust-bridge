@@ -143,13 +143,13 @@ impl WasmNodeBuilder {
         }
     }
 
-    pub fn attr(mut self, key: String, value: String) -> Self {
+    #[wasm_bindgen(js_name = attr)]
+    pub fn attr(&mut self, key: String, value: String) {
         self.attrs.insert(key, value);
-        self
     }
 
     #[wasm_bindgen(js_name = children)]
-    pub fn set_children(mut self, children_val: JsValue) -> Result<WasmNodeBuilder, JsValue> {
+    pub fn set_children(&mut self, children_val: JsValue) -> Result<(), JsValue> {
         if !Array::is_array(&children_val) {
             return Err(JsValue::from_str("children must be an array"));
         }
@@ -159,13 +159,12 @@ impl WasmNodeBuilder {
             internal_children.push(js_value_to_node(&child)?);
         }
         self.content = Some(NodeContent::Nodes(internal_children));
-        Ok(self)
+        Ok(())
     }
 
     #[wasm_bindgen(js_name = bytes)]
-    pub fn set_bytes(mut self, bytes: Vec<u8>) -> Self {
+    pub fn set_bytes(&mut self, bytes: Vec<u8>) {
         self.content = Some(NodeContent::Bytes(bytes));
-        self
     }
 
     pub fn build(self) -> Result<Vec<u8>, JsValue> {

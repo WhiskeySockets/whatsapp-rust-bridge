@@ -4,7 +4,14 @@ version = "0.1.0"
 edition = "2024"
 
 [package.metadata.wasm-pack.profile.release]
-wasm-opt = ['-O4', '--enable-bulk-memory', '--enable-nontrapping-float-to-int']
+wasm-opt = [
+    '-O4',
+    '--enable-bulk-memory',
+    '--enable-nontrapping-float-to-int',
+    '--enable-simd',
+    '--enable-reference-types',
+    '--enable-sign-ext',
+]
 
 [lib]
 crate-type = ["cdylib", "rlib"]

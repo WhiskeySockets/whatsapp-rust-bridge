@@ -47,7 +47,7 @@ export type { INode };
  * @throws If unmarshalling fails.
  */
 export function unmarshal(data: Uint8Array): INode {
-  return unmarshal_node(data.slice(1));
+  return unmarshal_node(data.subarray(1));
 }
 
 /**
@@ -83,7 +83,7 @@ export class NodeBuilder {
    * @returns The builder instance for chaining.
    */
   public attr(key: string, value: string): this {
-    this.builder = this.builder.attr(key, value);
+    this.builder.attr(key, value);
     return this;
   }
 
@@ -93,7 +93,7 @@ export class NodeBuilder {
    * @returns The builder instance for chaining.
    */
   public children(children: INode[]): this {
-    this.builder = this.builder.children(children);
+    this.builder.children(children);
     return this;
   }
 
@@ -103,7 +103,7 @@ export class NodeBuilder {
    * @returns The builder instance for chaining.
    */
   public bytes(bytes: Uint8Array): this {
-    this.builder = this.builder.bytes(bytes);
+    this.builder.bytes(bytes);
     return this;
   }
 
