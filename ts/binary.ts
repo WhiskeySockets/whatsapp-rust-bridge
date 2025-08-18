@@ -1,6 +1,7 @@
 import initWasm, {
   unmarshal as unmarshal_node,
   marshal as marshal_node,
+  getAttribute as get_attribute_from_binary,
   type INode,
   NodeBuilder as WasmNodeBuilder,
 } from "../pkg/whatsapp_rust_bridge.js";
@@ -47,7 +48,7 @@ export type { INode };
  * @throws If unmarshalling fails.
  */
 export function unmarshal(data: Uint8Array): INode {
-  return unmarshal_node(data.subarray(1));
+  return unmarshal_node(data);
 }
 
 /**
@@ -59,6 +60,14 @@ export function unmarshal(data: Uint8Array): INode {
  */
 export function marshal(node: INode): Uint8Array {
   return marshal_node(node);
+}
+
+/**
+ * Fast path for retrieving a single attribute from binary without full unmarshal.
+ * Returns undefined if the attribute is missing or data is invalid.
+ */
+export function getAttribute(data: Uint8Array, key: string): string | undefined {
+  return get_attribute_from_binary(data, key) ?? undefined;
 }
 
 /**

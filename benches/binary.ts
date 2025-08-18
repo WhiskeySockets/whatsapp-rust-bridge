@@ -4,6 +4,7 @@ import {
   marshal as marshalWasm,
   unmarshal as unmarshalWasm,
   NodeBuilder,
+  getAttribute,
 } from "../../whatsapp-rust-bridge/dist/binary.js";
 import { run, bench, group } from "mitata";
 
@@ -46,6 +47,18 @@ group("Encoding (JS Object -> Binary)", () => {
 group("Decoding (Binary -> JS Object)", () => {
   bench("Rust WASM (unmarshal)", () => {
     unmarshalWasm(wasmEncoded);
+  }).gc("inner");
+});
+
+group("Attribute access", () => {
+  bench("Rust WASM (getAttribute)", () => {
+    getAttribute(wasmEncoded, "id");
+  }).gc("inner");
+
+  bench("Rust WASM (unmarshal+attr)", () => {
+    const node = unmarshalWasm(wasmEncoded);
+    // Access attribute so it's not optimized out
+    void node.attrs?.id;
   }).gc("inner");
 });
 

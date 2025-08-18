@@ -1,4 +1,4 @@
-use js_sys::Array;
+use js_sys::{Array, Object, Uint8Array};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use wacore_binary::{
@@ -30,28 +30,10 @@ enum JsNodeContent {
     String(String),
 }
 
-impl From<&NodeRef<'_>> for JsNode {
-    fn from(node_ref: &NodeRef) -> Self {
-        let attrs = node_ref
-            .attrs
-            .iter()
-            .map(|(k, v)| (k.to_string(), v.to_string()))
-            .collect::<HashMap<_, _>>();
-
-        let content = node_ref.content.as_deref().map(|c| match c {
-            NodeContentRef::Nodes(children) => {
-                JsNodeContent::Nodes(children.iter().map(JsNode::from).collect())
-            }
-            NodeContentRef::Bytes(bytes) => JsNodeContent::Bytes(bytes.to_vec()),
-        });
-
-        Self {
-            tag: node_ref.tag.to_string(),
-            attrs,
-            content,
-        }
-    }
-}
+// NOTE: We intentionally removed the From<&NodeRef> for JsNode implementation that
+// performed a full allocation of an owned tree. For unmarshalling we now build
+// the JS object structure directly (see node_ref_to_js_value) to reduce copies
+// and allocations (perf focus per docs §9 and guidance in user request).
 
 impl From<JsNode> for Node {
     fn from(js_node: JsNode) -> Self {
@@ -82,9 +64,76 @@ pub fn marshal_node(node_val: JsValue) -> Result<Vec<u8>, JsValue> {
 
 #[wasm_bindgen(js_name = unmarshal)]
 pub fn unmarshal_node(data: &[u8]) -> Result<JsValue, JsValue> {
-    let node_ref = unmarshal_ref(data).map_err(|e| JsValue::from_str(&e.to_string()))?;
-    let js_node = JsNode::from(&node_ref);
-    serde_wasm_bindgen::to_value(&js_node).map_err(|e| JsValue::from_str(&e.to_string()))
+    if data.is_empty() {
+        return Err(JsValue::from_str("Input data cannot be empty"));
+    }
+    // The binary produced by wacore-binary::marshal currently prefixes a \0 byte.
+    // Historically the TS layer sliced this off with data.subarray(1). We move that
+    // adjustment here so the JS API can pass the buffer verbatim. For forward
+    // compatibility we attempt to detect the prefix instead of assuming index 0.
+    let inner = if data[0] == 0 { &data[1..] } else { data };
+    let node_ref = unmarshal_ref(inner).map_err(|e| JsValue::from_str(&e.to_string()))?;
+    // Directly convert the zero-copy NodeRef into a JS object without creating an
+    // intermediate owned Rust tree (avoids duplicate allocations & serde encode pass).
+    node_ref_to_js_value(&node_ref)
+}
+
+/// Fast path: read a single attribute value from binary data without converting
+/// the entire structure into a JS object. Returns `undefined` in JS if the
+/// attribute does not exist or decoding fails.
+#[wasm_bindgen(js_name = getAttribute)]
+pub fn get_attribute_from_binary(data: &[u8], key: &str) -> Result<Option<String>, JsValue> {
+    if data.is_empty() {
+        return Ok(None);
+    }
+    let inner = if data[0] == 0 { &data[1..] } else { data };
+    let node_ref = match unmarshal_ref(inner) {
+        Ok(n) => n,
+        Err(_) => return Ok(None),
+    };
+    Ok(node_ref.get_attr(key).map(|cow| cow.to_string()))
+}
+
+/// Convert a zero-copy NodeRef view into a plain JS object (recursively) with
+/// minimal intermediate allocation. Each string/byte slice is copied exactly
+/// once into JS (necessary boundary crossing) while avoiding constructing an
+/// owned Rust `JsNode` tree first.
+fn node_ref_to_js_value(node_ref: &NodeRef) -> Result<JsValue, JsValue> {
+    let obj = Object::new();
+
+    // tag
+    js_sys::Reflect::set(&obj, &"tag".into(), &node_ref.tag.as_ref().into())?;
+
+    // attrs
+    if !node_ref.attrs.is_empty() {
+        let attrs_obj = Object::new();
+        for (k, v) in &node_ref.attrs {
+            js_sys::Reflect::set(&attrs_obj, &k.as_ref().into(), &v.as_ref().into())?;
+        }
+        js_sys::Reflect::set(&obj, &"attrs".into(), &attrs_obj.into())?;
+    }
+
+    // content
+    if let Some(content) = &node_ref.content {
+        match content.as_ref() {
+            NodeContentRef::Bytes(bytes) => {
+                // Copy bytes into a fresh Uint8Array. Previous attempt used a zero-copy
+                // view, but benchmarks indicated higher overhead for this workload.
+                let arr = Uint8Array::new_with_length(bytes.len() as u32);
+                arr.copy_from(bytes);
+                js_sys::Reflect::set(&obj, &"content".into(), &arr.into())?;
+            }
+            NodeContentRef::Nodes(children) => {
+                let arr = Array::new();
+                for child in children.iter() {
+                    arr.push(&node_ref_to_js_value(child)?);
+                }
+                js_sys::Reflect::set(&obj, &"content".into(), &arr.into())?;
+            }
+        }
+    }
+
+    Ok(obj.into())
 }
 
 // --------------------------------------------------
