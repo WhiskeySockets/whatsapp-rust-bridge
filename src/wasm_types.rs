@@ -11,11 +11,7 @@ const T_NODE: &'static str = r#"
  */
 export interface INode {
     tag: string;
-    attrs?: Record<string, string>;
+    attrs: { [key: string]: string };
     content?: INode[] | string | Uint8Array;
 }
 "#;
-
-// The previous Rust-side WasmNode structs were removed to avoid double
-// serialization overhead. Conversion is now handled manually in wasm_api.rs
-// directly between JsValue and the internal Node representation for performance.

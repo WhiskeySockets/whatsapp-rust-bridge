@@ -1,10 +1,8 @@
 import {
+  decodeNode,
+  encodeNode,
   init,
   INode,
-  marshal as marshalWasm,
-  unmarshal as unmarshalWasm,
-  NodeBuilder,
-  getAttribute,
 } from "../../whatsapp-rust-bridge/dist/binary.js";
 import { run, bench, group } from "mitata";
 
@@ -36,43 +34,17 @@ const testNode: INode = {
 
 await init();
 
-const wasmEncoded = marshalWasm(testNode);
+const wasmEncoded = encodeNode(testNode);
 
 group("Encoding (JS Object -> Binary)", () => {
   bench("Rust WASM (marshal)", () => {
-    marshalWasm(testNode);
+    encodeNode(testNode);
   }).gc("inner");
 });
 
 group("Decoding (Binary -> JS Object)", () => {
   bench("Rust WASM (unmarshal)", () => {
-    unmarshalWasm(wasmEncoded);
-  }).gc("inner");
-});
-
-group("Attribute access", () => {
-  bench("Rust WASM (getAttribute)", () => {
-    getAttribute(wasmEncoded, "id");
-  }).gc("inner");
-
-  bench("Rust WASM (unmarshal+attr)", () => {
-    const node = unmarshalWasm(wasmEncoded);
-    // Access attribute so it's not optimized out
-    void node.attrs?.id;
-  }).gc("inner");
-});
-
-group("Build a node", () => {
-  bench("Rust WASM  (NodeBuilder)", () => {
-    new NodeBuilder(testNode.tag)
-      .attr("to", testNode.attrs!.to)
-      .attr("id", testNode.attrs!.id)
-      .attr("type", testNode.attrs!.type)
-      .attr("t", testNode.attrs!.t)
-      .children(
-        (Array.isArray(testNode.content) ? testNode.content : []) as INode[]
-      )
-      .build();
+    decodeNode(wasmEncoded);
   }).gc("inner");
 });
 
