@@ -20,6 +20,7 @@
     }
   },
   "scripts": {
+    "bench": "bun run benches/binary.ts",
     "build:wasm": "wasm-pack build --target web --out-dir pkg --no-pack",
     "build:ts": "tsc -p tsconfig.json --outDir dist --noEmit false --declaration && bun build --outdir dist ts/binary.ts -e \"node:*\"",
     "build": "npm run build:wasm && npm run build:ts",
@@ -28,6 +29,7 @@
   "devDependencies": {
     "@types/bun": "latest",
     "@types/node": "^24.3.0",
+    "mitata": "^1.0.34",
     "typescript": "^5.9.2"
   },
   "private": false
