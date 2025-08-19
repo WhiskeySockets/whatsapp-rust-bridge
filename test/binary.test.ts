@@ -6,7 +6,6 @@ describe("Binary Marshalling", () => {
     await init();
   });
 
-  // Test case 1: Attributes bug
   const attributesNode: INode = {
     tag: "iq",
     attrs: {
@@ -36,7 +35,6 @@ describe("Binary Marshalling", () => {
     expect(resultNode.attrs.xmlns).toBe("test-xmlns");
   });
 
-  // Test case 2: Binary content
   const binaryContentNode: INode = {
     tag: "message",
     attrs: {
@@ -55,5 +53,26 @@ describe("Binary Marshalling", () => {
 
     expect(resultNode.content).toBeInstanceOf(Uint8Array);
     expect(resultNode.content).toEqual(binaryContentNode.content!);
+  });
+
+  const stringAsBinaryNode: INode = {
+    tag: "ref",
+    attrs: {},
+    content:
+      "2@JsJJlgvJoPpSiB7Ju+0OsOrfTqHvPCa6sOYH4RhPaTlC23HxodJ8qUM3nmMV7DB3P7Ib0WxZ3dOuY3QMbodDQsUVyXabrWu0Di8=",
+  };
+
+  test("should treat strings as binary and decode content to Uint8Array", () => {
+    const binaryData = encodeNode(stringAsBinaryNode);
+    expect(binaryData).toBeInstanceOf(Uint8Array);
+
+    const resultNode = decodeNode(binaryData);
+
+    expect(resultNode.content).toBeInstanceOf(Uint8Array);
+
+    const originalContentBytes = new TextEncoder().encode(
+      stringAsBinaryNode.content as string
+    );
+    expect(resultNode.content).toEqual(originalContentBytes);
   });
 });

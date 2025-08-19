@@ -1,8 +1,8 @@
-use serde::{Deserialize, Serialize};
+use js_sys::{Array, Object, Uint8Array};
 use std::collections::HashMap;
 use wacore_binary::{
     marshal::{marshal, unmarshal_ref},
-    node::{Node, NodeContent},
+    node::{Node, NodeContent, NodeContentRef, NodeRef},
     util::unpack,
 };
 use wasm_bindgen::prelude::*;
@@ -13,60 +13,76 @@ extern "C" {
     pub type INode;
 }
 
-#[derive(Serialize, Deserialize)]
-struct JsNode {
-    tag: String,
-    #[serde(default, skip_serializing_if = "HashMap::is_empty")]
-    attrs: HashMap<String, String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    content: Option<JsNodeContent>,
-}
-
-#[derive(Serialize, Deserialize)]
-#[serde(untagged)]
-enum JsNodeContent {
-    Nodes(Vec<JsNode>),
-    Bytes(#[serde(with = "serde_bytes")] Vec<u8>),
-    String(String),
-}
-
-impl From<JsNode> for Node {
-    fn from(js_node: JsNode) -> Self {
-        let content = js_node.content.map(|c| match c {
-            JsNodeContent::Nodes(nodes) => {
-                NodeContent::Nodes(nodes.into_iter().map(Node::from).collect())
+fn js_to_node(val: JsValue) -> Result<Node, JsValue> {
+    if !val.is_object() {
+        return Err(JsValue::from_str("Input must be an object"));
+    }
+    let obj = Object::from(val);
+    let mut attrs = HashMap::new();
+    let mut content: Option<NodeContent> = None;
+    let tag = js_sys::Reflect::get(&obj, &"tag".into())?
+        .as_string()
+        .ok_or_else(|| JsValue::from_str("Node must have a 'tag' string property"))?;
+    let attrs_val = js_sys::Reflect::get(&obj, &"attrs".into())?;
+    if !attrs_val.is_undefined() && attrs_val.is_object() {
+        let attrs_obj = Object::from(attrs_val);
+        for key in Object::keys(&attrs_obj).iter() {
+            let key_str = key.as_string().unwrap();
+            if let Some(val_str) = js_sys::Reflect::get(&attrs_obj, &key)?.as_string() {
+                attrs.insert(key_str, val_str);
             }
-            JsNodeContent::Bytes(bytes) => NodeContent::Bytes(bytes),
-            JsNodeContent::String(s) => NodeContent::Bytes(s.into_bytes()),
-        });
-        Node {
-            tag: js_node.tag,
-            attrs: js_node.attrs,
-            content,
         }
     }
-}
-
-impl From<Node> for JsNode {
-    fn from(node: Node) -> Self {
-        let content = node.content.map(|c| match c {
-            NodeContent::Nodes(nodes) => {
-                JsNodeContent::Nodes(nodes.into_iter().map(JsNode::from).collect())
-            }
-            NodeContent::Bytes(b) => JsNodeContent::Bytes(b),
-        });
-        JsNode {
-            tag: node.tag,
-            attrs: node.attrs,
-            content,
+    let content_val = js_sys::Reflect::get(&obj, &"content".into())?;
+    if !content_val.is_undefined() {
+        if let Some(s) = content_val.as_string() {
+            content = Some(NodeContent::Bytes(s.into_bytes()));
+        } else if content_val.is_instance_of::<Uint8Array>() {
+            content = Some(NodeContent::Bytes(Uint8Array::from(content_val).to_vec()));
+        } else if Array::is_array(&content_val) {
+            let js_array = Array::from(&content_val);
+            let nodes: Result<Vec<Node>, _> = js_array.iter().map(js_to_node).collect();
+            content = Some(NodeContent::Nodes(nodes?));
         }
     }
+    Ok(Node {
+        tag,
+        attrs,
+        content,
+    })
+}
+
+fn node_ref_to_js(node: NodeRef) -> Result<JsValue, JsValue> {
+    let obj = Object::new();
+
+    js_sys::Reflect::set(&obj, &"tag".into(), &JsValue::from_str(&node.tag))?;
+
+    let attrs_obj = Object::new();
+    for (k, v) in node.attrs.iter() {
+        js_sys::Reflect::set(&attrs_obj, &(&**k).into(), &(&**v).into())?;
+    }
+    js_sys::Reflect::set(&obj, &"attrs".into(), &attrs_obj.into())?;
+
+    if let Some(content_box) = node.content {
+        let content_val = match *content_box {
+            NodeContentRef::Nodes(ref nodes) => {
+                let js_array = Array::new_with_length(nodes.len() as u32);
+                for (i, n) in nodes.iter().enumerate() {
+                    js_array.set(i as u32, node_ref_to_js(n.clone())?);
+                }
+                js_array.into()
+            }
+            NodeContentRef::Bytes(ref b) => Uint8Array::from(b.as_ref()).into(),
+        };
+        js_sys::Reflect::set(&obj, &"content".into(), &content_val)?;
+    }
+
+    Ok(obj.into())
 }
 
 #[wasm_bindgen(js_name = encodeNode)]
 pub fn encode_node(node_val: JsValue) -> Result<Vec<u8>, JsValue> {
-    let js_node: JsNode = serde_wasm_bindgen::from_value(node_val)?;
-    let internal: Node = js_node.into();
+    let internal: Node = js_to_node(node_val)?;
     marshal(&internal).map_err(|e| JsValue::from_str(&e.to_string()))
 }
 
@@ -80,8 +96,6 @@ pub fn decode_node(data: &[u8]) -> Result<INode, JsValue> {
 
     let node_ref = unmarshal_ref(&unpacked_data).map_err(|e| JsValue::from_str(&e.to_string()))?;
 
-    let owned_node = node_ref.to_owned();
-    let js_node = JsNode::from(owned_node);
-    let serializer = serde_wasm_bindgen::Serializer::new().serialize_maps_as_objects(true);
-    Ok(js_node.serialize(&serializer)?.into())
+    let js_val = node_ref_to_js(node_ref)?;
+    Ok(js_val.into())
 }
