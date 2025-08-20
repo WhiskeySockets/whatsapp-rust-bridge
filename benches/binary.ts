@@ -3,7 +3,7 @@ import {
   encodeNode,
   init,
   INode,
-} from "../../whatsapp-rust-bridge/dist/binary.js";
+} from "../ts/binary"
 import { run, bench, group } from "mitata";
 
 const testNode: INode = {

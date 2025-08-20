@@ -1,5 +1,5 @@
 import { describe, test, expect, beforeAll } from "bun:test";
-import { init, encodeNode, decodeNode, type INode } from "../dist/binary.js";
+import { init, encodeNode, decodeNode, type INode } from "../ts/binary";
 
 describe("Binary Marshalling", () => {
   beforeAll(async () => {

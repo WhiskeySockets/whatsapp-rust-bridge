@@ -5,7 +5,7 @@ import initWasm, {
 } from "../pkg/whatsapp_rust_bridge.js";
 import wasmUrl from "../pkg/whatsapp_rust_bridge_bg.wasm";
 
-export async function readRelativeFile(
+async function readRelativeFile(
   relativePath: string,
   importMetaUrl: string
 ): Promise<Uint8Array> {
@@ -32,8 +32,7 @@ export async function readRelativeFile(
 
 export async function init(): Promise<void> {
   const wasmBytes = await readRelativeFile(wasmUrl as any, import.meta.url);
-  const wasmModule = new WebAssembly.Module(wasmBytes);
-  await initWasm(wasmModule);
+  await initWasm({ module_or_path: wasmBytes });
 }
 
 export { encodeNode, decodeNode };
