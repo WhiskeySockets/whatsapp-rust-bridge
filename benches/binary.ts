@@ -1,9 +1,10 @@
 import {
   decodeNode,
   encodeNode,
+  encodeNodeTo,
   init,
   INode,
-} from "../ts/binary"
+} from "../ts/binary";
 import { run, bench, group } from "mitata";
 
 const testNode: INode = {
@@ -37,8 +38,13 @@ await init();
 const wasmEncoded = encodeNode(testNode);
 
 group("Encoding (JS Object -> Binary)", () => {
-  bench("Rust WASM (marshal)", () => {
+  bench("Rust WASM (marshal - allocates)", () => {
     encodeNode(testNode);
+  }).gc("inner");
+
+  const reusableBuffer = new Uint8Array(2048);
+  bench("Rust WASM (marshal_to - reuses buffer)", () => {
+    encodeNodeTo(testNode, reusableBuffer);
   }).gc("inner");
 });
 

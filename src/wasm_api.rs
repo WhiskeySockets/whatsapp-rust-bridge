@@ -80,6 +80,21 @@ fn node_ref_to_js(node: NodeRef) -> Result<JsValue, JsValue> {
     Ok(obj.into())
 }
 
+#[wasm_bindgen(js_name = encodeNodeTo)]
+pub fn encode_node_to(node_val: JsValue, output_buffer: &mut [u8]) -> Result<usize, JsValue> {
+    let internal: Node = js_to_node(node_val)?;
+
+    let mut cursor = std::io::Cursor::new(output_buffer);
+
+    wacore_binary::marshal::marshal_to(&internal, &mut cursor)
+        .map_err(|e| JsValue::from_str(&e.to_string()))?;
+
+    let bytes_written = cursor.position() as usize;
+
+    Ok(bytes_written)
+}
+
+#[deprecated(note = "Use encodeNodeTo for better performance")]
 #[wasm_bindgen(js_name = encodeNode)]
 pub fn encode_node(node_val: JsValue) -> Result<Vec<u8>, JsValue> {
     let internal: Node = js_to_node(node_val)?;
