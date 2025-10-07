@@ -1,6 +1,6 @@
 {
   "name": "whatsapp-rust-bridge",
-  "version": "0.1.5",
+  "version": "0.1.6",
   "description": "A high-performance utilities for WhatsApp, powered by Rust and WebAssembly.",
   "author": "João Lucas <jlucaso@hotmail.com>",
   "license": "MIT",
@@ -28,10 +28,10 @@
   },
   "devDependencies": {
     "@mitata/counters": "^0.0.8",
-    "@types/bun": "latest",
-    "@types/node": "^24.3.0",
+    "@types/bun": "^1.2.23",
+    "@types/node": "^24.7.0",
     "mitata": "^1.0.34",
-    "typescript": "^5.9.2"
+    "typescript": "^5.9.3"
   },
   "private": false
 }

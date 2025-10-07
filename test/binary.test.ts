@@ -1,5 +1,11 @@
 import { describe, test, expect, beforeAll } from "bun:test";
-import { init, encodeNode, decodeNode, type INode } from "../ts/binary";
+import {
+  init,
+  encodeNode,
+  decodeNode,
+  type INode,
+  type WasmNode,
+} from "../ts/binary";
 
 describe("Binary Marshalling", () => {
   beforeAll(async () => {
@@ -27,13 +33,28 @@ describe("Binary Marshalling", () => {
     expect(binaryData).toBeInstanceOf(Uint8Array);
     expect(binaryData.length).toBeGreaterThan(0);
 
-    const resultNode = decodeNode(binaryData);
+    const resultHandle: WasmNode = decodeNode(binaryData);
 
-    expect(resultNode.attrs).toBeInstanceOf(Object);
-    expect(Array.isArray(resultNode.attrs)).toBe(false);
-    expect(resultNode.attrs).toEqual(attributesNode.attrs);
-    expect(resultNode.attrs.xmlns).toBe("test-xmlns");
+    expect(resultHandle).toBeInstanceOf(Object);
+    expect(resultHandle.tag).toBe("iq");
+    expect(resultHandle.getAttribute("xmlns")).toBe("test-xmlns");
+    expect(resultHandle.getAttribute("to")).toBe("s.whatsapp.net");
+    expect(resultHandle.getAttribute("nonexistent")).toBeUndefined();
+
+    const children = resultHandle.children;
+    expect(Array.isArray(children)).toBe(true);
+    expect(children).toHaveLength(1);
+    expect(children[0]?.tag).toBe("query");
+
+    const attrs = resultHandle.getAttributes();
+    expect(attrs).toBeInstanceOf(Object);
+    expect(Object.keys(attrs)).toHaveLength(4);
+    expect(attrs["xmlns"]).toBe("test-xmlns");
+    expect(attrs["to"]).toBe("s.whatsapp.net");
+    expect(attrs["nonexistent"]).toBeUndefined();
   });
+
+  const binaryPayload = new Uint8Array([0, 1, 2, 3, 255, 128]);
 
   const binaryContentNode: INode = {
     tag: "message",
@@ -41,7 +62,7 @@ describe("Binary Marshalling", () => {
       id: "binary-test-1",
       to: "s.whatsapp.net",
     },
-    content: new Uint8Array([0, 1, 2, 3, 255, 128]),
+    content: binaryPayload,
   };
 
   test("should correctly encode and decode a node with Uint8Array content", () => {
@@ -49,10 +70,10 @@ describe("Binary Marshalling", () => {
     expect(binaryData).toBeInstanceOf(Uint8Array);
     expect(binaryData.length).toBeGreaterThan(0);
 
-    const resultNode = decodeNode(binaryData);
+    const resultHandle: WasmNode = decodeNode(binaryData);
 
-    expect(resultNode.content).toBeInstanceOf(Uint8Array);
-    expect(resultNode.content).toEqual(binaryContentNode.content!);
+    expect(resultHandle.content).toBeInstanceOf(Uint8Array);
+    expect(resultHandle.content).toEqual(binaryPayload);
   });
 
   const stringAsBinaryNode: INode = {
@@ -66,13 +87,13 @@ describe("Binary Marshalling", () => {
     const binaryData = encodeNode(stringAsBinaryNode);
     expect(binaryData).toBeInstanceOf(Uint8Array);
 
-    const resultNode = decodeNode(binaryData);
+    const resultHandle: WasmNode = decodeNode(binaryData);
 
-    expect(resultNode.content).toBeInstanceOf(Uint8Array);
+    expect(resultHandle.content).toBeInstanceOf(Uint8Array);
 
     const originalContentBytes = new TextEncoder().encode(
       stringAsBinaryNode.content as string
     );
-    expect(resultNode.content).toEqual(originalContentBytes);
+    expect(resultHandle.content).toEqual(originalContentBytes);
   });
 });

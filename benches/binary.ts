@@ -48,9 +48,11 @@ group("Encoding (JS Object -> Binary)", () => {
   }).gc("inner");
 });
 
-group("Decoding (Binary -> JS Object)", () => {
-  bench("Rust WASM (unmarshal)", () => {
-    decodeNode(wasmEncoded);
+group("Decoding (Binary -> JS Handle)", () => {
+  bench("Rust WASM (decode to handle)", () => {
+    const handle = decodeNode(wasmEncoded);
+    // Touch a property to simulate a realistic access cost.
+    handle.tag;
   }).gc("inner");
 });
 

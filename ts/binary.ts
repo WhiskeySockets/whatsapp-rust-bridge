@@ -3,6 +3,7 @@ import initWasm, {
   encodeNode,
   encodeNodeTo,
   type INode,
+  type WasmNode,
 } from "../pkg/whatsapp_rust_bridge.js";
 import wasmUrl from "../pkg/whatsapp_rust_bridge_bg.wasm";
 
@@ -38,4 +39,4 @@ export async function init(): Promise<void> {
 
 export { encodeNode, decodeNode, encodeNodeTo };
 
-export type { INode };
+export type { INode, WasmNode };

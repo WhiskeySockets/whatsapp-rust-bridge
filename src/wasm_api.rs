@@ -1,5 +1,6 @@
 use js_sys::{Array, Object, Uint8Array};
 use std::collections::HashMap;
+use std::mem;
 use wacore_binary::{
     marshal::{marshal, unmarshal_ref},
     node::{Node, NodeContent, NodeContentRef, NodeRef},
@@ -11,6 +12,75 @@ use wasm_bindgen::prelude::*;
 extern "C" {
     #[wasm_bindgen(typescript_type = "INode")]
     pub type INode;
+}
+
+#[wasm_bindgen]
+pub struct WasmNode {
+    _owned_data: Box<[u8]>,
+    node_ref: Box<NodeRef<'static>>,
+}
+
+impl WasmNode {
+    fn node_ref(&self) -> &NodeRef<'static> {
+        &self.node_ref
+    }
+}
+
+#[wasm_bindgen]
+impl WasmNode {
+    #[wasm_bindgen(getter)]
+    pub fn tag(&self) -> String {
+        self.node_ref().tag.to_string()
+    }
+
+    #[wasm_bindgen(js_name = getAttribute)]
+    pub fn get_attribute(&self, key: &str) -> Option<String> {
+        let mut parser = self.node_ref().attr_parser();
+        parser.optional_string(key).map(|s| s.to_string())
+    }
+
+    #[wasm_bindgen(js_name = getAttributeAsJid)]
+    pub fn get_attribute_as_jid(&self, key: &str) -> Option<String> {
+        let mut parser = self.node_ref().attr_parser();
+        parser.optional_jid(key).map(|jid| jid.to_string())
+    }
+
+    #[wasm_bindgen(getter)]
+    pub fn children(&self) -> Array {
+        let children_array = Array::new();
+        if let Some(children) = self.node_ref().children() {
+            for child_ref in children {
+                if let Ok(js_child) = node_ref_to_js(child_ref.clone()) {
+                    children_array.push(&js_child);
+                }
+            }
+        }
+        children_array
+    }
+
+    #[wasm_bindgen(getter)]
+    pub fn content(&self) -> JsValue {
+        match self.node_ref().content.as_deref() {
+            Some(NodeContentRef::Bytes(bytes)) => Uint8Array::from(bytes.as_ref()).into(),
+            _ => JsValue::UNDEFINED,
+        }
+    }
+
+    #[wasm_bindgen(js_name = getAttributes)]
+    pub fn get_attributes(&self) -> Object {
+        let attrs_obj = Object::new();
+        let parser = self.node_ref().attr_parser();
+
+        // We iterate through the raw attributes from the zero-copy NodeRef
+        // and build a single JavaScript object. This is one efficient FFI call.
+        for (key, val) in parser.attrs.iter() {
+            let key_js: JsValue = key.as_ref().into();
+            let val_js: JsValue = val.as_ref().into();
+            js_sys::Reflect::set(&attrs_obj, &key_js, &val_js).unwrap();
+        }
+
+        attrs_obj
+    }
 }
 
 fn js_to_node(val: JsValue) -> Result<Node, JsValue> {
@@ -102,15 +172,19 @@ pub fn encode_node(node_val: JsValue) -> Result<Vec<u8>, JsValue> {
 }
 
 #[wasm_bindgen(js_name = decodeNode)]
-pub fn decode_node(data: &[u8]) -> Result<INode, JsValue> {
+pub fn decode_node(data: &[u8]) -> Result<WasmNode, JsValue> {
     if data.is_empty() {
         return Err(JsValue::from_str("Input data cannot be empty"));
     }
 
-    let unpacked_data = unpack(data).map_err(|e| JsValue::from_str(&e.to_string()))?;
+    let unpacked_cow = unpack(data).map_err(|e| JsValue::from_str(&e.to_string()))?;
+    let owned_data: Box<[u8]> = unpacked_cow.into_owned().into_boxed_slice();
 
-    let node_ref = unmarshal_ref(&unpacked_data).map_err(|e| JsValue::from_str(&e.to_string()))?;
+    let static_data: &'static [u8] = unsafe { mem::transmute(owned_data.as_ref()) };
+    let node_ref = unmarshal_ref(static_data).map_err(|e| JsValue::from_str(&e.to_string()))?;
 
-    let js_val = node_ref_to_js(node_ref)?;
-    Ok(js_val.into())
+    Ok(WasmNode {
+        _owned_data: owned_data,
+        node_ref: Box::new(node_ref),
+    })
 }
