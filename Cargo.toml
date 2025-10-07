@@ -16,12 +16,21 @@ wasm-opt = [
 crate-type = ["cdylib", "rlib"]
 
 [dependencies]
+getrandom = { version = "0.3", features = ["wasm_js"] }
+uuid = { version = "1.18.0", features = ["js"] }
 js-sys = "0.3"
+serde = "1.0.219"
 
 wacore-binary = { git = "https://github.com/jlucaso1/whatsapp-rust.git", features = [
   "serde",
 ] }
+
+wacore = { git = "https://github.com/jlucaso1/whatsapp-rust.git" }
 wasm-bindgen = "0.2.100"
+wasm-bindgen-futures = "0.4.50"
+async-trait = "0.1.89"
+rand_core = "0.9.3"
+serde-wasm-bindgen = "0.6.5"
 
 [target.wasm32-unknown-unknown]
 rustflags = ["-C", "target-cpu=native"]

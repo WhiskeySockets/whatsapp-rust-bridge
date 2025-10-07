@@ -14,15 +14,15 @@
     "pkg/whatsapp_rust_bridge.d.ts"
   ],
   "exports": {
-    "./binary": {
-      "import": "./dist/binary.js",
-      "types": "./dist/binary.d.ts"
+    ".": {
+      "import": "./dist/index.js",
+      "types": "./dist/index.d.ts"
     }
   },
   "scripts": {
     "bench": "bun run build && bun run benches/binary.ts",
     "build:wasm": "wasm-pack build --target web --out-dir pkg --no-pack",
-    "build:ts": "tsc -p tsconfig.json --outDir dist --noEmit false --declaration && bun build --outdir dist ts/binary.ts -e \"node:*\"",
+    "build:ts": "tsc -p tsconfig.json --outDir dist --noEmit false --declaration && bun build --outdir dist ts/index.ts -e \"node:*\"",
     "build": "bun run build:wasm && bun run build:ts",
     "prepublishOnly": "bun run build"
   },
