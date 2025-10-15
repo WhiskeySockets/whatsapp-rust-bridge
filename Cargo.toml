@@ -5,11 +5,11 @@ edition = "2024"
 
 [package.metadata.wasm-pack.profile.release]
 wasm-opt = [
-  "-O3",
-  "--gufa-optimizing",
-  "--inlining-optimizing",
-  "--ignore-implicit-traps",
-  "--coalesce-locals-learning",
+    "-O3",
+    "--gufa-optimizing",
+    "--inlining-optimizing",
+    "--ignore-implicit-traps",
+    "--coalesce-locals-learning",
 ]
 
 [lib]
@@ -17,15 +17,17 @@ crate-type = ["cdylib", "rlib"]
 
 [dependencies]
 js-sys = "0.3"
+serde = { version = "1.0", features = ["derive"] }
+serde-wasm-bindgen = "0.6"
+simd-adler32 = { version = "0.3.7", default-features = false, features = [
+  "std",
+] }
 talc = { version = "4.4.3", default-features = false, features = ["lock_api"] }
 
 wacore-binary = { git = "https://github.com/jlucaso1/whatsapp-rust.git", features = [
   "serde",
-] }
+], branch = "feat-simd-binary" }
 wasm-bindgen = "0.2.100"
-
-[target.wasm32-unknown-unknown]
-rustflags = ["-C", "target-cpu=native"]
 
 [profile.release]
 lto = "fat"

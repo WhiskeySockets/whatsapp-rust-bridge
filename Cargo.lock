@@ -208,6 +208,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "serde-wasm-bindgen"
+version = "0.6.5"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "8302e169f0eddcc139c70f139d19d6467353af16f9fce27e8c30158036a1e16b"
+dependencies = [
+ "js-sys",
+ "serde",
+ "wasm-bindgen",
+]
+
+[[package]]
 name = "serde_core"
 version = "1.0.228"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -281,7 +292,7 @@ checksum = "f63a545481291138910575129486daeaf8ac54aee4387fe7906919f7830c7d9d"
 [[package]]
 name = "wacore-binary"
 version = "0.1.0"
-source = "git+https://github.com/jlucaso1/whatsapp-rust.git#f18998f19bcda3e10ff20fdd0e70d9e84521555d"
+source = "git+https://github.com/jlucaso1/whatsapp-rust.git?branch=feat-simd-binary#0e9d867bc96194e23e7bcf37a58043b96318642b"
 dependencies = [
  "flate2",
  "phf",
@@ -354,6 +365,9 @@ name = "whatsapp-rust-bridge"
 version = "0.1.0"
 dependencies = [
  "js-sys",
+ "serde",
+ "serde-wasm-bindgen",
+ "simd-adler32",
  "talc",
  "wacore-binary",
  "wasm-bindgen",

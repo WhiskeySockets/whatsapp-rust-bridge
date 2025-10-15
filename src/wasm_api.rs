@@ -1,4 +1,6 @@
 use js_sys::{Array, Object, Uint8Array};
+use serde::Deserialize;
+use serde_wasm_bindgen;
 use std::collections::HashMap;
 use std::mem;
 use wacore_binary::{
@@ -7,6 +9,42 @@ use wacore_binary::{
     util::unpack,
 };
 use wasm_bindgen::prelude::*;
+
+#[derive(Deserialize)]
+struct JsNode {
+    tag: String,
+    attrs: HashMap<String, String>,
+}
+
+/// A single, recursive function to convert a JsValue to a wacore_binary::Node.
+/// This function is now fully optimized with no manual FFI calls per property.
+fn convert_js_value_to_node(val: JsValue) -> Result<Node, JsValue> {
+    // Deserialize the entire JS object in one highly-optimized operation.
+    let js_node: JsNode = serde_wasm_bindgen::from_value(val.clone())
+        .map_err(|e| JsValue::from_str(&e.to_string()))?;
+
+    let content_val = js_sys::Reflect::get(&val, &"content".into())?;
+    let mut content: Option<NodeContent> = None;
+    if !content_val.is_undefined() {
+        if let Some(s) = content_val.as_string() {
+            content = Some(NodeContent::String(s));
+        } else if content_val.is_instance_of::<Uint8Array>() {
+            content = Some(NodeContent::Bytes(Uint8Array::from(content_val).to_vec()));
+        } else if Array::is_array(&content_val) {
+            let js_array = Array::from(&content_val);
+            // Recursively call this same function for all children.
+            let nodes: Result<Vec<Node>, _> =
+                js_array.iter().map(convert_js_value_to_node).collect();
+            content = Some(NodeContent::Nodes(nodes?));
+        }
+    }
+
+    Ok(Node {
+        tag: js_node.tag,
+        attrs: js_node.attrs,
+        content,
+    })
+}
 
 #[wasm_bindgen]
 extern "C" {
@@ -84,45 +122,6 @@ impl WasmNode {
     }
 }
 
-fn js_to_node(val: JsValue) -> Result<Node, JsValue> {
-    if !val.is_object() {
-        return Err(JsValue::from_str("Input must be an object"));
-    }
-    let obj = Object::from(val);
-    let mut attrs = HashMap::new();
-    let mut content: Option<NodeContent> = None;
-    let tag = js_sys::Reflect::get(&obj, &"tag".into())?
-        .as_string()
-        .ok_or_else(|| JsValue::from_str("Node must have a 'tag' string property"))?;
-    let attrs_val = js_sys::Reflect::get(&obj, &"attrs".into())?;
-    if !attrs_val.is_undefined() && attrs_val.is_object() {
-        let attrs_obj = Object::from(attrs_val);
-        for key in Object::keys(&attrs_obj).iter() {
-            let key_str = key.as_string().unwrap();
-            if let Some(val_str) = js_sys::Reflect::get(&attrs_obj, &key)?.as_string() {
-                attrs.insert(key_str, val_str);
-            }
-        }
-    }
-    let content_val = js_sys::Reflect::get(&obj, &"content".into())?;
-    if !content_val.is_undefined() {
-        if let Some(s) = content_val.as_string() {
-            content = Some(NodeContent::String(s));
-        } else if content_val.is_instance_of::<Uint8Array>() {
-            content = Some(NodeContent::Bytes(Uint8Array::from(content_val).to_vec()));
-        } else if Array::is_array(&content_val) {
-            let js_array = Array::from(&content_val);
-            let nodes: Result<Vec<Node>, _> = js_array.iter().map(js_to_node).collect();
-            content = Some(NodeContent::Nodes(nodes?));
-        }
-    }
-    Ok(Node {
-        tag,
-        attrs,
-        content,
-    })
-}
-
 fn node_ref_to_js(node: NodeRef) -> Result<JsValue, JsValue> {
     let obj = Object::new();
 
@@ -154,7 +153,7 @@ fn node_ref_to_js(node: NodeRef) -> Result<JsValue, JsValue> {
 
 #[wasm_bindgen(js_name = encodeNodeTo)]
 pub fn encode_node_to(node_val: JsValue, output_buffer: &mut [u8]) -> Result<usize, JsValue> {
-    let internal: Node = js_to_node(node_val)?;
+    let internal: Node = convert_js_value_to_node(node_val)?;
 
     let mut cursor = std::io::Cursor::new(output_buffer);
 
@@ -168,7 +167,7 @@ pub fn encode_node_to(node_val: JsValue, output_buffer: &mut [u8]) -> Result<usi
 
 #[wasm_bindgen(js_name = encodeNode)]
 pub fn encode_node(node_val: JsValue) -> Result<Vec<u8>, JsValue> {
-    let internal: Node = js_to_node(node_val)?;
+    let internal: Node = convert_js_value_to_node(node_val)?;
     marshal(&internal).map_err(|e| JsValue::from_str(&e.to_string()))
 }
 
