@@ -292,7 +292,7 @@ checksum = "f63a545481291138910575129486daeaf8ac54aee4387fe7906919f7830c7d9d"
 [[package]]
 name = "wacore-binary"
 version = "0.1.0"
-source = "git+https://github.com/jlucaso1/whatsapp-rust.git?branch=feat-simd-binary#0e9d867bc96194e23e7bcf37a58043b96318642b"
+source = "git+https://github.com/jlucaso1/whatsapp-rust.git#af4fb587bb2c0ef3e727ebff361901dd96f657c9"
 dependencies = [
  "flate2",
  "phf",
