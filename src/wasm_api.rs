@@ -62,6 +62,7 @@ impl WasmNode {
     pub fn content(&self) -> JsValue {
         match self.node_ref().content.as_deref() {
             Some(NodeContentRef::Bytes(bytes)) => Uint8Array::from(bytes.as_ref()).into(),
+            Some(NodeContentRef::String(s)) => Uint8Array::from(s.as_bytes()).into(),
             _ => JsValue::UNDEFINED,
         }
     }
@@ -106,7 +107,7 @@ fn js_to_node(val: JsValue) -> Result<Node, JsValue> {
     let content_val = js_sys::Reflect::get(&obj, &"content".into())?;
     if !content_val.is_undefined() {
         if let Some(s) = content_val.as_string() {
-            content = Some(NodeContent::Bytes(s.into_bytes()));
+            content = Some(NodeContent::String(s));
         } else if content_val.is_instance_of::<Uint8Array>() {
             content = Some(NodeContent::Bytes(Uint8Array::from(content_val).to_vec()));
         } else if Array::is_array(&content_val) {
@@ -143,6 +144,7 @@ fn node_ref_to_js(node: NodeRef) -> Result<JsValue, JsValue> {
                 js_array.into()
             }
             NodeContentRef::Bytes(ref b) => Uint8Array::from(b.as_ref()).into(),
+            NodeContentRef::String(ref s) => JsValue::from_str(s),
         };
         js_sys::Reflect::set(&obj, &"content".into(), &content_val)?;
     }
@@ -164,7 +166,6 @@ pub fn encode_node_to(node_val: JsValue, output_buffer: &mut [u8]) -> Result<usi
     Ok(bytes_written)
 }
 
-#[deprecated(note = "Use encodeNodeTo for better performance")]
 #[wasm_bindgen(js_name = encodeNode)]
 pub fn encode_node(node_val: JsValue) -> Result<Vec<u8>, JsValue> {
     let internal: Node = js_to_node(node_val)?;
