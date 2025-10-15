@@ -1,10 +1,4 @@
-import {
-  decodeNode,
-  encodeNode,
-  encodeNodeTo,
-  init,
-  INode,
-} from "../ts/binary";
+import { decodeNode, encodeNode, encodeNodeTo, INode } from "../dist/binary.js";
 import { run, bench, group } from "mitata";
 
 const testNode: INode = {
@@ -33,8 +27,6 @@ const testNode: INode = {
   ],
 };
 
-await init();
-
 const wasmEncoded = encodeNode(testNode);
 
 group("Encoding (JS Object -> Binary)", () => {
@@ -51,7 +43,6 @@ group("Encoding (JS Object -> Binary)", () => {
 group("Decoding (Binary -> JS Handle)", () => {
   bench("Rust WASM (decode to handle)", () => {
     const handle = decodeNode(wasmEncoded);
-    // Touch a property to simulate a realistic access cost.
     handle.tag;
   }).gc("inner");
 });

@@ -1,11 +1,10 @@
 import { describe, test, expect, beforeAll } from "bun:test";
 import {
-  init,
   encodeNode,
   decodeNode,
   type INode,
   type WasmNode,
-} from "../ts/binary";
+} from "../dist/binary";
 
 function arraysEqual(a: Uint8Array, b: Uint8Array): boolean {
   if (a.length !== b.length) return false;
@@ -59,10 +58,6 @@ function compareINodeToDecoded(original: INode, decoded: any): boolean {
 }
 
 describe("Binary Marshalling", () => {
-  beforeAll(async () => {
-    await init();
-  });
-
   const attributesNode: INode = {
     tag: "iq",
     attrs: {
