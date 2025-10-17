@@ -14,42 +14,54 @@ fn convert_js_object_to_node(obj: &Object) -> napi::Result<Node> {
 
     let attrs_obj: Object = obj.get_named_property("attrs")?;
     let keys: Vec<String> = Object::keys(&attrs_obj)?;
+
     let mut attrs = HashMap::with_capacity(keys.len());
+
     for key_str in keys {
         let val_str: String = attrs_obj.get_named_property(&key_str)?;
         attrs.insert(key_str, val_str);
     }
 
-    let mut content: Option<NodeContent> = None;
-    if obj.has_named_property("content")? {
-        let content_val: Unknown = obj.get_named_property("content")?;
-        match content_val.get_type()? {
-            ValueType::String => {
-                let s: String = content_val
-                    .coerce_to_string()?
-                    .into_utf8()?
-                    .as_str()?
-                    .to_owned();
-                content = Some(NodeContent::String(s));
-            }
-            ValueType::Object => {
-                if content_val.is_typedarray()? {
-                    let buffer = Uint8Array::from_unknown(content_val)?;
-                    content = Some(NodeContent::Bytes(buffer.to_vec()));
-                } else if content_val.is_array()? {
-                    let arr_obj = content_val.coerce_to_object()?;
-                    let len: u32 = arr_obj.get_named_property("length")?;
-                    let mut nodes = Vec::with_capacity(len as usize);
-                    for i in 0..len {
-                        let item: Object = arr_obj.get_element(i)?;
-                        nodes.push(convert_js_object_to_node(&item)?);
-                    }
-                    content = Some(NodeContent::Nodes(nodes));
-                }
-            }
-            _ => {}
-        }
+    if !obj.has_named_property("content")? {
+        return Ok(Node {
+            tag,
+            attrs,
+            content: None,
+        });
     }
+
+    let content_val: Unknown = obj.get_named_property("content")?;
+    let content_type = content_val.get_type()?;
+
+    let content = match content_type {
+        ValueType::String => {
+            let s: String = content_val
+                .coerce_to_string()?
+                .into_utf8()?
+                .as_str()?
+                .to_owned();
+            Some(NodeContent::String(s))
+        }
+        ValueType::Object => {
+            if content_val.is_typedarray()? {
+                let buffer = Uint8Array::from_unknown(content_val)?;
+                Some(NodeContent::Bytes(buffer.to_vec()))
+            } else if content_val.is_array()? {
+                let arr_obj = content_val.coerce_to_object()?;
+                let len: u32 = arr_obj.get_named_property("length")?;
+
+                let mut nodes = Vec::with_capacity(len as usize);
+                for i in 0..len {
+                    let item: Object = arr_obj.get_element(i)?;
+                    nodes.push(convert_js_object_to_node(&item)?);
+                }
+                Some(NodeContent::Nodes(nodes))
+            } else {
+                None
+            }
+        }
+        _ => None,
+    };
 
     Ok(Node {
         tag,
@@ -150,12 +162,6 @@ pub fn decode_node(data: Uint8Array) -> napi::Result<WasmNode> {
         node_ref: Box::new(node_ref),
     })
 }
-
-// export interface INode {
-//     tag: string;
-//     attrs: { [key: string]: string };
-//     content?: INode[] | string | Uint8Array;
-// }
 
 #[napi(object)]
 pub struct INode<'a> {
