@@ -41,15 +41,11 @@ fn jid_to_protocol_address(jid: &str) -> Result<ProtocolAddress> {
     Ok(ProtocolAddress::new(name, device_id.into()))
 }
 
-/// Parse JID to Signal Protocol Address format
-/// JID format: "1234567890@s.whatsapp.net" or "1234567890:5@s.whatsapp.net"
-/// Signal format: "1234567890.0" or "1234567890.5"
 #[napi]
 pub fn jid_to_signal_protocol_address(jid: String) -> Result<String> {
     Ok(jid_to_protocol_address(&jid)?.to_string())
 }
 
-/// Encrypt a message using Signal protocol
 #[napi]
 pub fn encrypt_message(
     _jid: String,
@@ -57,14 +53,12 @@ pub fn encrypt_message(
     _identity_key: Buffer,
     _session: Option<Buffer>,
 ) -> Result<JsEncryptResult> {
-    // TODO: Implement full Signal protocol encryption
     Ok(JsEncryptResult {
         r#type: "msg".to_string(),
         ciphertext: plaintext,
     })
 }
 
-/// Decrypt a message using Signal protocol
 #[napi]
 pub fn decrypt_message(
     _jid: String,
@@ -74,17 +68,14 @@ pub fn decrypt_message(
     _session: Option<Buffer>,
     _registration_id: u32,
 ) -> Result<Buffer> {
-    // TODO: Implement full Signal protocol decryption
     Ok(ciphertext)
 }
 
-/// Process a pre-key bundle to establish a session
 #[napi]
 pub fn process_pre_key_bundle(
     _jid: String,
-    _bundle: Object,
+    _bundle: JsPreKeyBundle,
     identity_key: Buffer,
 ) -> Result<Buffer> {
-    // TODO: Implement pre-key bundle processing
     Ok(identity_key)
 }

@@ -9,29 +9,27 @@
     "url": "https://github.com/jlucaso1/whatsapp-rust-bridge.git"
   },
   "type": "module",
-  "main": "index.js",
-  "types": "index.d.ts",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
   "files": [
-    "index.d.ts",
-    "index.js",
-    "*.wasm"
+    "dist/index.d.ts",
+    "dist/index.js",
+    "dist/*.wasm",
+    "dist/*.node"
   ],
   "exports": {
     ".": {
-      "import": "./index.js",
-      "types": "./index.d.ts"
+      "import": "./dist/index.js",
+      "types": "./dist/index.d.ts"
     }
   },
   "scripts": {
-    "build": "napi build --release -o dist --platform --esm -t wasm32-wasip1-threads",
-    "build:debug": "napi build --platform --esm -t wasm32-wasip1-threads -o dist",
+    "build": "napi build --release -o dist --platform --esm --strip",
+    "build:debug": "napi build --platform --esm -o dist",
     "prepublishOnly": "napi prepublish"
   },
   "napi": {
-    "binaryName": "index",
-    "targets": [
-      "wasm32-wasip1-threads"
-    ]
+    "binaryName": "index"
   },
   "devDependencies": {
     "@napi-rs/cli": "^3.3.1",
