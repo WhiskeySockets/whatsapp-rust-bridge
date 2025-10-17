@@ -17,6 +17,10 @@
     "./binary": {
       "import": "./dist/binary.js",
       "types": "./dist/binary.d.ts"
+    },
+    "./libsignal": {
+      "import": "./dist/libsignal.js",
+      "types": "./dist/libsignal.d.ts"
     }
   },
   "scripts": {
