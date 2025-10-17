@@ -1,7 +1,7 @@
-import { decodeNode, encodeNode, encodeNodeTo, INode } from "../dist/binary.js";
+import { decodeNode, encodeNode } from "../dist/index.js";
 import { run, bench, group } from "mitata";
 
-const testNode: INode = {
+const testNode = {
   tag: "message",
   attrs: {
     to: "1234567890@s.whatsapp.net",
@@ -32,11 +32,6 @@ const wasmEncoded = encodeNode(testNode);
 group("Encoding (JS Object -> Binary)", () => {
   bench("Rust WASM (marshal - allocates)", () => {
     encodeNode(testNode);
-  }).gc("inner");
-
-  const reusableBuffer = new Uint8Array(2048);
-  bench("Rust WASM (marshal_to - reuses buffer)", () => {
-    encodeNodeTo(testNode, reusableBuffer);
   }).gc("inner");
 });
 

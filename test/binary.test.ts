@@ -1,10 +1,6 @@
 import { describe, test, expect } from "bun:test";
-import {
-  encodeNode,
-  decodeNode,
-  type INode,
-  type WasmNode,
-} from "../dist/binary";
+import { encodeNode, decodeNode, type WasmNode } from "../dist";
+import { type INode } from "../ts/binary";
 
 function arraysEqual(a: Uint8Array, b: Uint8Array): boolean {
   if (a.length !== b.length) return false;
@@ -96,6 +92,7 @@ describe("Binary Marshalling", () => {
     const attrs = resultHandle.getAttributes();
     expect(attrs).toBeInstanceOf(Object);
     expect(Object.keys(attrs)).toHaveLength(4);
+    // @ts-ignore
     expect(attrs["xmlns"]).toBe("test-xmlns");
   });
 
@@ -113,7 +110,9 @@ describe("Binary Marshalling", () => {
       const resultHandle = decodeNode(binaryData);
 
       expect(resultHandle.content).toBeInstanceOf(Uint8Array);
-      const decodedText = textDecoder.decode(resultHandle.content);
+      const decodedText = textDecoder.decode(
+        resultHandle.content as Uint8Array
+      );
       expect(decodedText).toBe("this is a simple string");
     });
 
@@ -143,7 +142,9 @@ describe("Binary Marshalling", () => {
       const resultHandle = decodeNode(binaryData);
 
       expect(resultHandle.content).toBeInstanceOf(Uint8Array);
-      const decodedText = textDecoder.decode(resultHandle.content);
+      const decodedText = textDecoder.decode(
+        resultHandle.content as Uint8Array
+      );
       expect(decodedText).toBe("receipt");
       expect(binaryData.length).toBeLessThan(10);
     });

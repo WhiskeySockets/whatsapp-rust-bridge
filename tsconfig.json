@@ -8,9 +8,13 @@
     "esModuleInterop": true,
     "skipLibCheck": true,
     "forceConsistentCasingInFileNames": true,
-    /* These two options are crucial for the postbuild step */
     "declaration": true,
-    "emitDeclarationOnly": true
+    "declarationMap": true,
+    "sourceMap": true,
+    "outDir": ".",
+    "rootDir": "ts",
+    "noEmit": true
   },
-  "include": ["ts/**/*.ts"]
+  "include": ["ts/**/*.ts"],
+  "exclude": ["node_modules", "dist", "pkg"]
 }

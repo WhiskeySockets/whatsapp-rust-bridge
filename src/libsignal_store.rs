@@ -3,11 +3,11 @@ use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 use wacore_libsignal::protocol::SenderKeyRecord;
 use wacore_libsignal::protocol::{
-    Direction, IdentityChange, IdentityKey, IdentityKeyPair, PreKeyId, PreKeyRecord,
-    ProtocolAddress, SessionRecord, SignedPreKeyId, SignedPreKeyRecord,
+    error::Result, IdentityKeyStore, PreKeyStore, ProtocolStore, SessionStore, SignedPreKeyStore,
 };
 use wacore_libsignal::protocol::{
-    error::Result, IdentityKeyStore, PreKeyStore, ProtocolStore, SessionStore, SignedPreKeyStore,
+    Direction, IdentityChange, IdentityKey, IdentityKeyPair, PreKeyId, PreKeyRecord,
+    ProtocolAddress, SessionRecord, SignedPreKeyId, SignedPreKeyRecord,
 };
 use wacore_libsignal::store::sender_key_name::SenderKeyName;
 
@@ -109,12 +109,7 @@ impl IdentityKeyStore for InMemorySignalStore {
     }
 
     async fn get_identity(&self, address: &ProtocolAddress) -> Result<Option<IdentityKey>> {
-        Ok(self
-            .identities
-            .lock()
-            .unwrap()
-            .get(address.name())
-            .cloned())
+        Ok(self.identities.lock().unwrap().get(address.name()).cloned())
     }
 }
 
@@ -202,11 +197,7 @@ impl SignedPreKeyStore for InMemorySignalStore {
 // Dummy implementation for group messages
 #[async_trait]
 impl wacore_libsignal::protocol::SenderKeyStore for InMemorySignalStore {
-    async fn store_sender_key(
-        &mut self,
-        _: &SenderKeyName,
-        _: &SenderKeyRecord,
-    ) -> Result<()> {
+    async fn store_sender_key(&mut self, _: &SenderKeyName, _: &SenderKeyRecord) -> Result<()> {
         unimplemented!("SenderKeyStore not implemented in InMemorySignalStore")
     }
 
