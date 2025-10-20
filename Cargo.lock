@@ -1154,6 +1154,7 @@ dependencies = [
  "napi",
  "napi-build",
  "napi-derive",
+ "rand",
  "simd-adler32",
  "wacore-binary",
  "wacore-libsignal",
