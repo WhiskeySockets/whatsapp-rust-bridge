@@ -71,66 +71,61 @@ fn convert_js_object_to_node(obj: &Object) -> napi::Result<Node> {
 }
 
 #[napi]
-pub struct WasmNode {
+pub struct BinaryNode {
     _owned_data: Arc<[u8]>,
     node_ref: Box<NodeRef<'static>>,
 }
 
 #[napi]
-impl WasmNode {
+impl BinaryNode {
     #[napi(getter)]
     pub fn tag(&self) -> &str {
         &self.node_ref.tag
     }
 
     #[napi(getter)]
-    pub fn content(&self) -> Option<Uint8Array> {
-        self.node_ref
-            .content
-            .as_ref()
-            .and_then(|cref| match cref.as_ref() {
-                NodeContentRef::String(s) => Some(s.as_bytes().into()),
-                NodeContentRef::Bytes(b) => Some(b.to_vec().into()),
-                _ => None,
-            })
-    }
+    pub fn attrs(&self) -> HashMap<String, String> {
+        let parser = self.node_ref.attr_parser();
+        let mut map = HashMap::with_capacity(parser.attrs.len());
 
-    #[napi(getter)]
-    pub fn children(&self) -> Vec<WasmNode> {
-        self.node_ref
-            .content
-            .as_ref()
-            .and_then(|cref| match cref.as_ref() {
-                NodeContentRef::Nodes(nodes) => Some(
-                    nodes
-                        .iter()
-                        .map(|node_ref| WasmNode {
+        map.extend(
+            parser
+                .attrs
+                .iter()
+                .map(|(k, v)| (k.to_string(), v.to_string())),
+        );
+        map
+    }
+    #[napi(
+        getter,
+        ts_return_type = "string | Uint8Array | BinaryNode[] | undefined"
+    )]
+    pub fn content<'a>(&self, env: &'a Env) -> Result<Option<Unknown<'a>>> {
+        if let Some(cref) = self.node_ref.content.as_ref() {
+            match cref.as_ref() {
+                NodeContentRef::String(s) => {
+                    let js_str = env.create_string(s)?;
+                    Ok(Some(js_str.to_unknown()))
+                }
+                NodeContentRef::Bytes(b) => {
+                    let buf = BufferSlice::copy_from(env, b)?;
+                    Ok(Some(buf.to_unknown()))
+                }
+                NodeContentRef::Nodes(nodes) => {
+                    let mut arr = env.create_array(nodes.len() as u32)?;
+                    for (i, child_ref) in nodes.iter().enumerate() {
+                        let child = BinaryNode {
                             _owned_data: self._owned_data.clone(),
-                            node_ref: Box::new(node_ref.clone()),
-                        })
-                        .collect(),
-                ),
-                _ => None,
-            })
-            .unwrap_or_default()
-    }
-
-    #[napi(js_name = "getAttribute")]
-    pub fn get_attribute(&self, key: String) -> Option<String> {
-        self.node_ref
-            .attr_parser()
-            .optional_string(&key)
-            .map(|s| s.to_string())
-    }
-
-    #[napi]
-    pub fn get_attributes(&self) -> HashMap<String, String> {
-        self.node_ref
-            .attr_parser()
-            .attrs
-            .iter()
-            .map(|(k, v)| (k.to_string(), v.to_string()))
-            .collect()
+                            node_ref: Box::new(child_ref.clone()),
+                        };
+                        arr.set(i as u32, child)?;
+                    }
+                    Ok(Some(arr.to_unknown()))
+                }
+            }
+        } else {
+            Ok(None)
+        }
     }
 }
 
@@ -144,7 +139,7 @@ pub fn encode_node(node_val: Object) -> napi::Result<Uint8Array> {
 }
 
 #[napi]
-pub fn decode_node(data: Uint8Array) -> napi::Result<WasmNode> {
+pub fn decode_node(data: Uint8Array) -> napi::Result<BinaryNode> {
     let data_slice: &[u8] = &data;
     if data_slice.is_empty() {
         return Err(Error::new(Status::InvalidArg, "Input data is empty"));
@@ -157,7 +152,7 @@ pub fn decode_node(data: Uint8Array) -> napi::Result<WasmNode> {
     let node_ref = unmarshal_ref(static_data)
         .map_err(|e| Error::new(Status::GenericFailure, e.to_string()))?;
 
-    Ok(WasmNode {
+    Ok(BinaryNode {
         _owned_data: owned_data,
         node_ref: Box::new(node_ref),
     })
