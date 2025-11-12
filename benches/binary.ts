@@ -1,7 +1,7 @@
-import { decodeNode, encodeNode, encodeNodeTo, type INode } from "../dist/binary.js";
-import { run, bench, group } from "mitata";
+import { decodeNode, encodeNode, type BinaryNode } from "../dist/binary.js";
+import { run, bench, group, do_not_optimize } from "mitata";
 
-const testNode: INode = {
+const testNode: BinaryNode = {
   tag: "message",
   attrs: {
     to: "1234567890@s.whatsapp.net",
@@ -31,19 +31,23 @@ const wasmEncoded = encodeNode(testNode);
 
 group("Encoding (JS Object -> Binary)", () => {
   bench("Rust WASM (marshal - allocates)", () => {
-    encodeNode(testNode);
-  }).gc("inner");
-
-  const reusableBuffer = new Uint8Array(2048);
-  bench("Rust WASM (marshal_to - reuses buffer)", () => {
-    encodeNodeTo(testNode, reusableBuffer);
+    const result = encodeNode(testNode);
+    do_not_optimize(result);
   }).gc("inner");
 });
 
 group("Decoding (Binary -> JS Handle)", () => {
   bench("Rust WASM (decode to handle)", () => {
     const handle = decodeNode(wasmEncoded);
-    handle.tag;
+    do_not_optimize(handle);
+  }).gc("inner");
+});
+
+group("Decoding and getting attrs (Binary -> JS Handle)", () => {
+  bench("Rust WASM attrs (decode to handle)", () => {
+    const handle = decodeNode(wasmEncoded);
+    handle.attrs;
+    handle.attrs;
   }).gc("inner");
 });
 

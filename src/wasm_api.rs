@@ -1,8 +1,7 @@
 use js_sys::{Array, Object, Uint8Array};
-use serde::Deserialize;
-use serde_wasm_bindgen;
-use std::collections::HashMap;
 use std::mem;
+use std::sync::Arc;
+use std::{cell::RefCell, collections::HashMap};
 use wacore_binary::{
     marshal::{marshal, unmarshal_ref},
     node::{Node, NodeContent, NodeContentRef, NodeRef},
@@ -10,181 +9,218 @@ use wacore_binary::{
 };
 use wasm_bindgen::prelude::*;
 
-#[derive(Deserialize)]
-struct JsNode {
-    tag: String,
-    attrs: HashMap<String, String>,
+#[wasm_bindgen]
+extern "C" {
+    #[wasm_bindgen(typescript_type = "EncodingNode")]
+    pub type EncodingNode;
+
+    #[wasm_bindgen(extends = Object, typescript_type = "{ [key: string]: string }")]
+    #[derive(Clone, Debug, PartialEq, Eq)]
+    pub type Attrs;
+
+    #[wasm_bindgen(extends = Object, typescript_type = "BinaryNode[] | string | Uint8Array")]
+    #[derive(Clone, Debug, PartialEq, Eq)]
+    pub type Content;
+
+    #[wasm_bindgen(structural, method, getter)]
+    pub fn tag(this: &EncodingNode) -> String;
+
+    #[wasm_bindgen(structural, method, getter)]
+    pub fn attrs(this: &EncodingNode) -> Attrs;
+
+    #[wasm_bindgen(structural, method, getter)]
+    pub fn content(this: &EncodingNode) -> JsValue;
 }
 
-/// A single, recursive function to convert a JsValue to a wacore_binary::Node.
-/// This function is now fully optimized with no manual FFI calls per property.
-fn convert_js_value_to_node(val: JsValue) -> Result<Node, JsValue> {
-    // Deserialize the entire JS object in one highly-optimized operation.
-    let js_node: JsNode = serde_wasm_bindgen::from_value(val.clone())
-        .map_err(|e| JsValue::from_str(&e.to_string()))?;
+fn js_to_node(val: &EncodingNode) -> Result<Node, JsValue> {
+    let attrs_obj = val.attrs().unchecked_into::<Object>();
+    let entries = Object::entries(&attrs_obj);
+    let mut attrs = HashMap::with_capacity(entries.length() as usize);
 
-    let content_val = js_sys::Reflect::get(&val, &"content".into())?;
-    let mut content: Option<NodeContent> = None;
-    if !content_val.is_undefined() {
-        if let Some(s) = content_val.as_string() {
-            content = Some(NodeContent::String(s));
-        } else if content_val.is_instance_of::<Uint8Array>() {
-            content = Some(NodeContent::Bytes(Uint8Array::from(content_val).to_vec()));
-        } else if Array::is_array(&content_val) {
-            let js_array = Array::from(&content_val);
-            // Recursively call this same function for all children.
-            let nodes: Result<Vec<Node>, _> =
-                js_array.iter().map(convert_js_value_to_node).collect();
-            content = Some(NodeContent::Nodes(nodes?));
+    for i in 0..entries.length() {
+        let entry = entries.get(i);
+        let entry_arr = Array::from(&entry);
+        let key_js = entry_arr.get(0);
+        let value_js = entry_arr.get(1);
+        let key = key_js
+            .as_string()
+            .ok_or_else(|| JsValue::from_str("Attribute key must be a string"))?;
+
+        let value_str = if let Some(s) = value_js.as_string() {
+            s
+        } else if let Some(n) = value_js.as_f64() {
+            n.to_string()
+        } else if let Some(b) = value_js.as_bool() {
+            b.to_string()
+        } else {
+            continue;
+        };
+
+        if value_str.trim().is_empty() {
+            continue;
         }
+
+        attrs.insert(key.to_string(), value_str);
     }
 
+    let content_js = val.content();
+
+    let content = match () {
+        _ if content_js.is_undefined() => Ok(None),
+
+        _ if content_js.is_string() => {
+            Ok(Some(NodeContent::String(content_js.as_string().unwrap())))
+        }
+
+        _ if content_js.is_instance_of::<Uint8Array>() => {
+            let byte_array = Uint8Array::from(content_js);
+            let mut bytes = vec![0; byte_array.length() as usize];
+            byte_array.copy_to(&mut bytes);
+            Ok(Some(NodeContent::Bytes(bytes)))
+        }
+
+        _ if Array::is_array(&content_js) => {
+            let arr = Array::from(&content_js);
+            let nodes = (0..arr.length())
+                .map(|i| {
+                    let child_val = arr.get(i);
+                    let child_node = child_val.unchecked_into::<EncodingNode>();
+                    js_to_node(&child_node)
+                })
+                .collect::<Result<Vec<Node>, _>>()?;
+
+            Ok(Some(NodeContent::Nodes(nodes)))
+        }
+
+        _ => Err(JsValue::from_str("Invalid content type")),
+    };
+
     Ok(Node {
-        tag: js_node.tag,
-        attrs: js_node.attrs,
-        content,
+        tag: val.tag(),
+        attrs,
+        content: content?,
     })
 }
 
-#[wasm_bindgen]
-extern "C" {
-    #[wasm_bindgen(typescript_type = "INode")]
-    pub type INode;
+#[wasm_bindgen(typescript_custom_section)]
+const T_NODE: &'static str = r#"
+export interface BinaryNode {
+    tag: string;
+    attrs: { [key: string]: string };
+    content?: BinaryNode[] | string | Uint8Array;
 }
+"#;
 
 #[wasm_bindgen]
-pub struct WasmNode {
-    _owned_data: Box<[u8]>,
+pub struct InternalBinaryNode {
+    _owned_data: Arc<Box<[u8]>>,
     node_ref: Box<NodeRef<'static>>,
+    #[wasm_bindgen(skip)]
+    cached_attrs: RefCell<Option<Attrs>>,
+    #[wasm_bindgen(skip)]
+    cached_content: RefCell<Option<Content>>,
 }
 
-impl WasmNode {
+impl InternalBinaryNode {
     fn node_ref(&self) -> &NodeRef<'static> {
         &self.node_ref
     }
 }
 
 #[wasm_bindgen]
-impl WasmNode {
+impl InternalBinaryNode {
     #[wasm_bindgen(getter)]
     pub fn tag(&self) -> String {
         self.node_ref().tag.to_string()
     }
 
-    #[wasm_bindgen(js_name = getAttribute)]
-    pub fn get_attribute(&self, key: &str) -> Option<String> {
-        let mut parser = self.node_ref().attr_parser();
-        parser.optional_string(key).map(|s| s.to_string())
+    #[wasm_bindgen(getter)]
+    pub fn attrs(&self) -> Attrs {
+        let mut cached = self.cached_attrs.borrow_mut();
+        if cached.is_none() {
+            let parser = self.node_ref().attr_parser();
+
+            let obj = js_sys::Object::new();
+            for (k, v) in parser.attrs.iter() {
+                let key = JsValue::from_str(k);
+                let value = JsValue::from_str(v);
+                js_sys::Reflect::set(&obj, &key, &value).unwrap();
+            }
+
+            *cached = Some(obj.unchecked_into());
+        }
+
+        cached.as_ref().unwrap().clone().unchecked_into()
     }
 
-    #[wasm_bindgen(js_name = getAttributeAsJid)]
-    pub fn get_attribute_as_jid(&self, key: &str) -> Option<String> {
-        let mut parser = self.node_ref().attr_parser();
-        parser.optional_jid(key).map(|jid| jid.to_string())
+    #[wasm_bindgen(setter)]
+    pub fn set_attrs(&self, new_attrs: Attrs) {
+        *self.cached_attrs.borrow_mut() = Some(new_attrs);
     }
 
     #[wasm_bindgen(getter)]
-    pub fn children(&self) -> Array {
-        let children_array = Array::new();
-        if let Some(children) = self.node_ref().children() {
-            for child_ref in children {
-                if let Ok(js_child) = node_ref_to_js(child_ref.clone()) {
-                    children_array.push(&js_child);
+    pub fn content(&self) -> Option<Content> {
+        let mut cached = self.cached_content.borrow_mut();
+        if cached.is_none() {
+            match self.node_ref().content.as_deref() {
+                Some(NodeContentRef::Bytes(bytes)) => {
+                    let u8arr = Uint8Array::from(bytes.as_ref());
+                    *cached = Some(u8arr.unchecked_into());
                 }
+                Some(NodeContentRef::String(s)) => {
+                    *cached = Some(JsValue::from_str(s).unchecked_into());
+                }
+                Some(NodeContentRef::Nodes(nodes)) => {
+                    let arr = Array::new_with_length(nodes.len() as u32);
+                    for (i, node_ref) in nodes.iter().enumerate() {
+                        let child = InternalBinaryNode {
+                            _owned_data: Arc::clone(&self._owned_data),
+                            node_ref: Box::new(node_ref.clone()),
+                            cached_attrs: RefCell::new(None),
+                            cached_content: RefCell::new(None),
+                        };
+                        arr.set(i as u32, child.into());
+                    }
+                    *cached = Some(arr.unchecked_into());
+                }
+                None => *cached = Some(JsValue::undefined().unchecked_into()),
             }
         }
-        children_array
+        cached
+            .as_ref()
+            .map(|v| v.clone().unchecked_into::<Content>())
     }
 
-    #[wasm_bindgen(getter)]
-    pub fn content(&self) -> JsValue {
-        match self.node_ref().content.as_deref() {
-            Some(NodeContentRef::Bytes(bytes)) => Uint8Array::from(bytes.as_ref()).into(),
-            Some(NodeContentRef::String(s)) => Uint8Array::from(s.as_bytes()).into(),
-            _ => JsValue::UNDEFINED,
-        }
+    #[wasm_bindgen(setter)]
+    pub fn set_content(&self, new_content: Content) {
+        *self.cached_content.borrow_mut() = Some(new_content);
     }
-
-    #[wasm_bindgen(js_name = getAttributes)]
-    pub fn get_attributes(&self) -> Object {
-        let attrs_obj = Object::new();
-        let parser = self.node_ref().attr_parser();
-
-        // We iterate through the raw attributes from the zero-copy NodeRef
-        // and build a single JavaScript object. This is one efficient FFI call.
-        for (key, val) in parser.attrs.iter() {
-            let key_js: JsValue = key.as_ref().into();
-            let val_js: JsValue = val.as_ref().into();
-            js_sys::Reflect::set(&attrs_obj, &key_js, &val_js).unwrap();
-        }
-
-        attrs_obj
-    }
-}
-
-fn node_ref_to_js(node: NodeRef) -> Result<JsValue, JsValue> {
-    let obj = Object::new();
-
-    js_sys::Reflect::set(&obj, &"tag".into(), &JsValue::from_str(&node.tag))?;
-
-    let attrs_obj = Object::new();
-    for (k, v) in node.attrs.iter() {
-        js_sys::Reflect::set(&attrs_obj, &(&**k).into(), &(&**v).into())?;
-    }
-    js_sys::Reflect::set(&obj, &"attrs".into(), &attrs_obj.into())?;
-
-    if let Some(content_box) = node.content {
-        let content_val = match *content_box {
-            NodeContentRef::Nodes(ref nodes) => {
-                let js_array = Array::new_with_length(nodes.len() as u32);
-                for (i, n) in nodes.iter().enumerate() {
-                    js_array.set(i as u32, node_ref_to_js(n.clone())?);
-                }
-                js_array.into()
-            }
-            NodeContentRef::Bytes(ref b) => Uint8Array::from(b.as_ref()).into(),
-            NodeContentRef::String(ref s) => JsValue::from_str(s),
-        };
-        js_sys::Reflect::set(&obj, &"content".into(), &content_val)?;
-    }
-
-    Ok(obj.into())
-}
-
-#[wasm_bindgen(js_name = encodeNodeTo)]
-pub fn encode_node_to(node_val: JsValue, output_buffer: &mut [u8]) -> Result<usize, JsValue> {
-    let internal: Node = convert_js_value_to_node(node_val)?;
-
-    let mut cursor = std::io::Cursor::new(output_buffer);
-
-    wacore_binary::marshal::marshal_to(&internal, &mut cursor)
-        .map_err(|e| JsValue::from_str(&e.to_string()))?;
-
-    let bytes_written = cursor.position() as usize;
-
-    Ok(bytes_written)
 }
 
 #[wasm_bindgen(js_name = encodeNode)]
-pub fn encode_node(node_val: JsValue) -> Result<Vec<u8>, JsValue> {
-    let internal: Node = convert_js_value_to_node(node_val)?;
-    marshal(&internal).map_err(|e| JsValue::from_str(&e.to_string()))
+pub fn encode_node(node_val: EncodingNode) -> Result<Uint8Array, JsValue> {
+    let internal: Node = js_to_node(&node_val)?;
+    let bytes = marshal(&internal).map_err(|e| JsValue::from_str(&e.to_string()))?;
+
+    Ok(Uint8Array::from(&bytes[..]))
 }
 
 #[wasm_bindgen(js_name = decodeNode)]
-pub fn decode_node(data: &[u8]) -> Result<WasmNode, JsValue> {
+pub fn decode_node(data: Vec<u8>) -> Result<InternalBinaryNode, JsValue> {
     if data.is_empty() {
         return Err(JsValue::from_str("Input data cannot be empty"));
     }
 
-    let unpacked_cow = unpack(data).map_err(|e| JsValue::from_str(&e.to_string()))?;
+    let unpacked_cow = unpack(&data).map_err(|e| JsValue::from_str(&e.to_string()))?;
     let owned_data: Box<[u8]> = unpacked_cow.into_owned().into_boxed_slice();
 
     let static_data: &'static [u8] = unsafe { mem::transmute(owned_data.as_ref()) };
     let node_ref = unmarshal_ref(static_data).map_err(|e| JsValue::from_str(&e.to_string()))?;
 
-    Ok(WasmNode {
-        _owned_data: owned_data,
+    Ok(InternalBinaryNode {
+        _owned_data: Arc::new(owned_data),
         node_ref: Box::new(node_ref),
+        cached_attrs: RefCell::new(None),
+        cached_content: RefCell::new(None),
     })
 }
