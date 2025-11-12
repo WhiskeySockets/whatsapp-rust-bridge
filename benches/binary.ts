@@ -1,4 +1,4 @@
-import { decodeNode, encodeNode, encodeNodeTo, INode } from "../dist/binary.js";
+import { decodeNode, encodeNode, encodeNodeTo, type INode } from "../dist/binary.js";
 import { run, bench, group } from "mitata";
 
 const testNode: INode = {
