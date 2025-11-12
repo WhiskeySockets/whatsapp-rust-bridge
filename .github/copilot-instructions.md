@@ -6,7 +6,6 @@ This is a high-performance Rust-WebAssembly bridge for WhatsApp's binary protoco
 
 - **Rust WASM Core** (`src/`): Zero-copy binary encoding/decoding using `wacore-binary` crate
 - **TypeScript/JavaScript Layer** (`ts/`): WASM initialization and API exports
-- **Build Pipeline**: `wasm-pack` → Rollup bundling → TypeScript declarations
 
 ## Key Design Patterns
 
@@ -50,12 +49,6 @@ class WasmNode {
 - **Full build**: `bun run build` (WASM + TS bundle + declarations)
 - **Test**: `bun test` (runs `test/binary.test.ts`)
 - **Benchmark**: `bun run bench` (builds then runs `benches/binary.ts`)
-
-### Build Pipeline Details
-
-1. `wasm-pack build --target web --out-dir pkg --no-pack` - Build WASM
-2. `rollup -c` - Bundle TS with inlined WASM data URI
-3. `tsc --emitDeclarationOnly` - Generate `.d.ts` files
 
 ### Testing Patterns
 
@@ -121,7 +114,6 @@ let handle = WasmNode { _owned_data, node_ref };
 ## Dependencies & Tooling
 
 - Declaration generation requires specific TypeScript config (`emitDeclarationOnly: true`)
-- **Bundler**: Rollup with TypeScript + URL plugins
 - **Testing**: Bun test runner
 - **Benchmarking**: Mitata
 - **WASM**: wasm-pack + wasm-bindgen

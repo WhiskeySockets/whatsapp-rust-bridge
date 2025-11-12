@@ -1,11 +1,8 @@
 import { initSync } from "../pkg/whatsapp_rust_bridge.js";
 
-import wasmDataUri from "../pkg/whatsapp_rust_bridge_bg.wasm";
+import { base64Wasm } from "./macro.js" with { type: "macro" };
 
-// @ts-expect-error ignore missing types for data URI import
-const base64 = wasmDataUri.substring(wasmDataUri.indexOf(",") + 1);
-
-const bytes = Buffer.from(base64, "base64");
+const bytes = Buffer.from(await base64Wasm(), "base64");
 
 initSync({ module: bytes });
 
