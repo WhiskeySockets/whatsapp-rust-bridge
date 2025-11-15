@@ -8,7 +8,12 @@ import {
   generateIdentityKeyPair,
   generateRegistrationId,
   SessionRecord,
-} from "../dist/binary";
+} from "../dist/binary.js";
+
+import * as libsignalNode from "@whiskeysockets/libsignal-node";
+import { type SignalStorage } from "@whiskeysockets/libsignal-node";
+
+const libsignalKeyHelper = (libsignalNode as any).keyhelper;
 
 // Replicate FakeStorage from test/helpers/fake_storage.ts for self-contained benchmark
 class FakeStorage {
@@ -43,11 +48,11 @@ class FakeStorage {
     return this.ourRegistrationId;
   }
 
-  async isTrustedIdentity(
+  isTrustedIdentity(
     identifier: string,
     identityKey: Uint8Array,
     direction: number
-  ): Promise<boolean> {
+  ): boolean {
     const existing = this.identities.get(identifier);
     if (!existing) {
       this.identities.set(identifier, identityKey);
@@ -86,18 +91,105 @@ class FakeStorage {
   }
 }
 
+class LibsignalStore implements SignalStorage {
+  private sessions = new Map<string, any>();
+  private identities = new Map<string, Buffer>();
+  private preKeys = new Map<number, any>();
+  private signedPreKeys = new Map<number, any>();
+
+  public ourIdentityKeyPair = libsignalKeyHelper.generateIdentityKeyPair();
+  public ourRegistrationId = libsignalKeyHelper.generateRegistrationId();
+
+  async loadSession(address: string) {
+    const serialized = this.sessions.get(address);
+    return serialized
+      ? libsignalNode.SessionRecord.deserialize(serialized as any)
+      : undefined;
+  }
+
+  async storeSession(
+    address: string,
+    record: InstanceType<typeof libsignalNode.SessionRecord>
+  ) {
+    this.sessions.set(address, record.serialize() as any);
+  }
+
+  getOurIdentity() {
+    return this.ourIdentityKeyPair;
+  }
+
+  getOurRegistrationId() {
+    return this.ourRegistrationId;
+  }
+
+  isTrustedIdentity(
+    identifier: string,
+    identityKey: Uint8Array,
+    _direction?: number
+  ) {
+    const key = Buffer.from(identityKey);
+    const existing = this.identities.get(identifier);
+    if (!existing) {
+      this.identities.set(identifier, Buffer.from(key));
+      return true;
+    }
+    return existing.equals(key);
+  }
+
+  trustIdentity(identifier: string, identityKey: Uint8Array) {
+    this.identities.set(identifier, Buffer.from(identityKey));
+  }
+
+  async loadPreKey(id: number) {
+    return this.preKeys.get(id);
+  }
+
+  removePreKey(id: number) {
+    this.preKeys.delete(id);
+  }
+
+  storePreKey(id: number, keyPair: any) {
+    this.preKeys.set(id, keyPair);
+  }
+
+  getOurSignedPreKey() {
+    return this.signedPreKeys.values().next().value;
+  }
+
+  storeSignedPreKey(id: number, signedPreKey: any) {
+    this.signedPreKeys.set(id, signedPreKey);
+  }
+
+  loadSignedPreKey(id?: number) {
+    if (typeof id === "number" && this.signedPreKeys.has(id)) {
+      return this.signedPreKeys.get(id);
+    }
+    return this.signedPreKeys.values().next().value;
+  }
+}
+
 // Realistic setup: Simulate Alice encrypting messages to Bob in an established session
 // - Typical WhatsApp text message: ~50-200 bytes (e.g., "Hey, how are you? Let's meet at 5 PM.")
 // - Use a 100-byte placeholder message
 // - Setup done once outside bench; benchmark focuses on encrypt() call
 const aliceStorage = new FakeStorage();
 const bobStorage = new FakeStorage();
+const aliceLibsignalStorage = new LibsignalStore();
+const bobLibsignalStorage = new LibsignalStore();
 
-const aliceAddress = new ProtocolAddress("alice", 1);
-const bobAddress = new ProtocolAddress("bob", 1);
+const wasmBobAddress = new ProtocolAddress("bob", 1);
+const libsignalBobAddress = new libsignalNode.ProtocolAddress("bob", 1);
 
 aliceStorage.trustIdentity("bob", bobStorage.ourIdentityKeyPair.pubKey);
 bobStorage.trustIdentity("alice", aliceStorage.ourIdentityKeyPair.pubKey);
+aliceLibsignalStorage.trustIdentity(
+  "bob",
+  Buffer.from(bobLibsignalStorage.ourIdentityKeyPair.pubKey)
+);
+bobLibsignalStorage.trustIdentity(
+  "alice",
+  Buffer.from(aliceLibsignalStorage.ourIdentityKeyPair.pubKey)
+);
 
 const bobSignedPreKeyId = 1;
 const bobSignedPreKey = generateSignedPreKey(
@@ -123,10 +215,10 @@ const bobBundle = {
   },
 };
 
-const aliceSessionBuilder = new SessionBuilder(aliceStorage, bobAddress);
+const aliceSessionBuilder = new SessionBuilder(aliceStorage, wasmBobAddress);
 await aliceSessionBuilder.processPreKeyBundle(bobBundle);
 
-const aliceCipher = new SessionCipher(aliceStorage, bobAddress);
+const aliceCipher = new SessionCipher(aliceStorage, wasmBobAddress);
 
 // Realistic plaintext: A typical WhatsApp text message (~100 bytes)
 const typicalMessage = Buffer.from(
@@ -135,9 +227,54 @@ const typicalMessage = Buffer.from(
   ) // ~100 bytes
 );
 
+const bobLibSignedPreKey = libsignalKeyHelper.generateSignedPreKey(
+  bobLibsignalStorage.ourIdentityKeyPair,
+  bobSignedPreKeyId
+);
+const bobLibOneTimePreKey = libsignalKeyHelper.generatePreKey(100);
+
+bobLibsignalStorage.storeSignedPreKey(
+  bobLibSignedPreKey.keyId,
+  bobLibSignedPreKey
+);
+bobLibsignalStorage.storePreKey(
+  bobLibOneTimePreKey.keyId,
+  bobLibOneTimePreKey.keyPair
+);
+
+const bobLibsignalBundle = {
+  registrationId: bobLibsignalStorage.ourRegistrationId,
+  identityKey: bobLibsignalStorage.ourIdentityKeyPair.pubKey,
+  signedPreKey: {
+    keyId: bobLibSignedPreKey.keyId,
+    publicKey: bobLibSignedPreKey.keyPair.pubKey,
+    signature: bobLibSignedPreKey.signature,
+  },
+  preKey: {
+    keyId: bobLibOneTimePreKey.keyId,
+    publicKey: bobLibOneTimePreKey.keyPair.pubKey,
+  },
+};
+
+const aliceLibsignalBuilder = new libsignalNode.SessionBuilder(
+  aliceLibsignalStorage,
+  libsignalBobAddress
+);
+await aliceLibsignalBuilder.initOutgoing(bobLibsignalBundle);
+
+const aliceLibsignalCipher = new libsignalNode.SessionCipher(
+  aliceLibsignalStorage,
+  libsignalBobAddress
+);
+
 group("Signal Encryption (Session Established)", () => {
   bench("Encrypt typical message (Rust WASM)", async () => {
     const result = await aliceCipher.encrypt(typicalMessage);
+    do_not_optimize(result);
+  }).gc("inner");
+
+  bench("Encrypt typical message (libsignal-node)", async () => {
+    const result = await aliceLibsignalCipher.encrypt(typicalMessage);
     do_not_optimize(result);
   }).gc("inner");
 });

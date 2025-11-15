@@ -50,9 +50,9 @@ fn parse_public_key(bytes: &[u8]) -> Result<CorePublicKey, JsValue> {
     if bytes.len() == 33 && bytes[0] == 0x05 {
         CorePublicKey::deserialize(bytes).map_err(map_err)
     } else if bytes.len() == 32 {
-        let mut key_with_prefix = Vec::with_capacity(33);
-        key_with_prefix.push(0x05);
-        key_with_prefix.extend_from_slice(bytes);
+        let mut key_with_prefix = [0u8; 33];
+        key_with_prefix[0] = 0x05;
+        key_with_prefix[1..].copy_from_slice(bytes);
         CorePublicKey::deserialize(&key_with_prefix).map_err(map_err)
     } else {
         Err(JsValue::from_str(&format!(

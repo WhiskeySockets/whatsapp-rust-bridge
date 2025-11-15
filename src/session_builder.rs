@@ -6,7 +6,7 @@ use std::time::{Duration, UNIX_EPOCH};
 use wasm_bindgen::prelude::*;
 
 use crate::protocol_address::ProtocolAddress;
-use crate::session_record_api::SessionRecord;
+use crate::session_record::SessionRecord;
 use crate::storage_adapter::JsStorageAdapter;
 use wacore_libsignal::core::curve::PublicKey as CorePublicKey;
 use wacore_libsignal::protocol::{self as libsignal, PreKeyBundle, UsePQRatchet};
@@ -26,7 +26,7 @@ impl SessionRecord {
 
 #[wasm_bindgen(js_name = SessionBuilder)]
 pub struct SessionBuilder {
-    storage: JsValue,
+    storage_adapter: JsStorageAdapter,
     remote_address: ProtocolAddress,
 }
 
@@ -35,7 +35,7 @@ impl SessionBuilder {
     #[wasm_bindgen(constructor)]
     pub fn new(storage: JsValue, remote_address: &ProtocolAddress) -> Self {
         Self {
-            storage,
+            storage_adapter: JsStorageAdapter::new(storage),
             // We need to clone the inner data, as ProtocolAddress is passed by reference
             remote_address: ProtocolAddress(remote_address.0.clone()),
         }
@@ -44,10 +44,6 @@ impl SessionBuilder {
     #[wasm_bindgen(js_name = processPreKeyBundle)]
     pub async fn process_prekey_bundle(&mut self, bundle_val: JsValue) -> Result<(), JsValue> {
         console_error_panic_hook::set_once();
-
-        let storage_adapter = JsStorageAdapter {
-            js_storage: self.storage.clone(),
-        };
 
         let js_bundle: JsPreKeyBundle = serde_wasm_bindgen::from_value(bundle_val)?;
 
@@ -75,8 +71,8 @@ impl SessionBuilder {
         )
         .map_err(|e| e.to_string())?;
 
-        let mut session_store = storage_adapter.clone();
-        let mut identity_store = storage_adapter.clone();
+        let mut session_store = self.storage_adapter.clone();
+        let mut identity_store = session_store.clone();
 
         let now_millis = Date::now();
         let now_sys_time = UNIX_EPOCH + Duration::from_millis(now_millis as u64);

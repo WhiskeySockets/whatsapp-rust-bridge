@@ -23,9 +23,7 @@ impl SessionCipher {
     #[wasm_bindgen(constructor)]
     pub fn new(storage: JsValue, remote_address: &ProtocolAddress) -> Self {
         Self {
-            storage_adapter: JsStorageAdapter {
-                js_storage: storage,
-            },
+            storage_adapter: JsStorageAdapter::new(storage),
             remote_address: ProtocolAddress(remote_address.0.clone()),
         }
     }
@@ -34,15 +32,11 @@ impl SessionCipher {
         #[cfg(debug_assertions)]
         console_error_panic_hook::set_once();
 
-        let storage_adapter = JsStorageAdapter {
-            js_storage: self.storage_adapter.js_storage.clone(),
-        };
-
         let now_millis = Date::now();
         let now_sys_time = UNIX_EPOCH + Duration::from_millis(now_millis as u64);
 
-        let mut session_store = storage_adapter.clone();
-        let mut identity_store = storage_adapter.clone();
+        let mut session_store = self.storage_adapter.clone();
+        let mut identity_store = session_store.clone();
 
         let ciphertext_message = libsignal::message_encrypt(
             plaintext,
@@ -75,14 +69,10 @@ impl SessionCipher {
         let prekey_message =
             libsignal::PreKeySignalMessage::try_from(ciphertext).map_err(|e| e.to_string())?;
 
-        let storage_adapter = JsStorageAdapter {
-            js_storage: self.storage_adapter.js_storage.clone(),
-        };
-
-        let mut session_store = storage_adapter.clone();
-        let mut identity_store = storage_adapter.clone();
-        let mut prekey_store = storage_adapter.clone();
-        let signed_prekey_store = storage_adapter;
+        let mut session_store = self.storage_adapter.clone();
+        let mut identity_store = session_store.clone();
+        let mut prekey_store = session_store.clone();
+        let signed_prekey_store = session_store.clone();
 
         let plaintext = libsignal::message_decrypt_prekey(
             &prekey_message,
@@ -108,15 +98,11 @@ impl SessionCipher {
         #[cfg(debug_assertions)]
         console_error_panic_hook::set_once();
 
-        let storage_adapter = JsStorageAdapter {
-            js_storage: self.storage_adapter.js_storage.clone(),
-        };
-
         let signal_message =
             libsignal::SignalMessage::try_from(ciphertext).map_err(|e| e.to_string())?;
 
-        let mut session_store = storage_adapter.clone();
-        let mut identity_store = storage_adapter.clone();
+        let mut session_store = self.storage_adapter.clone();
+        let mut identity_store = session_store.clone();
 
         let plaintext = libsignal::message_decrypt_signal(
             &signal_message,

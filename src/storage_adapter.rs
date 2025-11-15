@@ -1,5 +1,8 @@
 use async_trait::async_trait;
 use js_sys::{Promise, Uint8Array};
+use std::cell::RefCell;
+use std::collections::HashMap;
+use std::rc::Rc;
 use wasm_bindgen::prelude::*;
 use wasm_bindgen_futures::JsFuture;
 
@@ -51,6 +54,20 @@ extern "C" {
 #[derive(Clone)]
 pub struct JsStorageAdapter {
     pub js_storage: JsValue,
+    cached_identity_key_pair: Rc<RefCell<Option<IdentityKeyPair>>>,
+    cached_registration_id: Rc<RefCell<Option<u32>>>,
+    cached_sessions: Rc<RefCell<HashMap<String, CoreSessionRecord>>>,
+}
+
+impl JsStorageAdapter {
+    pub fn new(js_storage: JsValue) -> Self {
+        Self {
+            js_storage,
+            cached_identity_key_pair: Rc::new(RefCell::new(None)),
+            cached_registration_id: Rc::new(RefCell::new(None)),
+            cached_sessions: Rc::new(RefCell::new(HashMap::new())),
+        }
+    }
 }
 
 fn js_to_signal_error(e: JsValue) -> libsignal::SignalProtocolError {
@@ -76,11 +93,24 @@ impl SessionStore for JsStorageAdapter {
         address: &libsignal::ProtocolAddress,
     ) -> SignalResult<Option<CoreSessionRecord>> {
         console_error_panic_hook::set_once();
+
+        let address_str = address.to_string();
+
+        if let Some(record) = self.cached_sessions.borrow().get(&address_str) {
+            return Ok(Some(record.clone()));
+        }
+
         let promise =
             load_session(&self.js_storage, address.to_string()).map_err(js_to_signal_error)?;
         let bytes = js_promise_to_bytes!(promise)?;
         match bytes {
-            Some(data) => Ok(Some(CoreSessionRecord::deserialize(&data)?)),
+            Some(data) => {
+                let record = CoreSessionRecord::deserialize(&data)?;
+                self.cached_sessions
+                    .borrow_mut()
+                    .insert(address_str, record.clone());
+                Ok(Some(record))
+            }
             None => Ok(None),
         }
     }
@@ -91,6 +121,10 @@ impl SessionStore for JsStorageAdapter {
         record: &CoreSessionRecord,
     ) -> SignalResult<()> {
         console_error_panic_hook::set_once();
+        let address_str = address.to_string();
+        self.cached_sessions
+            .borrow_mut()
+            .insert(address_str.clone(), record.clone());
         let bytes = record.serialize()?;
         let promise = store_session(&self.js_storage, address.to_string(), &bytes)
             .map_err(js_to_signal_error)?;
@@ -102,9 +136,13 @@ impl SessionStore for JsStorageAdapter {
 #[async_trait(?Send)]
 impl IdentityKeyStore for JsStorageAdapter {
     async fn get_identity_key_pair(&self) -> SignalResult<IdentityKeyPair> {
+        if let Some(pair) = *self.cached_identity_key_pair.borrow() {
+            return Ok(pair);
+        }
+
         let promise = get_identity_key_pair(&self.js_storage).map_err(js_to_signal_error)?;
         let bytes = js_promise_to_bytes!(promise)?;
-        IdentityKeyPair::try_from(
+        let key_pair = IdentityKeyPair::try_from(
             bytes
                 .ok_or_else(|| {
                     SignalProtocolError::InvalidState(
@@ -113,17 +151,31 @@ impl IdentityKeyStore for JsStorageAdapter {
                     )
                 })?
                 .as_slice(),
-        )
+        )?;
+
+        self.cached_identity_key_pair.borrow_mut().replace(key_pair);
+
+        Ok(key_pair)
     }
     async fn get_local_registration_id(&self) -> SignalResult<u32> {
+        if let Some(id) = *self.cached_registration_id.borrow() {
+            return Ok(id);
+        }
+
         let promise = get_local_registration_id(&self.js_storage).map_err(js_to_signal_error)?;
         let result = JsFuture::from(promise).await.map_err(js_to_signal_error)?;
-        Ok(result.as_f64().ok_or_else(|| {
+        let registration = result.as_f64().ok_or_else(|| {
             SignalProtocolError::InvalidState(
                 "get_local_registration_id",
                 "JS did not return a number".into(),
             )
-        })? as u32)
+        })? as u32;
+
+        self.cached_registration_id
+            .borrow_mut()
+            .replace(registration);
+
+        Ok(registration)
     }
     async fn is_trusted_identity(
         &self,
