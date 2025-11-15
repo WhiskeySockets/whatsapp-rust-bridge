@@ -95,6 +95,11 @@ impl SessionBuilder {
 
         Ok(())
     }
+
+    #[wasm_bindgen(js_name = initOutgoing)]
+    pub async fn init_outgoing(&mut self, bundle_val: JsValue) -> Result<(), JsValue> {
+        self.process_prekey_bundle(bundle_val).await
+    }
 }
 
 #[derive(Deserialize)]

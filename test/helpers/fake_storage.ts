@@ -49,7 +49,8 @@ export class FakeStorage {
   private sessions = new Map<string, Uint8Array>();
   private identities = new Map<string, Uint8Array>();
   private preKeys = new Map<number, KeyPairType>();
-  private signedPreKeys = new Map<number, Uint8Array>(); // Store as serialized bytes
+  private signedPreKeys = new Map<number, SignedPreKeyType>(); // Store as serialized bytes
+  private signedPreKey: SignedPreKeyType | undefined;
 
   public ourIdentityKeyPair: KeyPairType;
   public ourRegistrationId: number;
@@ -101,17 +102,19 @@ export class FakeStorage {
     this.preKeys.set(id, keyPair);
   }
 
-  // --- SignedPreKeyStore ---
-  async loadSignedPreKey(id: number): Promise<SessionRecord | undefined> {
-    // The Rust trait expects a SignedPreKeyRecord, but the JS side deals with a KeyPair-like object.
-    // We simulate libsignal-node's behavior of storing the serialized record.
-    const serialized = this.signedPreKeys.get(id);
-    return serialized ? SessionRecord.deserialize(serialized) : undefined;
+  async getOurSignedPreKey(): Promise<SignedPreKeyType | undefined> {
+    return this.signedPreKeys.values().next().value;
   }
+
   storeSignedPreKey(id: number, signedPreKey: SignedPreKeyType): void {
-    const timestamp = BigInt(Date.now());
-    const serialized = serializeSignedPreKey(signedPreKey, timestamp);
-    this.signedPreKeys.set(id, serialized);
+    // Add a timestamp because our adapter's serialization logic will need it.
+    (signedPreKey as any).timestamp = Date.now();
+    this.signedPreKey = signedPreKey;
+  }
+
+  // --- SignedPreKeyStore ---
+  async loadSignedPreKey(): Promise<SignedPreKeyType | undefined> {
+    return this.signedPreKey;
   }
 
   // --- Test Helpers ---

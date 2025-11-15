@@ -1,4 +1,5 @@
 use js_sys::Uint8Array;
+use wacore_libsignal::protocol::SessionRecord as CoreSessionRecord;
 use wasm_bindgen::prelude::*;
 
 #[wasm_bindgen(js_name = SessionRecord)]
@@ -22,5 +23,13 @@ impl SessionRecord {
 
     pub fn serialize(&self) -> Uint8Array {
         Uint8Array::from(self.serialized_data.as_slice())
+    }
+
+    #[wasm_bindgen(js_name = haveOpenSession)]
+    pub fn have_open_session(&self) -> bool {
+        match CoreSessionRecord::deserialize(&self.serialized_data) {
+            Ok(record) => record.session_state().is_some(),
+            Err(_) => false,
+        }
     }
 }

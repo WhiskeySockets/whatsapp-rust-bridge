@@ -26,9 +26,10 @@ describe("SessionCipher end-to-end", () => {
 
     // === 2. BOB'S PRE-KEY BUNDLE ===
     // Bob generates his keys and "uploads" them to the server (i.e., we store them in his storage).
+    const bobSignedPreKeyId = 1;
     const bobSignedPreKey = generateSignedPreKey(
       bobStorage.ourIdentityKeyPair,
-      1
+      bobSignedPreKeyId
     );
     const bobOneTimePreKey = generatePreKey(100);
 
@@ -90,5 +91,63 @@ describe("SessionCipher end-to-end", () => {
     expect(Buffer.from(decryptedByAlice)).toEqual(plaintext2);
 
     console.log("✅ Full session flow test passed!");
+  });
+
+  it("should treat Baileys-style plain session objects as missing sessions", async () => {
+    const aliceStorage = new FakeStorage();
+    const bobStorage = new FakeStorage();
+
+    const aliceAddress = new ProtocolAddress("alice", 1);
+    const bobAddress = new ProtocolAddress("bob", 1);
+
+    aliceStorage.trustIdentity("bob", bobStorage.ourIdentityKeyPair.pubKey);
+    bobStorage.trustIdentity("alice", aliceStorage.ourIdentityKeyPair.pubKey);
+
+    const bobSignedPreKeyId = 7;
+    const bobSignedPreKey = generateSignedPreKey(
+      bobStorage.ourIdentityKeyPair,
+      bobSignedPreKeyId
+    );
+    const bobOneTimePreKey = generatePreKey(701);
+
+    bobStorage.storeSignedPreKey(bobSignedPreKey.keyId, bobSignedPreKey);
+    bobStorage.storePreKey(bobOneTimePreKey.keyId, bobOneTimePreKey.keyPair);
+
+    const bobBundle = {
+      registrationId: bobStorage.ourRegistrationId,
+      identityKey: bobStorage.ourIdentityKeyPair.pubKey,
+      signedPreKey: {
+        keyId: bobSignedPreKey.keyId,
+        publicKey: bobSignedPreKey.keyPair.pubKey,
+        signature: bobSignedPreKey.signature,
+      },
+      preKey: {
+        keyId: bobOneTimePreKey.keyId,
+        publicKey: bobOneTimePreKey.keyPair.pubKey,
+      },
+    };
+
+    const aliceSessionBuilder = new SessionBuilder(aliceStorage, bobAddress);
+    await aliceSessionBuilder.processPreKeyBundle(bobBundle);
+
+    const aliceCipher = new SessionCipher(aliceStorage, bobAddress);
+    const plaintext = Buffer.from("Trigger broken loadSession path");
+    const encryptedMessageForBob = await aliceCipher.encrypt(plaintext);
+
+    // Simulate a Baileys-style storage adapter that returns a raw object for a fresh session.
+    const originalLoadSession = bobStorage.loadSession.bind(bobStorage);
+    bobStorage.loadSession = (async (address: string) => {
+      const existing = await originalLoadSession(address);
+      if (existing) {
+        return existing;
+      }
+      return { _sessions: {}, version: "v1" } as any;
+    }) as any;
+
+    const bobCipher = new SessionCipher(bobStorage, aliceAddress);
+
+    await expect(
+      bobCipher.decryptPreKeyWhisperMessage(encryptedMessageForBob.body)
+    ).rejects.toThrow(/_sessions|protobuf encoding was invalid/);
   });
 });
