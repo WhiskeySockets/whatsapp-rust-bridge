@@ -60,7 +60,8 @@ export async function loadSession(storage, address) {
 
 export async function storeSession(storage, address, sessionData) {
   try {
-    const recordInstance = SessionRecord.deserialize(sessionData);
+    const sessionDataCopy = new Uint8Array(sessionData);
+    const recordInstance = SessionRecord.deserialize(sessionDataCopy);
     await storage.storeSession(address, recordInstance);
   } catch (e) {
     console.error("Error in storage.storeSession:", e);
