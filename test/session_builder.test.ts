@@ -62,7 +62,7 @@ class FakeStorage {
 }
 
 describe("SessionBuilder", () => {
-  it.only("should successfully process a pre-key bundle and create a new session", async () => {
+  it("should successfully process a pre-key bundle and create a new session", async () => {
     const aliceStorage = new FakeStorage();
     const bobAddress = new ProtocolAddress("bob", 1);
     const aliceSessionBuilder = new SessionBuilder(aliceStorage, bobAddress);
@@ -130,6 +130,6 @@ describe("SessionBuilder", () => {
 
     await expect(
       aliceSessionBuilder.processPreKeyBundle(bobBundle)
-    ).rejects.toThrow("Untrusted identity");
+    ).rejects.toThrow("untrusted identity for address bob.1");
   });
 });

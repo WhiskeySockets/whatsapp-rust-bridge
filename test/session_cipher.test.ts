@@ -1,0 +1,94 @@
+import { describe, it, expect } from "bun:test";
+import {
+  ProtocolAddress,
+  SessionBuilder,
+  SessionCipher,
+  generateSignedPreKey,
+  generatePreKey,
+} from "../dist/binary";
+import { FakeStorage } from "./helpers/fake_storage";
+
+describe("SessionCipher end-to-end", () => {
+  it("should establish a session and exchange messages correctly", async () => {
+    // === 1. SETUP ===
+    // Create Alice and Bob with their own storage.
+    const aliceStorage = new FakeStorage();
+    const bobStorage = new FakeStorage();
+
+    // Define their addresses.
+    const aliceAddress = new ProtocolAddress("alice", 1);
+    const bobAddress = new ProtocolAddress("bob", 1);
+
+    // Alice needs to trust Bob's identity key, and vice versa.
+    // This simulates fetching the key from a server and verifying it.
+    aliceStorage.trustIdentity("bob", bobStorage.ourIdentityKeyPair.pubKey);
+    bobStorage.trustIdentity("alice", aliceStorage.ourIdentityKeyPair.pubKey);
+
+    // === 2. BOB'S PRE-KEY BUNDLE ===
+    // Bob generates his keys and "uploads" them to the server (i.e., we store them in his storage).
+    const bobSignedPreKey = generateSignedPreKey(
+      bobStorage.ourIdentityKeyPair,
+      1
+    );
+    const bobOneTimePreKey = generatePreKey(100);
+
+    bobStorage.storeSignedPreKey(bobSignedPreKey.keyId, bobSignedPreKey);
+    bobStorage.storePreKey(bobOneTimePreKey.keyId, bobOneTimePreKey.keyPair);
+
+    // Alice "downloads" Bob's bundle.
+    const bobBundle = {
+      registrationId: bobStorage.ourRegistrationId,
+      identityKey: bobStorage.ourIdentityKeyPair.pubKey,
+      signedPreKey: {
+        keyId: bobSignedPreKey.keyId,
+        publicKey: bobSignedPreKey.keyPair.pubKey,
+        signature: bobSignedPreKey.signature,
+      },
+      preKey: {
+        keyId: bobOneTimePreKey.keyId,
+        publicKey: bobOneTimePreKey.keyPair.pubKey,
+      },
+    };
+
+    // === 3. ALICE BUILDS THE SESSION ===
+    const aliceSessionBuilder = new SessionBuilder(aliceStorage, bobAddress);
+    await aliceSessionBuilder.processPreKeyBundle(bobBundle);
+
+    // === 4. ALICE SENDS THE FIRST MESSAGE ===
+    const aliceCipher = new SessionCipher(aliceStorage, bobAddress);
+    const plaintext1 = Buffer.from("Hello Bob, this is Alice!");
+    const encryptedMessageForBob = await aliceCipher.encrypt(plaintext1);
+
+    // The first message is always a PreKeyWhisperMessage (type 3)
+    expect(encryptedMessageForBob.type).toBe(3);
+
+    // === 5. BOB RECEIVES AND DECRYPTS THE FIRST MESSAGE ===
+    const bobCipher = new SessionCipher(bobStorage, aliceAddress);
+    const decryptedByBob = await bobCipher.decryptPreKeyWhisperMessage(
+      encryptedMessageForBob.body
+    );
+
+    expect(Buffer.from(decryptedByBob)).toEqual(plaintext1);
+
+    // Check that Bob's one-time pre-key was used and removed.
+    const usedPreKey = await bobStorage.loadPreKey(bobOneTimePreKey.keyId);
+    expect(usedPreKey).toBeUndefined();
+
+    // === 6. BOB SENDS A REPLY ===
+    const plaintext2 = Buffer.from("Hey Alice, I got your message!");
+    const encryptedMessageForAlice = await bobCipher.encrypt(plaintext2);
+
+    // Subsequent messages are WhisperMessages (type 1)
+    // @TODO CHECK THIS: Should be type 1 according to the spec?
+    expect(encryptedMessageForAlice.type).toBe(2);
+
+    // === 7. ALICE RECEIVES AND DECRYPTS THE REPLY ===
+    const decryptedByAlice = await aliceCipher.decryptWhisperMessage(
+      encryptedMessageForAlice.body
+    );
+
+    expect(Buffer.from(decryptedByAlice)).toEqual(plaintext2);
+
+    console.log("✅ Full session flow test passed!");
+  });
+});

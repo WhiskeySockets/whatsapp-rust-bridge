@@ -36,10 +36,12 @@ describe("ProtocolAddress", () => {
     expect(() => ProtocolAddress.from("alice.device")).toThrow(
       "Invalid address encoding"
     );
+    // @ts-expect-error Testing invalid input
     expect(() => new ProtocolAddress(5, 1)).toThrow("id required for addr");
     expect(() => new ProtocolAddress("al.ice", 1)).toThrow(
       "encoded addr detected"
     );
+    // @ts-expect-error Testing invalid input
     expect(() => new ProtocolAddress("alice", "1")).toThrow(
       "number required for deviceId"
     );

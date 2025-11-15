@@ -5,6 +5,20 @@ use serde::Deserialize;
 use wacore_libsignal::core::curve::{KeyPair as CoreKeyPair, PrivateKey as CorePrivateKey};
 use wasm_bindgen::prelude::*;
 
+#[wasm_bindgen(typescript_custom_section)]
+const T_NODE: &'static str = r#"
+export interface KeyPairType {
+    pubKey: Uint8Array;
+    privKey: Uint8Array;
+}
+
+export interface SignedPreKeyType {
+    keyId: number;
+    keyPair: KeyPairType;
+    signature: Uint8Array;
+}
+"#;
+
 #[wasm_bindgen]
 extern "C" {
     #[wasm_bindgen(typescript_type = "{ pubKey: Uint8Array; privKey: Uint8Array }")]
