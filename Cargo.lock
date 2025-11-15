@@ -153,6 +153,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "console_error_panic_hook"
+version = "0.1.7"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "a06aeb73f470f66dcdbf7223caeebb85984942f22f1adb2a088cf9668146bbbc"
+dependencies = [
+ "cfg-if",
+ "wasm-bindgen",
+]
+
+[[package]]
 name = "cpufeatures"
 version = "0.2.17"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -767,6 +777,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "serde-wasm-bindgen"
+version = "0.6.5"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "8302e169f0eddcc139c70f139d19d6467353af16f9fce27e8c30158036a1e16b"
+dependencies = [
+ "js-sys",
+ "serde",
+ "wasm-bindgen",
+]
+
+[[package]]
 name = "serde_core"
 version = "1.0.228"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -925,7 +946,7 @@ checksum = "0b928f33d975fc6ad9f86c8f283853ad26bdd5b10b7f1542aa2fa15e2289105a"
 [[package]]
 name = "wacore-binary"
 version = "0.1.0"
-source = "git+https://github.com/jlucaso1/whatsapp-rust.git#aab0352088db2199cc9ddf45999dc653947e7436"
+source = "git+https://github.com/jlucaso1/whatsapp-rust.git#0cee35d9b60775efc89dde79149bf7e0f9435224"
 dependencies = [
  "flate2",
  "phf",
@@ -937,7 +958,7 @@ dependencies = [
 [[package]]
 name = "wacore-libsignal"
 version = "0.1.0"
-source = "git+https://github.com/jlucaso1/whatsapp-rust.git?branch=main#aab0352088db2199cc9ddf45999dc653947e7436"
+source = "git+https://github.com/jlucaso1/whatsapp-rust.git?branch=main#0cee35d9b60775efc89dde79149bf7e0f9435224"
 dependencies = [
  "aes",
  "aes-gcm",
@@ -970,7 +991,7 @@ dependencies = [
 [[package]]
 name = "waproto"
 version = "0.1.0"
-source = "git+https://github.com/jlucaso1/whatsapp-rust.git?branch=main#aab0352088db2199cc9ddf45999dc653947e7436"
+source = "git+https://github.com/jlucaso1/whatsapp-rust.git?branch=main#0cee35d9b60775efc89dde79149bf7e0f9435224"
 dependencies = [
  "prost",
  "prost-build",
@@ -997,6 +1018,19 @@ dependencies = [
  "rustversion",
  "wasm-bindgen-macro",
  "wasm-bindgen-shared",
+]
+
+[[package]]
+name = "wasm-bindgen-futures"
+version = "0.4.55"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "551f88106c6d5e7ccc7cd9a16f312dd3b5d36ea8b4954304657d5dfba115d4a0"
+dependencies = [
+ "cfg-if",
+ "js-sys",
+ "once_cell",
+ "wasm-bindgen",
+ "web-sys",
 ]
 
 [[package]]
@@ -1032,18 +1066,33 @@ dependencies = [
 ]
 
 [[package]]
+name = "web-sys"
+version = "0.3.82"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "3a1f95c0d03a47f4ae1f7a64643a6bb97465d9b740f0fa8f90ea33915c99a9a1"
+dependencies = [
+ "js-sys",
+ "wasm-bindgen",
+]
+
+[[package]]
 name = "whatsapp-rust-bridge"
 version = "0.1.0"
 dependencies = [
+ "async-trait",
+ "console_error_panic_hook",
  "curve25519-dalek",
  "getrandom",
  "js-sys",
  "rand",
+ "serde",
+ "serde-wasm-bindgen",
  "simd-adler32",
  "uuid",
  "wacore-binary",
  "wacore-libsignal",
  "wasm-bindgen",
+ "wasm-bindgen-futures",
 ]
 
 [[package]]

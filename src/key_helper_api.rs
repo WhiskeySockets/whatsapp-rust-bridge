@@ -1,6 +1,7 @@
 use js_sys::{Object, Reflect, TypeError, Uint8Array};
 use rand::TryRngCore as _;
 use rand::rngs::OsRng;
+use serde::Deserialize;
 use wacore_libsignal::core::curve::{KeyPair as CoreKeyPair, PrivateKey as CorePrivateKey};
 use wasm_bindgen::prelude::*;
 
@@ -145,4 +146,29 @@ pub fn generate_pre_key(key_id_val: &JsValue) -> Result<PreKeyType, JsValue> {
     Reflect::set(&result_obj, &"keyPair".into(), &key_pair_obj.into())?;
 
     Ok(result_obj.unchecked_into())
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct JsKeyPair {
+    pub_key: Vec<u8>,
+    priv_key: Vec<u8>,
+}
+
+#[wasm_bindgen(js_name = _serializeIdentityKeyPair)]
+pub fn _serialize_identity_key_pair(key_pair_val: JsValue) -> Result<Uint8Array, JsValue> {
+    let js_key_pair: JsKeyPair = serde_wasm_bindgen::from_value(key_pair_val)?;
+
+    let pub_key_tag = (1 << 3) | 2;
+    let priv_key_tag = (2 << 3) | 2;
+
+    let mut buffer = Vec::new();
+    buffer.push(pub_key_tag);
+    buffer.push(js_key_pair.pub_key.len() as u8);
+    buffer.extend_from_slice(&js_key_pair.pub_key);
+    buffer.push(priv_key_tag);
+    buffer.push(js_key_pair.priv_key.len() as u8);
+    buffer.extend_from_slice(&js_key_pair.priv_key);
+
+    Ok(Uint8Array::from(buffer.as_slice()))
 }
