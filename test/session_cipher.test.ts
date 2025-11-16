@@ -148,6 +148,6 @@ describe("SessionCipher end-to-end", () => {
 
     await expect(
       bobCipher.decryptPreKeyWhisperMessage(encryptedMessageForBob.body)
-    ).rejects.toThrow(/_sessions|protobuf encoding was invalid/);
+    ).rejects.toThrow(/Uint8Array|_sessions|protobuf encoding was invalid/);
   });
 });

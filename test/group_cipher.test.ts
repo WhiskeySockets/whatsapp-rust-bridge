@@ -1,76 +1,36 @@
-// test/group_cipher.test.ts
-
 import { describe, it, expect } from "bun:test";
 import {
-  // Import all the new group-related classes
   GroupCipher,
   GroupSessionBuilder,
   SenderKeyName,
   SenderKeyRecord,
   SenderKeyDistributionMessage,
-  // Also import existing necessary classes
   ProtocolAddress,
-  generateIdentityKeyPair,
-  generateRegistrationId,
-  type KeyPairType,
 } from "../dist/binary";
+import { FakeStorage } from "./helpers/fake_storage";
 
-/**
- * A mock storage implementation that mirrors the expected JavaScript storage interface.
- * It now includes `loadSenderKey` and `storeSenderKey` for group sessions.
- */
-class FakeGroupStorage {
-  // For group sessions
-  private senderKeys = new Map<string, Uint8Array>();
-
-  // For 1-on-1 sessions (not used in these tests, but good practice)
-  private sessions = new Map<string, Uint8Array>();
-  private identities = new Map<string, Uint8Array>();
-  private preKeys = new Map<number, KeyPairType>();
-  public ourIdentityKeyPair: KeyPairType;
-  public ourRegistrationId: number;
-
-  constructor() {
-    this.ourIdentityKeyPair = generateIdentityKeyPair();
-    this.ourRegistrationId = generateRegistrationId();
-  }
-
-  // --- Group Session Methods ---
-
-  async loadSenderKey(keyId: string): Promise<Uint8Array | undefined> {
+class LoggedFakeStorage extends FakeStorage {
+  override async loadSenderKey(keyId: string): Promise<Uint8Array | undefined> {
     console.log(`[Storage] Loading sender key for: ${keyId}`);
-    return this.senderKeys.get(keyId);
+    return super.loadSenderKey(keyId);
   }
 
-  async storeSenderKey(keyId: string, record: Uint8Array): Promise<void> {
+  override async storeSenderKey(
+    keyId: string,
+    record: Uint8Array
+  ): Promise<void> {
     console.log(
       `[Storage] Storing sender key for: ${keyId} (${record.length} bytes)`
     );
-    this.senderKeys.set(keyId, record);
+    return super.storeSenderKey(keyId, record);
   }
-
-  // --- Dummy 1-on-1 Methods (for interface compliance) ---
-
-  async loadSession(address: string): Promise<any> {
-    return this.sessions.get(address);
-  }
-  async storeSession(address: string, record: Uint8Array): Promise<void> {
-    this.sessions.set(address, record);
-  }
-  async isTrustedIdentity(
-    identifier: string,
-    identityKey: Uint8Array
-  ): Promise<boolean> {
-    return true; // Assume all identities are trusted for this test
-  }
-  // ... other methods if your full interface requires them
 }
 
 describe("Group Encryption end-to-end", () => {
   it("should establish a group session, exchange messages, and handle ratcheting", async () => {
     // === 1. SETUP ===
-    const aliceStorage = new FakeGroupStorage();
-    const bobStorage = new FakeGroupStorage();
+    const aliceStorage = new LoggedFakeStorage();
+    const bobStorage = new LoggedFakeStorage();
 
     const groupId = "my-awesome-group@g.us";
     const aliceAddress = new ProtocolAddress("alice", 1);
@@ -155,8 +115,8 @@ describe("Group Encryption end-to-end", () => {
 
   it("should fail to decrypt a message if the session has not been established", async () => {
     // Setup: Alice creates a session and encrypts, but Bob never processes it.
-    const aliceStorage = new FakeGroupStorage();
-    const bobStorage = new FakeGroupStorage(); // Bob's storage is empty
+    const aliceStorage = new LoggedFakeStorage();
+    const bobStorage = new LoggedFakeStorage();
 
     const groupId = "unestablished-group@g.us";
     const aliceAddress = new ProtocolAddress("alice", 1);
@@ -166,16 +126,12 @@ describe("Group Encryption end-to-end", () => {
     const aliceSenderKeyName = new SenderKeyName(groupId, aliceAddress);
     await aliceBuilder.create(aliceSenderKeyName);
 
-    const aliceCipher = new GroupCipher(
-      aliceStorage as any,
-      groupId,
-      aliceAddress
-    );
+    const aliceCipher = new GroupCipher(aliceStorage, groupId, aliceAddress);
     const plaintext = Buffer.from("This message should fail to decrypt");
     const ciphertext = await aliceCipher.encrypt(plaintext);
 
     // Bob attempts to decrypt without having processed the distribution message
-    const bobCipher = new GroupCipher(bobStorage as any, groupId, aliceAddress);
+    const bobCipher = new GroupCipher(bobStorage, groupId, aliceAddress);
 
     // The decrypt call should reject because there's no sender key record for Alice
     await expect(bobCipher.decrypt(ciphertext)).rejects.toThrow(); // Bun's toReject() is simple and effective

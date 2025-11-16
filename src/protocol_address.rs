@@ -1,6 +1,5 @@
 use js_sys::JsString;
 use js_sys::Number;
-use js_sys::Reflect;
 use std::fmt;
 use wacore_libsignal::core::DeviceId;
 use wacore_libsignal::core::ProtocolAddress as CoreProtocolAddress;
@@ -39,7 +38,7 @@ impl ProtocolAddress {
     }
 
     #[wasm_bindgen(js_name = from)]
-    pub fn from_string(encoded: JsValue) -> Result<ProtocolAddress, JsValue> {
+    pub fn from_string(encoded: JsString) -> Result<ProtocolAddress, JsValue> {
         let encoded_str = encoded
             .as_string()
             .ok_or_else(|| JsValue::from_str("Invalid address encoding"))?;
@@ -74,37 +73,7 @@ impl ProtocolAddress {
         self.0.to_string()
     }
 
-    pub fn is(&self, other: &JsValue) -> bool {
-        if other.is_null() || other.is_undefined() || !other.is_object() {
-            return false;
-        }
-
-        let has_wasm_ptr = Reflect::get(other, &JsValue::from_str("__wbg_ptr"))
-            .ok()
-            .and_then(|ptr| ptr.as_f64())
-            .is_some();
-        if !has_wasm_ptr {
-            return false;
-        }
-
-        let other_id = match Reflect::get(other, &JsValue::from_str("id")) {
-            Ok(val) => match val.as_string() {
-                Some(s) => s,
-                None => return false,
-            },
-            Err(_) => return false,
-        };
-
-        let device_id_val = match Reflect::get(other, &JsValue::from_str("deviceId")) {
-            Ok(val) => val,
-            Err(_) => return false,
-        };
-
-        let other_device_id = match device_id_val.as_f64() {
-            Some(num) => num as u32,
-            None => return false,
-        };
-
-        self.0.name() == other_id && self.device_id() == other_device_id
+    pub fn is(&self, other: &ProtocolAddress) -> bool {
+        self.0.name() == other.0.name() && self.device_id() == other.device_id()
     }
 }

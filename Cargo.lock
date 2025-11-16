@@ -788,6 +788,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "serde_bytes"
+version = "0.11.19"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "a5d440709e79d88e51ac01c4b72fc6cb7314017bb7da9eeff678aa94c10e3ea8"
+dependencies = [
+ "serde",
+ "serde_core",
+]
+
+[[package]]
 name = "serde_core"
 version = "1.0.228"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -946,7 +956,7 @@ checksum = "0b928f33d975fc6ad9f86c8f283853ad26bdd5b10b7f1542aa2fa15e2289105a"
 [[package]]
 name = "wacore-binary"
 version = "0.1.0"
-source = "git+https://github.com/jlucaso1/whatsapp-rust.git#0cee35d9b60775efc89dde79149bf7e0f9435224"
+source = "git+https://github.com/jlucaso1/whatsapp-rust.git#590adc8dee52e135a0b5be041db6be3d4b621d6b"
 dependencies = [
  "flate2",
  "phf",
@@ -958,7 +968,7 @@ dependencies = [
 [[package]]
 name = "wacore-libsignal"
 version = "0.1.0"
-source = "git+https://github.com/jlucaso1/whatsapp-rust.git?branch=main#0cee35d9b60775efc89dde79149bf7e0f9435224"
+source = "git+https://github.com/jlucaso1/whatsapp-rust.git?branch=main#590adc8dee52e135a0b5be041db6be3d4b621d6b"
 dependencies = [
  "aes",
  "aes-gcm",
@@ -991,7 +1001,7 @@ dependencies = [
 [[package]]
 name = "waproto"
 version = "0.1.0"
-source = "git+https://github.com/jlucaso1/whatsapp-rust.git?branch=main#0cee35d9b60775efc89dde79149bf7e0f9435224"
+source = "git+https://github.com/jlucaso1/whatsapp-rust.git?branch=main#590adc8dee52e135a0b5be041db6be3d4b621d6b"
 dependencies = [
  "prost",
  "prost-build",
@@ -1087,6 +1097,7 @@ dependencies = [
  "rand",
  "serde",
  "serde-wasm-bindgen",
+ "serde_bytes",
  "simd-adler32",
  "uuid",
  "wacore-binary",

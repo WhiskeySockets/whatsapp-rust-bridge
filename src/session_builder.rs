@@ -3,11 +3,12 @@ use rand::TryRngCore;
 use rand::rngs::OsRng;
 use serde::Deserialize;
 use std::time::{Duration, UNIX_EPOCH};
+use wasm_bindgen::JsValue;
 use wasm_bindgen::prelude::*;
 
 use crate::protocol_address::ProtocolAddress;
 use crate::session_record::SessionRecord;
-use crate::storage_adapter::JsStorageAdapter;
+use crate::storage_adapter::{JsStorageAdapter, SignalStorage};
 use wacore_libsignal::core::curve::PublicKey as CorePublicKey;
 use wacore_libsignal::protocol::{self as libsignal, PreKeyBundle, UsePQRatchet};
 
@@ -24,6 +25,31 @@ impl SessionRecord {
     }
 }
 
+#[wasm_bindgen(typescript_custom_section)]
+const PREKEY_BUNDLE_TS: &str = r#"
+export interface PreKeyPublicKey {
+    keyId: number;
+    publicKey: Uint8Array;
+}
+
+export interface SignedPreKeyPublicKey extends PreKeyPublicKey {
+    signature: Uint8Array;
+}
+
+export interface PreKeyBundleInput {
+    registrationId: number;
+    identityKey: Uint8Array;
+    preKey?: PreKeyPublicKey;
+    signedPreKey: SignedPreKeyPublicKey;
+}
+"#;
+
+#[wasm_bindgen]
+extern "C" {
+    #[wasm_bindgen(typescript_type = "PreKeyBundleInput")]
+    pub type PreKeyBundleInput;
+}
+
 #[wasm_bindgen(js_name = SessionBuilder)]
 pub struct SessionBuilder {
     storage_adapter: JsStorageAdapter,
@@ -33,19 +59,23 @@ pub struct SessionBuilder {
 #[wasm_bindgen(js_class = SessionBuilder)]
 impl SessionBuilder {
     #[wasm_bindgen(constructor)]
-    pub fn new(storage: JsValue, remote_address: &ProtocolAddress) -> Self {
+    pub fn new(storage: SignalStorage, remote_address: &ProtocolAddress) -> Self {
         Self {
-            storage_adapter: JsStorageAdapter::new(storage),
+            storage_adapter: JsStorageAdapter::new(storage.into()),
             // We need to clone the inner data, as ProtocolAddress is passed by reference
             remote_address: ProtocolAddress(remote_address.0.clone()),
         }
     }
 
     #[wasm_bindgen(js_name = processPreKeyBundle)]
-    pub async fn process_prekey_bundle(&mut self, bundle_val: JsValue) -> Result<(), JsValue> {
+    pub async fn process_prekey_bundle(
+        &mut self,
+        bundle_val: PreKeyBundleInput,
+    ) -> Result<(), JsValue> {
         console_error_panic_hook::set_once();
 
-        let js_bundle: JsPreKeyBundle = serde_wasm_bindgen::from_value(bundle_val)?;
+        let js_value = JsValue::from(bundle_val);
+        let js_bundle: JsPreKeyBundle = serde_wasm_bindgen::from_value(js_value)?;
 
         let pre_key = match js_bundle.pre_key {
             Some(pk) => {
@@ -93,7 +123,7 @@ impl SessionBuilder {
     }
 
     #[wasm_bindgen(js_name = initOutgoing)]
-    pub async fn init_outgoing(&mut self, bundle_val: JsValue) -> Result<(), JsValue> {
+    pub async fn init_outgoing(&mut self, bundle_val: PreKeyBundleInput) -> Result<(), JsValue> {
         self.process_prekey_bundle(bundle_val).await
     }
 }

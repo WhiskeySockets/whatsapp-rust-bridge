@@ -4,7 +4,7 @@ use rand::rngs::OsRng;
 use wasm_bindgen::prelude::*;
 
 use crate::sender_key_name::SenderKeyName;
-use crate::storage_adapter::JsStorageAdapter;
+use crate::storage_adapter::{JsStorageAdapter, SignalStorage};
 use crate::{group_types::SenderKeyDistributionMessage, protocol_address::ProtocolAddress};
 use wacore_libsignal::protocol::{
     create_sender_key_distribution_message, group_decrypt, group_encrypt,
@@ -20,9 +20,9 @@ pub struct GroupCipher {
 #[wasm_bindgen(js_class = GroupCipher)]
 impl GroupCipher {
     #[wasm_bindgen(constructor)]
-    pub fn new(storage: JsValue, group_id: String, sender: &ProtocolAddress) -> Self {
+    pub fn new(storage: SignalStorage, group_id: String, sender: &ProtocolAddress) -> Self {
         Self {
-            storage_adapter: JsStorageAdapter::new(storage),
+            storage_adapter: JsStorageAdapter::new(storage.into()),
             sender_key_name: SenderKeyName::new(group_id, sender),
         }
     }
@@ -61,9 +61,9 @@ pub struct GroupSessionBuilder {
 #[wasm_bindgen(js_class = GroupSessionBuilder)]
 impl GroupSessionBuilder {
     #[wasm_bindgen(constructor)]
-    pub fn new(storage: JsValue) -> Self {
+    pub fn new(storage: SignalStorage) -> Self {
         Self {
-            storage_adapter: JsStorageAdapter::new(storage),
+            storage_adapter: JsStorageAdapter::new(storage.into()),
         }
     }
 

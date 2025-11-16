@@ -53,15 +53,17 @@ pub fn generate_registration_id() -> u32 {
 
 #[wasm_bindgen(js_name = generateSignedPreKey)]
 pub fn generate_signed_pre_key(
-    identity_key_pair_val: &JsValue,
-    signed_key_id_val: &JsValue,
+    identity_key_pair: KeyPairType,
+    signed_key_id_val: f64,
 ) -> Result<SignedPreKeyType, JsValue> {
+    let identity_key_pair_val: JsValue = identity_key_pair.into();
+
     if !identity_key_pair_val.is_object() {
         let error = TypeError::new("identityKeyPair.privKey must be a Uint8Array");
         return Err(error.into());
     }
 
-    let id_priv_key_val = Reflect::get(identity_key_pair_val, &"privKey".into())?;
+    let id_priv_key_val = Reflect::get(&identity_key_pair_val, &"privKey".into())?;
 
     let id_priv_key_bytes = match id_priv_key_val.dyn_into::<Uint8Array>() {
         Ok(arr) => arr.to_vec(),
@@ -78,21 +80,16 @@ pub fn generate_signed_pre_key(
 
     let identity_private_key = CorePrivateKey::deserialize(&id_priv_key_bytes).map_err(map_err)?;
 
-    let signed_key_id_f = match signed_key_id_val.as_f64() {
-        Some(n) if n.is_finite() => n,
-        _ => {
-            let err = TypeError::new("signedKeyId must be a non-negative integer");
-            return Err(err.into());
-        }
-    };
-
-    if signed_key_id_f < 0.0 || signed_key_id_f.fract() != 0.0 || signed_key_id_f > u32::MAX as f64
+    if !signed_key_id_val.is_finite()
+        || signed_key_id_val < 0.0
+        || signed_key_id_val.fract() != 0.0
+        || signed_key_id_val > u32::MAX as f64
     {
         let err = TypeError::new("signedKeyId must be a non-negative integer");
         return Err(err.into());
     }
 
-    let signed_key_id = signed_key_id_f as u32;
+    let signed_key_id = signed_key_id_val as u32;
 
     let pre_key_pair = CoreKeyPair::generate(&mut OsRng.unwrap_err());
     let pre_key_public_bytes_with_prefix = pre_key_pair.public_key.serialize();
@@ -126,21 +123,17 @@ pub fn generate_signed_pre_key(
 }
 
 #[wasm_bindgen(js_name = generatePreKey)]
-pub fn generate_pre_key(key_id_val: &JsValue) -> Result<PreKeyType, JsValue> {
-    let key_id_f = match key_id_val.as_f64() {
-        Some(n) if n.is_finite() => n,
-        _ => {
-            let err = TypeError::new("keyId must be a non-negative integer");
-            return Err(err.into());
-        }
-    };
-
-    if key_id_f < 0.0 || key_id_f.fract() != 0.0 || key_id_f > u32::MAX as f64 {
+pub fn generate_pre_key(key_id_val: f64) -> Result<PreKeyType, JsValue> {
+    if !key_id_val.is_finite()
+        || key_id_val < 0.0
+        || key_id_val.fract() != 0.0
+        || key_id_val > u32::MAX as f64
+    {
         let err = TypeError::new("keyId must be a non-negative integer");
         return Err(err.into());
     }
 
-    let key_id = key_id_f as u32;
+    let key_id = key_id_val as u32;
     let key_pair = CoreKeyPair::generate(&mut OsRng.unwrap_err());
 
     let key_pair_obj = Object::new();
@@ -170,8 +163,8 @@ struct JsKeyPair {
 }
 
 #[wasm_bindgen(js_name = _serializeIdentityKeyPair)]
-pub fn _serialize_identity_key_pair(key_pair_val: JsValue) -> Result<Uint8Array, JsValue> {
-    let js_key_pair: JsKeyPair = serde_wasm_bindgen::from_value(key_pair_val)?;
+pub fn _serialize_identity_key_pair(key_pair_val: KeyPairType) -> Result<Uint8Array, JsValue> {
+    let js_key_pair: JsKeyPair = serde_wasm_bindgen::from_value(key_pair_val.into())?;
 
     let pub_key_tag = (1 << 3) | 2;
     let priv_key_tag = (2 << 3) | 2;

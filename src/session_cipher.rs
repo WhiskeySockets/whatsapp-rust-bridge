@@ -3,7 +3,10 @@ use rand::{TryRngCore, rngs::OsRng};
 use std::time::{Duration, UNIX_EPOCH};
 use wasm_bindgen::prelude::*;
 
-use crate::{protocol_address::ProtocolAddress, storage_adapter::JsStorageAdapter};
+use crate::{
+    protocol_address::ProtocolAddress,
+    storage_adapter::{JsStorageAdapter, SignalStorage},
+};
 use wacore_libsignal::protocol::{self as libsignal, UsePQRatchet};
 
 #[wasm_bindgen]
@@ -21,9 +24,9 @@ pub struct SessionCipher {
 #[wasm_bindgen(js_class = SessionCipher)]
 impl SessionCipher {
     #[wasm_bindgen(constructor)]
-    pub fn new(storage: JsValue, remote_address: &ProtocolAddress) -> Self {
+    pub fn new(storage: SignalStorage, remote_address: &ProtocolAddress) -> Self {
         Self {
-            storage_adapter: JsStorageAdapter::new(storage),
+            storage_adapter: JsStorageAdapter::new(storage.into()),
             remote_address: ProtocolAddress(remote_address.0.clone()),
         }
     }

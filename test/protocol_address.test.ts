@@ -24,14 +24,17 @@ describe("ProtocolAddress", () => {
     const addr3 = new ProtocolAddress("bob", 2);
     expect(addr1.is(addr2)).toBe(true);
     expect(addr1.is(addr3)).toBe(false);
-    expect(addr1.is(null)).toBe(false);
-    expect(addr1.is({ id: "bob", deviceId: 1 })).toBe(false);
+    // @ts-expect-error runtime guard: null is invalid
+    expect(() => addr1.is(null)).toThrow();
+    // @ts-expect-error runtime guard: plain objects are invalid
+    expect(() => addr1.is({ id: "bob", deviceId: 1 })).toThrow();
   });
 
   it("rejects malformed inputs", () => {
     expect(() => ProtocolAddress.from("bad")).toThrow(
       "Invalid address encoding"
     );
+    // @ts-expect-error runtime guard: must pass a string
     expect(() => ProtocolAddress.from(42)).toThrow("Invalid address encoding");
     expect(() => ProtocolAddress.from("alice.device")).toThrow(
       "Invalid address encoding"

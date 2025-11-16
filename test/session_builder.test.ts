@@ -7,59 +7,8 @@ import {
   generateSignedPreKey,
   ProtocolAddress,
   SessionBuilder,
-  SessionRecord,
 } from "../dist/binary";
-
-class FakeStorage {
-  public sessions = new Map<string, Uint8Array>();
-  public identities = new Map<string, Uint8Array>();
-  public preKeys = new Map<number, any>();
-  public signedPreKeys = new Map<number, any>();
-  public ourIdentityKeyPair: any;
-  public ourRegistrationId: number;
-
-  constructor() {
-    this.ourIdentityKeyPair = generateIdentityKeyPair();
-    this.ourRegistrationId = generateRegistrationId();
-  }
-
-  async loadSession(address: string): Promise<SessionRecord | undefined> {
-    const serialized = this.sessions.get(address);
-    if (serialized) {
-      return SessionRecord.deserialize(serialized);
-    }
-    return undefined;
-  }
-
-  async storeSession(address: string, record: SessionRecord): Promise<void> {
-    this.sessions.set(address, record.serialize());
-  }
-
-  async getOurIdentity() {
-    return this.ourIdentityKeyPair;
-  }
-
-  async getOurRegistrationId(): Promise<number> {
-    return this.ourRegistrationId;
-  }
-
-  async isTrustedIdentity(
-    identifier: string,
-    identityKey: Uint8Array,
-    direction: number
-  ): Promise<boolean> {
-    const existing = this.identities.get(identifier);
-    if (!existing) {
-      this.identities.set(identifier, identityKey);
-      return true;
-    }
-    return Buffer.from(existing).equals(Buffer.from(identityKey));
-  }
-
-  getSession(address: string): Uint8Array | undefined {
-    return this.sessions.get(address);
-  }
-}
+import { FakeStorage } from "./helpers/fake_storage";
 
 describe("SessionBuilder", () => {
   it("should successfully process a pre-key bundle and create a new session", async () => {
@@ -116,7 +65,7 @@ describe("SessionBuilder", () => {
     const bobSignedPreKey = generateSignedPreKey(bobIdentityKeyPair, 1);
 
     const fakeIdentity = generateIdentityKeyPair();
-    aliceStorage.identities.set("bob", fakeIdentity.pubKey);
+    aliceStorage.trustIdentity("bob", fakeIdentity.pubKey);
 
     const bobBundle = {
       registrationId: 1234,
