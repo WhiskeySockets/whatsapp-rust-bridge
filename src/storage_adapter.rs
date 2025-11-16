@@ -8,13 +8,16 @@ use wasm_bindgen_futures::JsFuture;
 
 use wacore_libsignal::protocol::{
     self as libsignal, Direction as StoreDirection, GenericSignedPreKey as _, IdentityChange,
-    IdentityKeyPair, IdentityKeyStore, PreKeyId, PreKeyRecord, PreKeyStore, SessionStore,
-    SignedPreKeyId, SignedPreKeyRecord, SignedPreKeyStore,
+    IdentityKeyPair, IdentityKeyStore, PreKeyId, PreKeyRecord, PreKeyStore, SenderKeyStore,
+    SessionStore, SignedPreKeyId, SignedPreKeyRecord, SignedPreKeyStore,
 };
 type SignalResult<T> = wacore_libsignal::protocol::error::Result<T>;
 
 use wacore_libsignal::protocol::SessionRecord as CoreSessionRecord;
 use wacore_libsignal::protocol::SignalProtocolError;
+
+use wacore_libsignal::protocol::SenderKeyRecord as CoreSenderKeyRecord;
+use wacore_libsignal::store::sender_key_name::SenderKeyName as CoreSenderKeyName;
 
 #[wasm_bindgen(module = "/ts/libsignal_storage_adapter.js")]
 extern "C" {
@@ -49,6 +52,14 @@ extern "C" {
     fn remove_pre_key(storage: &JsValue, prekey_id: u32) -> Result<Promise, JsValue>;
     #[wasm_bindgen(catch, js_name = loadSignedPreKey)]
     fn load_signed_pre_key(storage: &JsValue, signed_prekey_id: u32) -> Result<Promise, JsValue>;
+    #[wasm_bindgen(catch, js_name = loadSenderKey)]
+    fn load_sender_key(storage: &JsValue, key_id: String) -> Result<Promise, JsValue>;
+    #[wasm_bindgen(catch, js_name = storeSenderKey)]
+    fn store_sender_key(
+        storage: &JsValue,
+        key_id: String,
+        record_data: &[u8],
+    ) -> Result<Promise, JsValue>;
 }
 
 #[derive(Clone)]
@@ -266,6 +277,51 @@ impl SignedPreKeyStore for JsStorageAdapter {
         _id: SignedPreKeyId,
         _record: &SignedPreKeyRecord,
     ) -> SignalResult<()> {
+        Ok(())
+    }
+}
+
+#[async_trait(?Send)]
+impl SenderKeyStore for JsStorageAdapter {
+    async fn load_sender_key(
+        &mut self,
+        sender_key_name: &CoreSenderKeyName,
+    ) -> SignalResult<Option<CoreSenderKeyRecord>> {
+        console_error_panic_hook::set_once();
+
+        let key_id = format!(
+            "{}::{}",
+            sender_key_name.group_id(),
+            sender_key_name.sender_id()
+        );
+        let promise = load_sender_key(&self.js_storage, key_id).map_err(js_to_signal_error)?;
+        let bytes = js_promise_to_bytes!(promise)?;
+
+        match bytes {
+            Some(data) => {
+                let record = CoreSenderKeyRecord::deserialize(&data)?;
+                Ok(Some(record))
+            }
+            None => Ok(None),
+        }
+    }
+
+    async fn store_sender_key(
+        &mut self,
+        sender_key_name: &CoreSenderKeyName,
+        record: &CoreSenderKeyRecord,
+    ) -> SignalResult<()> {
+        console_error_panic_hook::set_once();
+
+        let key_id = format!(
+            "{}::{}",
+            sender_key_name.group_id(),
+            sender_key_name.sender_id()
+        );
+        let bytes = record.serialize()?;
+        let promise =
+            store_sender_key(&self.js_storage, key_id, &bytes).map_err(js_to_signal_error)?;
+        JsFuture::from(promise).await.map_err(js_to_signal_error)?;
         Ok(())
     }
 }
