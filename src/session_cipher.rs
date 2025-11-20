@@ -1,13 +1,12 @@
-use js_sys::{Date, Object, Reflect, Uint8Array};
+use js_sys::{Object, Reflect, Uint8Array};
 use rand::{TryRngCore, rngs::OsRng};
-use std::time::{Duration, UNIX_EPOCH};
 use wasm_bindgen::prelude::*;
 
 use crate::{
     protocol_address::ProtocolAddress,
     storage_adapter::{JsStorageAdapter, SignalStorage},
 };
-use wacore_libsignal::protocol::{self as libsignal, UsePQRatchet};
+use wacore_libsignal::protocol::{self as libsignal, SessionStore, UsePQRatchet};
 
 #[wasm_bindgen]
 extern "C" {
@@ -35,9 +34,6 @@ impl SessionCipher {
         #[cfg(debug_assertions)]
         console_error_panic_hook::set_once();
 
-        let now_millis = Date::now();
-        let now_sys_time = UNIX_EPOCH + Duration::from_millis(now_millis as u64);
-
         let mut session_store = self.storage_adapter.clone();
         let mut identity_store = session_store.clone();
 
@@ -46,10 +42,12 @@ impl SessionCipher {
             &self.remote_address.0,
             &mut session_store,
             &mut identity_store,
-            now_sys_time,
         )
         .await
-        .map_err(|e| e.to_string())?;
+        .map_err(|e| {
+            let msg = format!("SessionCipher.encrypt error: {:?}", e);
+            JsValue::from_str(&msg)
+        })?;
 
         let body = ciphertext_message.serialize();
         let type_id = ciphertext_message.message_type() as u8;
@@ -69,8 +67,11 @@ impl SessionCipher {
         #[cfg(debug_assertions)]
         console_error_panic_hook::set_once();
 
-        let prekey_message =
-            libsignal::PreKeySignalMessage::try_from(ciphertext).map_err(|e| e.to_string())?;
+        let prekey_message = libsignal::PreKeySignalMessage::try_from(ciphertext)
+            .map_err(|e| {
+                let msg = format!("SessionCipher.decryptPreKeyWhisperMessage failed: Invalid PreKeyMessage format: {}", e);
+                JsValue::from_str(&msg)
+            })?;
 
         let mut session_store = self.storage_adapter.clone();
         let mut identity_store = session_store.clone();
@@ -88,7 +89,10 @@ impl SessionCipher {
             UsePQRatchet::No,
         )
         .await
-        .map_err(|e| e.to_string())?;
+        .map_err(|e| {
+            let msg = format!("SessionCipher.decryptPreKeyWhisperMessage failed: {:?}", e);
+            JsValue::from_str(&msg)
+        })?;
 
         Ok(Uint8Array::from(plaintext.as_slice()))
     }
@@ -101,8 +105,13 @@ impl SessionCipher {
         #[cfg(debug_assertions)]
         console_error_panic_hook::set_once();
 
-        let signal_message =
-            libsignal::SignalMessage::try_from(ciphertext).map_err(|e| e.to_string())?;
+        let signal_message = libsignal::SignalMessage::try_from(ciphertext).map_err(|e| {
+            let msg = format!(
+                "SessionCipher.decryptWhisperMessage failed: Invalid WhisperMessage format: {}",
+                e
+            );
+            JsValue::from_str(&msg)
+        })?;
 
         let mut session_store = self.storage_adapter.clone();
         let mut identity_store = session_store.clone();
@@ -115,8 +124,25 @@ impl SessionCipher {
             &mut OsRng.unwrap_err(),
         )
         .await
-        .map_err(|e| e.to_string())?;
+        .map_err(|e| {
+            let msg = format!("SessionCipher.decryptWhisperMessage failed: {:?}", e);
+            JsValue::from_str(&msg)
+        })?;
 
         Ok(Uint8Array::from(plaintext.as_slice()))
+    }
+
+    #[wasm_bindgen(js_name = hasOpenSession)]
+    pub async fn has_open_session(&self) -> Result<bool, JsValue> {
+        let record = self
+            .storage_adapter
+            .load_session(&self.remote_address.0)
+            .await
+            .map_err(|e| JsValue::from_str(&e.to_string()))?;
+
+        match record {
+            Some(r) => Ok(r.session_state().is_some()),
+            None => Ok(false),
+        }
     }
 }

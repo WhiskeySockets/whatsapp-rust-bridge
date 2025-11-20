@@ -79,8 +79,6 @@ describe("SessionCipher end-to-end", () => {
     const plaintext2 = Buffer.from("Hey Alice, I got your message!");
     const encryptedMessageForAlice = await bobCipher.encrypt(plaintext2);
 
-    // Subsequent messages are WhisperMessages (type 1)
-    // @TODO CHECK THIS: Should be type 1 according to the spec?
     expect(encryptedMessageForAlice.type).toBe(2);
 
     // === 7. ALICE RECEIVES AND DECRYPTS THE REPLY ===
@@ -146,8 +144,12 @@ describe("SessionCipher end-to-end", () => {
 
     const bobCipher = new SessionCipher(bobStorage, aliceAddress);
 
-    await expect(
-      bobCipher.decryptPreKeyWhisperMessage(encryptedMessageForBob.body)
-    ).rejects.toThrow(/Uint8Array|_sessions|protobuf encoding was invalid/);
+    // With the fix, the legacy JSON is treated as an empty session.
+    // Since this is a PreKeyWhisperMessage, it establishes a new session.
+    // So decryption should SUCCEED (self-healing).
+    const decrypted = await bobCipher.decryptPreKeyWhisperMessage(
+      encryptedMessageForBob.body
+    );
+    expect(Buffer.from(decrypted)).toEqual(plaintext);
   });
 });

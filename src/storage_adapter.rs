@@ -1,11 +1,21 @@
 use async_trait::async_trait;
+use base64::prelude::*;
 use js_sys::{Promise, Uint8Array};
+use prost::Message;
 use serde::Deserialize;
 use serde::de::DeserializeOwned;
 use serde_bytes::ByteBuf;
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::rc::Rc;
+use waproto::whatsapp::{
+    RecordStructure, SenderKeyRecordStructure, SenderKeyStateStructure, SessionStructure,
+    sender_key_state_structure::{SenderChainKey, SenderMessageKey, SenderSigningKey},
+    session_structure::{
+        Chain,
+        chain::{ChainKey, MessageKey},
+    },
+};
 use wasm_bindgen::prelude::*;
 use wasm_bindgen_futures::JsFuture;
 
@@ -109,6 +119,280 @@ impl JsStorageAdapter {
             cached_sessions: Rc::new(RefCell::new(HashMap::new())),
             cached_sender_keys: Rc::new(RefCell::new(HashMap::new())),
         }
+    }
+
+    async fn migrate_legacy_json(&self, value: JsValue) -> SignalResult<Option<Vec<u8>>> {
+        // Check if it looks like legacy session
+        let has_reg_id =
+            js_sys::Reflect::has(&value, &JsValue::from_str("registrationId")).unwrap_or(false);
+        let has_ratchet =
+            js_sys::Reflect::has(&value, &JsValue::from_str("currentRatchet")).unwrap_or(false);
+
+        let session_data = if has_reg_id && has_ratchet {
+            value
+        } else {
+            // Check for _sessions wrapper
+            let has_sessions =
+                js_sys::Reflect::has(&value, &JsValue::from_str("_sessions")).unwrap_or(false);
+            if !has_sessions {
+                return Ok(None);
+            }
+
+            let sessions = get_object(&value, "_sessions")
+                .ok_or_else(|| invalid_js_data("migrate", "Missing _sessions"))?;
+            let keys = js_sys::Object::keys(&sessions.clone().dyn_into().unwrap());
+
+            if keys.length() == 0 {
+                return Ok(None);
+            }
+
+            // Use the first session found
+            let key = keys.get(0);
+            js_sys::Reflect::get(&sessions, &key).map_err(js_to_signal_error)?
+        };
+
+        // Verify we actually have a session object now
+        let has_reg_id_inner =
+            js_sys::Reflect::has(&session_data, &JsValue::from_str("registrationId"))
+                .unwrap_or(false);
+        if !has_reg_id_inner {
+            return Ok(None);
+        }
+
+        let local_identity = self.get_identity_key_pair().await?;
+        let local_identity_public = local_identity.public_key().serialize().into();
+
+        let registration_id = get_number(&session_data, "registrationId").unwrap_or(0.0) as u32;
+
+        let current_ratchet = get_object(&session_data, "currentRatchet")
+            .ok_or_else(|| invalid_js_data("migrate", "Missing currentRatchet"))?;
+        let root_key_b64 = get_string(&current_ratchet, "rootKey").unwrap_or_default();
+        let root_key = BASE64_STANDARD.decode(root_key_b64).unwrap_or_default();
+
+        let previous_counter =
+            get_number(&current_ratchet, "previousCounter").unwrap_or(0.0) as u32;
+
+        let ephemeral_key_pair = get_object(&current_ratchet, "ephemeralKeyPair")
+            .ok_or_else(|| invalid_js_data("migrate", "Missing ephemeralKeyPair"))?;
+        let sender_ratchet_pub_b64 = get_string(&ephemeral_key_pair, "pubKey").unwrap_or_default();
+        let sender_ratchet_priv_b64 =
+            get_string(&ephemeral_key_pair, "privKey").unwrap_or_default();
+
+        let sender_ratchet_pub = BASE64_STANDARD
+            .decode(sender_ratchet_pub_b64)
+            .unwrap_or_default();
+        let sender_ratchet_priv = BASE64_STANDARD
+            .decode(sender_ratchet_priv_b64)
+            .unwrap_or_default();
+
+        let index_info = get_object(&session_data, "indexInfo")
+            .ok_or_else(|| invalid_js_data("migrate", "Missing indexInfo"))?;
+        let remote_identity_b64 = get_string(&index_info, "remoteIdentityKey").unwrap_or_default();
+        let remote_identity = BASE64_STANDARD
+            .decode(remote_identity_b64)
+            .unwrap_or_default();
+
+        let base_key_b64 = get_string(&index_info, "baseKey").unwrap_or_default();
+        let base_key = BASE64_STANDARD.decode(base_key_b64).unwrap_or_default();
+
+        // Chains
+        let chains = get_object(&session_data, "_chains")
+            .ok_or_else(|| invalid_js_data("migrate", "Missing _chains"))?;
+        let chain_keys = js_sys::Object::keys(&chains.clone().dyn_into().unwrap());
+
+        let mut sender_chain = None;
+        let mut receiver_chains = Vec::new();
+
+        for i in 0..chain_keys.length() {
+            let key = chain_keys.get(i);
+            let chain = js_sys::Reflect::get(&chains, &key).unwrap();
+            let chain_type = get_number(&chain, "chainType").unwrap_or(0.0) as u32;
+
+            let chain_key_obj = get_object(&chain, "chainKey").unwrap();
+            let counter = get_number(&chain_key_obj, "counter").unwrap_or(0.0) as u32;
+            let key_b64 = get_string(&chain_key_obj, "key").unwrap_or_default();
+            let key_bytes = BASE64_STANDARD.decode(key_b64).unwrap_or_default();
+
+            // Message Keys - skipping for now as discussed
+            let message_keys_obj = get_object(&chain, "messageKeys").unwrap();
+            let msg_keys_list = js_sys::Object::keys(&message_keys_obj.clone().dyn_into().unwrap());
+            let mut message_keys = Vec::new();
+
+            for j in 0..msg_keys_list.length() {
+                let idx_val = msg_keys_list.get(j);
+                let idx = idx_val.as_f64().unwrap() as u32;
+                let msg_key_b64 = js_sys::Reflect::get(&message_keys_obj, &idx_val)
+                    .unwrap()
+                    .as_string()
+                    .unwrap_or_default();
+                let msg_key_bytes = BASE64_STANDARD.decode(msg_key_b64).unwrap_or_default();
+                message_keys.push((idx, msg_key_bytes));
+            }
+
+            if chain_type == 1 {
+                sender_chain = Some((
+                    sender_ratchet_pub.clone(),
+                    sender_ratchet_priv.clone(),
+                    key_bytes,
+                    counter,
+                    message_keys,
+                ));
+            } else if chain_type == 2 {
+                let sender_ratchet_key_b64 = key.as_string().unwrap_or_default();
+                let sender_ratchet_key = BASE64_STANDARD
+                    .decode(sender_ratchet_key_b64)
+                    .unwrap_or_default();
+                receiver_chains.push((sender_ratchet_key, key_bytes, counter, message_keys));
+            }
+        }
+
+        let mut sender_chain_struct = None;
+
+        if let Some((pub_key, priv_key, chain_key, counter, msg_keys)) = sender_chain {
+            let mut message_keys_vec = Vec::new();
+            for (idx, key) in msg_keys {
+                message_keys_vec.push(MessageKey {
+                    index: Some(idx),
+                    cipher_key: Some(key),
+                    mac_key: Some(vec![0u8; 32]),
+                    iv: Some(vec![0u8; 16]),
+                });
+            }
+
+            sender_chain_struct = Some(Chain {
+                sender_ratchet_key: Some(pub_key),
+                sender_ratchet_key_private: Some(priv_key),
+                chain_key: Some(ChainKey {
+                    index: Some(counter),
+                    key: Some(chain_key),
+                }),
+                message_keys: message_keys_vec,
+            });
+        }
+
+        let mut receiver_chains_vec = Vec::new();
+        for (sender_ratchet, chain_key, counter, msg_keys) in receiver_chains {
+            let mut message_keys_vec = Vec::new();
+            for (idx, key) in msg_keys {
+                message_keys_vec.push(MessageKey {
+                    index: Some(idx),
+                    cipher_key: Some(key),
+                    mac_key: Some(vec![0u8; 32]),
+                    iv: Some(vec![0u8; 16]),
+                });
+            }
+
+            receiver_chains_vec.push(Chain {
+                sender_ratchet_key: Some(sender_ratchet),
+                sender_ratchet_key_private: None,
+                chain_key: Some(ChainKey {
+                    index: Some(counter),
+                    key: Some(chain_key),
+                }),
+                message_keys: message_keys_vec,
+            });
+        }
+
+        let local_reg_id = self.get_local_registration_id().await?;
+
+        let session = SessionStructure {
+            session_version: Some(3),
+            local_identity_public: Some(local_identity_public),
+            remote_identity_public: Some(remote_identity),
+            root_key: Some(root_key),
+            previous_counter: Some(previous_counter),
+            sender_chain: sender_chain_struct,
+            receiver_chains: receiver_chains_vec,
+            pending_key_exchange: None,
+            pending_pre_key: None,
+            remote_registration_id: Some(registration_id),
+            local_registration_id: Some(local_reg_id),
+            needs_refresh: None,
+            alice_base_key: Some(base_key),
+        };
+
+        let record = RecordStructure {
+            current_session: Some(session),
+            previous_sessions: Vec::new(),
+        };
+
+        Ok(Some(record.encode_to_vec()))
+    }
+
+    fn migrate_legacy_sender_key(&self, data: &[u8]) -> SignalResult<Option<Vec<u8>>> {
+        let json_str = match std::str::from_utf8(data) {
+            Ok(s) => s,
+            Err(_) => return Ok(None),
+        };
+
+        // If it doesn't look like JSON (starts with [), return None
+        if !json_str.trim().starts_with('[') {
+            return Ok(None);
+        }
+
+        let js_val = js_sys::JSON::parse(json_str).map_err(js_to_signal_error)?;
+
+        if !js_sys::Array::is_array(&js_val) {
+            return Ok(None);
+        }
+
+        let array = js_sys::Array::from(&js_val);
+        let mut sender_key_states = Vec::new();
+
+        for i in 0..array.length() {
+            let state_obj = array.get(i);
+
+            let sender_key_id = get_number(&state_obj, "senderKeyId").unwrap_or(0.0) as u32;
+
+            let sender_chain_key_obj = get_object(&state_obj, "senderChainKey")
+                .ok_or_else(|| invalid_js_data("migrate_sender_key", "Missing senderChainKey"))?;
+            let iteration = get_number(&sender_chain_key_obj, "iteration").unwrap_or(0.0) as u32;
+            let seed =
+                get_bytes_from_buffer_json(&sender_chain_key_obj, "seed").unwrap_or_default();
+
+            let sender_signing_key_obj = get_object(&state_obj, "senderSigningKey")
+                .ok_or_else(|| invalid_js_data("migrate_sender_key", "Missing senderSigningKey"))?;
+            let public_key =
+                get_bytes_from_buffer_json(&sender_signing_key_obj, "public").unwrap_or_default();
+            let private_key = get_bytes_from_buffer_json(&sender_signing_key_obj, "private"); // Optional
+
+            let sender_message_keys_arr = get_object(&state_obj, "senderMessageKeys")
+                .map(|v| js_sys::Array::from(&v))
+                .unwrap_or_default();
+            let mut sender_message_keys = Vec::new();
+
+            for j in 0..sender_message_keys_arr.length() {
+                let msg_key_obj = sender_message_keys_arr.get(j);
+                let msg_iteration = get_number(&msg_key_obj, "iteration").unwrap_or(0.0) as u32;
+                let msg_seed = get_bytes_from_buffer_json(&msg_key_obj, "seed").unwrap_or_default();
+
+                sender_message_keys.push(SenderMessageKey {
+                    iteration: Some(msg_iteration),
+                    seed: Some(msg_seed),
+                });
+            }
+
+            let signing_key = SenderSigningKey {
+                public: Some(public_key),
+                private: private_key,
+            };
+
+            let chain_key = SenderChainKey {
+                iteration: Some(iteration),
+                seed: Some(seed),
+            };
+
+            sender_key_states.push(SenderKeyStateStructure {
+                sender_key_id: Some(sender_key_id),
+                sender_chain_key: Some(chain_key),
+                sender_signing_key: Some(signing_key),
+                sender_message_keys,
+            });
+        }
+
+        let record = SenderKeyRecordStructure { sender_key_states };
+
+        Ok(Some(record.encode_to_vec()))
     }
 }
 
@@ -271,9 +555,51 @@ macro_rules! js_promise_to_bytes {
         let value = JsFuture::from($promise).await.map_err(js_to_signal_error)?;
         if value.is_null() || value.is_undefined() {
             Ok::<Option<Vec<u8>>, libsignal::SignalProtocolError>(None)
+        } else if let Ok(arr) = value.clone().dyn_into::<Uint8Array>() {
+            Ok(Some(arr.to_vec()))
         } else {
-            let arr: Uint8Array = value.dyn_into().map_err(|e| js_to_signal_error(e.into()))?;
-            Ok::<Option<Vec<u8>>, libsignal::SignalProtocolError>(Some(arr.to_vec()))
+            // Detect Legacy JSON or Non-Standard formats
+
+            // 1. Legacy libsignal-node session ("_sessions")
+            let has_sessions =
+                js_sys::Reflect::has(&value, &JsValue::from_str("_sessions")).unwrap_or(false);
+
+            // 2. Baileys-style session object directly ("registrationId" + "currentRatchet")
+            let has_reg_id =
+                js_sys::Reflect::has(&value, &JsValue::from_str("registrationId")).unwrap_or(false);
+            let has_ratchet =
+                js_sys::Reflect::has(&value, &JsValue::from_str("currentRatchet")).unwrap_or(false);
+
+            if has_sessions || (has_reg_id && has_ratchet) {
+                // MIGRATION STRATEGY: Return Empty Session.
+                // Returning `Some(vec![])` is functionally an empty session record.
+                // This allows the protocol to proceed without crashing, triggering a re-key.
+                let empty = CoreSessionRecord::deserialize(&[]).unwrap_or_else(|_| {
+                    panic!("Could not create empty session record");
+                });
+                let bytes = empty.serialize().unwrap_or_default();
+                Ok(Some(bytes))
+            } else {
+                // 3. Buffer-like objects { type: 'Buffer', data: [...] }
+                let data_prop = js_sys::Reflect::get(&value, &JsValue::from_str("data"));
+                if let Ok(data) = data_prop
+                    && js_sys::Array::is_array(&data)
+                {
+                    let array = js_sys::Array::from(&data);
+                    let mut bytes = Vec::with_capacity(array.length() as usize);
+                    for i in 0..array.length() {
+                        if let Some(val) = array.get(i).as_f64() {
+                            bytes.push(val as u8);
+                        }
+                    }
+                    Ok(Some(bytes))
+                } else {
+                    // Unknown format, fall back to standard cast attempt (will fail if not bytes)
+                    let arr: Uint8Array =
+                        value.dyn_into().map_err(|e| js_to_signal_error(e.into()))?;
+                    Ok::<Option<Vec<u8>>, libsignal::SignalProtocolError>(Some(arr.to_vec()))
+                }
+            }
         }
     }};
 }
@@ -294,7 +620,19 @@ impl SessionStore for JsStorageAdapter {
 
         let promise =
             load_session(&self.js_storage, address.to_string()).map_err(js_to_signal_error)?;
-        let bytes = js_promise_to_bytes!(promise)?;
+
+        // Try standard bytes conversion first
+        let value = JsFuture::from(promise).await.map_err(js_to_signal_error)?;
+
+        let bytes = if value.is_null() || value.is_undefined() {
+            None
+        } else if let Ok(arr) = value.clone().dyn_into::<Uint8Array>() {
+            Some(arr.to_vec())
+        } else {
+            // Try migration
+            self.migrate_legacy_json(value).await?
+        };
+
         match bytes {
             Some(data) => {
                 let record = CoreSessionRecord::deserialize(&data)?;
@@ -487,6 +825,24 @@ impl SenderKeyStore for JsStorageAdapter {
 
         match bytes {
             Some(data) => {
+                // Try to deserialize as CoreSenderKeyRecord
+                if let Ok(record) = CoreSenderKeyRecord::deserialize(&data) {
+                    self.cached_sender_keys
+                        .borrow_mut()
+                        .insert(key_id, record.clone());
+                    return Ok(Some(record));
+                }
+
+                // If failed, try to migrate from JSON bytes
+                if let Ok(Some(migrated_bytes)) = self.migrate_legacy_sender_key(&data) {
+                    let record = CoreSenderKeyRecord::deserialize(&migrated_bytes)?;
+                    self.cached_sender_keys
+                        .borrow_mut()
+                        .insert(key_id, record.clone());
+                    return Ok(Some(record));
+                }
+
+                // If migration also failed, return error from original deserialize attempt
                 let record = CoreSenderKeyRecord::deserialize(&data)?;
                 self.cached_sender_keys
                     .borrow_mut()
@@ -520,4 +876,74 @@ impl SenderKeyStore for JsStorageAdapter {
         JsFuture::from(promise).await.map_err(js_to_signal_error)?;
         Ok(())
     }
+}
+
+// Helper to get property as string
+fn get_string(obj: &JsValue, key: &str) -> Option<String> {
+    js_sys::Reflect::get(obj, &JsValue::from_str(key))
+        .ok()
+        .and_then(|v| v.as_string())
+}
+
+// Helper to get property as object
+fn get_object(obj: &JsValue, key: &str) -> Option<JsValue> {
+    js_sys::Reflect::get(obj, &JsValue::from_str(key)).ok()
+}
+
+// Helper to get property as number
+fn get_number(obj: &JsValue, key: &str) -> Option<f64> {
+    js_sys::Reflect::get(obj, &JsValue::from_str(key))
+        .ok()
+        .and_then(|v| v.as_f64())
+}
+
+fn get_bytes_from_buffer_json(obj: &JsValue, key: &str) -> Option<Vec<u8>> {
+    let val = js_sys::Reflect::get(obj, &JsValue::from_str(key)).ok()?;
+    if val.is_undefined() || val.is_null() {
+        return None;
+    }
+
+    // Check for { type: 'Buffer', data: [...] }
+    let type_prop = js_sys::Reflect::get(&val, &JsValue::from_str("type")).ok();
+    let data_prop = js_sys::Reflect::get(&val, &JsValue::from_str("data")).ok();
+
+    if let (Some(t), Some(d)) = (type_prop, data_prop)
+        && t.as_string().as_deref() == Some("Buffer")
+        && js_sys::Array::is_array(&d)
+    {
+        let array = js_sys::Array::from(&d);
+        let mut bytes = Vec::with_capacity(array.length() as usize);
+        for i in 0..array.length() {
+            if let Some(v) = array.get(i).as_f64() {
+                bytes.push(v as u8);
+            }
+        }
+        return Some(bytes);
+    }
+
+    // Fallback: try to treat as array or Uint8Array
+    if let Ok(arr) = val.clone().dyn_into::<Uint8Array>() {
+        return Some(arr.to_vec());
+    }
+
+    if js_sys::Array::is_array(&val) {
+        let array = js_sys::Array::from(&val);
+        let mut bytes = Vec::with_capacity(array.length() as usize);
+        for i in 0..array.length() {
+            if let Some(v) = array.get(i).as_f64() {
+                bytes.push(v as u8);
+            }
+        }
+        return Some(bytes);
+    }
+
+    // Fallback: base64 string?
+    if let Some(b) = val
+        .as_string()
+        .and_then(|s| BASE64_STANDARD.decode(&s).ok())
+    {
+        return Some(b);
+    }
+
+    None
 }

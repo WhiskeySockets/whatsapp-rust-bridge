@@ -26,7 +26,7 @@ Build, test & release flow
 
 - Local dev build (WASM + TS):
   - `bun run build` — runs `wasm-pack build` then TypeScript bundling; produces `pkg/` and `dist/`.
-  - `bun test` — run unit tests in `test/`.
+  - `bun test` — run unit tests in `test/`. (always remember to run `bun run build` first to ensure latest changes are tested)
   - `bun run bench` — build + run benches in `benches/`.
 - Ensure you have `wasm-pack`, `bun`, and `wasm-opt` available when building.
 

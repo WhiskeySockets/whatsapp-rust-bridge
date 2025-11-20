@@ -1,8 +1,6 @@
-use js_sys::Date;
 use rand::TryRngCore;
 use rand::rngs::OsRng;
 use serde::Deserialize;
-use std::time::{Duration, UNIX_EPOCH};
 use wasm_bindgen::JsValue;
 use wasm_bindgen::prelude::*;
 
@@ -104,15 +102,11 @@ impl SessionBuilder {
         let mut session_store = self.storage_adapter.clone();
         let mut identity_store = session_store.clone();
 
-        let now_millis = Date::now();
-        let now_sys_time = UNIX_EPOCH + Duration::from_millis(now_millis as u64);
-
         libsignal::process_prekey_bundle(
             &self.remote_address.0,
             &mut session_store,
             &mut identity_store,
             &bundle,
-            now_sys_time,
             &mut OsRng.unwrap_err(),
             UsePQRatchet::No,
         )
