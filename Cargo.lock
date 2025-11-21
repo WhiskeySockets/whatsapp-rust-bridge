@@ -361,9 +361,9 @@ dependencies = [
 
 [[package]]
 name = "hashbrown"
-version = "0.16.0"
+version = "0.16.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "5419bdc4f6a9207fbeba6d11b604d481addf78ecd10c11ad51e76c2f6482748d"
+checksum = "841d1cc9bed7f9236f321df977030373f4a4163ae1a7dbfe1a51a2c1a51d9100"
 
 [[package]]
 name = "heck"
@@ -397,9 +397,9 @@ dependencies = [
 
 [[package]]
 name = "indexmap"
-version = "2.12.0"
+version = "2.12.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "6717a8d2a5a929a1a2eb43a12812498ed141a0bcfb7e8f7844fbdbe4303bba9f"
+checksum = "0ad4bb2b565bca0645f4d68c5c9af97fba094e9791da685bf83cb5f3ce74acf2"
 dependencies = [
  "equivalent",
  "hashbrown",
@@ -962,7 +962,7 @@ checksum = "0b928f33d975fc6ad9f86c8f283853ad26bdd5b10b7f1542aa2fa15e2289105a"
 [[package]]
 name = "wacore-binary"
 version = "0.1.0"
-source = "git+https://github.com/jlucaso1/whatsapp-rust.git#546323b4fb79beb6ae385c290321c1eb3c280821"
+source = "git+https://github.com/jlucaso1/whatsapp-rust.git#6822f84143aac33f2c4440f7f350d37bff5868fc"
 dependencies = [
  "flate2",
  "phf",
@@ -974,7 +974,7 @@ dependencies = [
 [[package]]
 name = "wacore-libsignal"
 version = "0.1.0"
-source = "git+https://github.com/jlucaso1/whatsapp-rust.git?branch=main#546323b4fb79beb6ae385c290321c1eb3c280821"
+source = "git+https://github.com/jlucaso1/whatsapp-rust.git?branch=main#6822f84143aac33f2c4440f7f350d37bff5868fc"
 dependencies = [
  "aes",
  "aes-gcm",
@@ -1007,7 +1007,7 @@ dependencies = [
 [[package]]
 name = "waproto"
 version = "0.1.0"
-source = "git+https://github.com/jlucaso1/whatsapp-rust.git?branch=main#546323b4fb79beb6ae385c290321c1eb3c280821"
+source = "git+https://github.com/jlucaso1/whatsapp-rust.git?branch=main#6822f84143aac33f2c4440f7f350d37bff5868fc"
 dependencies = [
  "prost",
  "prost-build",
@@ -1150,18 +1150,18 @@ dependencies = [
 
 [[package]]
 name = "zerocopy"
-version = "0.8.27"
+version = "0.8.28"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "0894878a5fa3edfd6da3f88c4805f4c8558e2b996227a3d864f47fe11e38282c"
+checksum = "43fa6694ed34d6e57407afbccdeecfa268c470a7d2a5b0cf49ce9fcc345afb90"
 dependencies = [
  "zerocopy-derive",
 ]
 
 [[package]]
 name = "zerocopy-derive"
-version = "0.8.27"
+version = "0.8.28"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "88d2b8d9c68ad2b9e4340d7832716a4d21a22a1154777ad56ea55c51a9cf3831"
+checksum = "c640b22cd9817fae95be82f0d2f90b11f7605f6c319d16705c459b27ac2cbc26"
 dependencies = [
  "proc-macro2",
  "quote",
