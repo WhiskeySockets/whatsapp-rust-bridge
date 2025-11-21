@@ -140,7 +140,11 @@ impl JsStorageAdapter {
 
             let sessions = get_object(&value, "_sessions")
                 .ok_or_else(|| invalid_js_data("migrate", "Missing _sessions"))?;
-            let keys = js_sys::Object::keys(&sessions.clone().dyn_into().unwrap());
+            let sessions_obj = sessions
+                .clone()
+                .dyn_into::<js_sys::Object>()
+                .map_err(|_| invalid_js_data("migrate", "Invalid _sessions object"))?;
+            let keys = js_sys::Object::keys(&sessions_obj);
 
             if keys.length() == 0 {
                 return Ok(None);
@@ -198,31 +202,59 @@ impl JsStorageAdapter {
         // Chains
         let chains = get_object(&session_data, "_chains")
             .ok_or_else(|| invalid_js_data("migrate", "Missing _chains"))?;
-        let chain_keys = js_sys::Object::keys(&chains.clone().dyn_into().unwrap());
+        let chains_obj = chains
+            .clone()
+            .dyn_into::<js_sys::Object>()
+            .map_err(|_| invalid_js_data("migrate", "_chains expected to be an object"))?;
+        let chain_keys = js_sys::Object::keys(&chains_obj);
 
         let mut sender_chain = None;
         let mut receiver_chains = Vec::new();
 
         for i in 0..chain_keys.length() {
             let key = chain_keys.get(i);
-            let chain = js_sys::Reflect::get(&chains, &key).unwrap();
+            let chain = js_sys::Reflect::get(&chains, &key).map_err(|err| {
+                invalid_js_data(
+                    "migrate",
+                    format!(
+                        "Failed to read chain entry {:?}: {:?}",
+                        key.as_string(),
+                        err
+                    ),
+                )
+            })?;
             let chain_type = get_number(&chain, "chainType").unwrap_or(0.0) as u32;
 
-            let chain_key_obj = get_object(&chain, "chainKey").unwrap();
+            let chain_key_obj = get_object(&chain, "chainKey").ok_or_else(|| {
+                invalid_js_data("migrate", "Missing chainKey for legacy chain entry")
+            })?;
             let counter = get_number(&chain_key_obj, "counter").unwrap_or(0.0) as u32;
             let key_b64 = get_string(&chain_key_obj, "key").unwrap_or_default();
             let key_bytes = BASE64_STANDARD.decode(key_b64).unwrap_or_default();
 
             // Message Keys - skipping for now as discussed
-            let message_keys_obj = get_object(&chain, "messageKeys").unwrap();
-            let msg_keys_list = js_sys::Object::keys(&message_keys_obj.clone().dyn_into().unwrap());
+            let message_keys_obj = get_object(&chain, "messageKeys").ok_or_else(|| {
+                invalid_js_data("migrate", "Missing messageKeys for legacy chain entry")
+            })?;
+            let message_keys_object = message_keys_obj
+                .clone()
+                .dyn_into::<js_sys::Object>()
+                .map_err(|_| invalid_js_data("migrate", "Invalid messageKeys object"))?;
+            let msg_keys_list = js_sys::Object::keys(&message_keys_object);
             let mut message_keys = Vec::new();
 
             for j in 0..msg_keys_list.length() {
                 let idx_val = msg_keys_list.get(j);
-                let idx = idx_val.as_f64().unwrap() as u32;
+                let idx = idx_val.as_f64().ok_or_else(|| {
+                    invalid_js_data("migrate", "Message key index is not a number")
+                })? as u32;
                 let msg_key_b64 = js_sys::Reflect::get(&message_keys_obj, &idx_val)
-                    .unwrap()
+                    .map_err(|err| {
+                        invalid_js_data(
+                            "migrate",
+                            format!("Missing message key {}: {:?}", idx, err),
+                        )
+                    })?
                     .as_string()
                     .unwrap_or_default();
                 let msg_key_bytes = BASE64_STANDARD.decode(msg_key_b64).unwrap_or_default();

@@ -69,7 +69,10 @@ fn js_to_node(val: &EncodingNode) -> Result<Node, JsValue> {
         _ if content_js.is_undefined() => Ok(None),
 
         _ if content_js.is_string() => {
-            Ok(Some(NodeContent::String(content_js.as_string().unwrap())))
+            let string_value = content_js.as_string().ok_or_else(|| {
+                JsValue::from_str("Content marked as string could not be extracted")
+            })?;
+            Ok(Some(NodeContent::String(string_value)))
         }
 
         _ if content_js.is_instance_of::<Uint8Array>() => {
@@ -144,13 +147,17 @@ impl InternalBinaryNode {
             for (k, v) in parser.attrs.iter() {
                 let key = JsValue::from_str(k);
                 let value = JsValue::from_str(v);
-                js_sys::Reflect::set(&obj, &key, &value).unwrap();
+                js_sys::Reflect::set(&obj, &key, &value).expect("Failed to cache attribute entry");
             }
 
             *cached = Some(obj.unchecked_into());
         }
 
-        cached.as_ref().unwrap().clone().unchecked_into()
+        cached
+            .as_ref()
+            .expect("Cached attributes should be populated before access")
+            .clone()
+            .unchecked_into()
     }
 
     #[wasm_bindgen(setter)]
