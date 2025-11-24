@@ -6,7 +6,7 @@ import {
   SenderKeyRecord,
   SenderKeyDistributionMessage,
   ProtocolAddress,
-} from "../dist/binary";
+} from "../dist";
 import { FakeStorage } from "./helpers/fake_storage";
 
 class LoggedFakeStorage extends FakeStorage {

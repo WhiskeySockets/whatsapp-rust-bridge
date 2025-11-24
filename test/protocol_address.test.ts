@@ -1,5 +1,5 @@
 import { describe, expect, it } from "bun:test";
-import { ProtocolAddress } from "../dist/binary";
+import { ProtocolAddress } from "../dist";
 
 describe("ProtocolAddress", () => {
   it("encodes and decodes correctly", () => {

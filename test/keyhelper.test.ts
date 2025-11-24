@@ -5,7 +5,7 @@ import {
   generateRegistrationId,
   generateSignedPreKey,
   verifySignature,
-} from "../dist/binary";
+} from "../dist";
 
 describe("keyhelper", () => {
   it("generates registration ids within the valid range", () => {

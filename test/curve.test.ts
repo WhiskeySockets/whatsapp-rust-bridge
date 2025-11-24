@@ -5,7 +5,7 @@ import {
   calculateSignature,
   verifySignature,
   getPublicFromPrivateKey,
-} from "../dist/binary";
+} from "../dist";
 
 const random32 = () =>
   Buffer.from(

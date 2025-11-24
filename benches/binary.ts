@@ -1,4 +1,4 @@
-import { decodeNode, encodeNode, type BinaryNode } from "../dist/binary.js";
+import { decodeNode, encodeNode, type BinaryNode } from "../dist/index.js";
 import { run, bench, group, do_not_optimize } from "mitata";
 
 const testNode: BinaryNode = {

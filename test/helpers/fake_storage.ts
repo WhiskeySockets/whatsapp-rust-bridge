@@ -4,7 +4,7 @@ import {
   SignedPreKeyType,
   generateIdentityKeyPair,
   generateRegistrationId,
-} from "../../dist/binary";
+} from "../../dist";
 
 export class FakeStorage {
   private sessions = new Map<string, Uint8Array>();

@@ -1,5 +1,5 @@
 import { describe, it, expect } from "bun:test";
-import { ProtocolAddress, SessionCipher, SessionRecord } from "../dist/binary";
+import { ProtocolAddress, SessionCipher, SessionRecord } from "../dist";
 import { FakeStorage } from "./helpers/fake_storage";
 
 describe("StorageAdapter Interop", () => {

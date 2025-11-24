@@ -1,5 +1,5 @@
 import { describe, it, expect } from "bun:test";
-import { SessionRecord } from "../dist/binary";
+import { SessionRecord } from "../dist";
 
 describe("SessionRecord Compatibility & Migration", () => {
   it("should handle legacy libsignal-node JSON format by returning a safe empty session", () => {

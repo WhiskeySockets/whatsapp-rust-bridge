@@ -1,5 +1,5 @@
 import { describe, it, expect } from "bun:test";
-import { ProtocolAddress, GroupCipher } from "../dist/binary";
+import { ProtocolAddress, GroupCipher } from "../dist";
 import { FakeStorage } from "./helpers/fake_storage";
 
 describe("Legacy SenderKey Migration", () => {

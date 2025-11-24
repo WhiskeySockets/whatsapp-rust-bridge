@@ -7,7 +7,7 @@ import {
   generateSignedPreKey,
   ProtocolAddress,
   SessionBuilder,
-} from "../dist/binary";
+} from "../dist";
 import { FakeStorage } from "./helpers/fake_storage";
 
 describe("SessionBuilder", () => {

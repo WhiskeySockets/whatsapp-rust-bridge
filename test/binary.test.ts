@@ -1,5 +1,5 @@
 import { describe, test, expect } from "bun:test";
-import { encodeNode, decodeNode, type BinaryNode } from "../dist/binary";
+import { encodeNode, decodeNode, type BinaryNode } from "../dist";
 
 function arraysEqual(a: Uint8Array, b: Uint8Array): boolean {
   if (a.length !== b.length) return false;

@@ -5,7 +5,7 @@ import {
   SessionCipher,
   generateSignedPreKey,
   generatePreKey,
-} from "../dist/binary";
+} from "../dist";
 import { FakeStorage } from "./helpers/fake_storage";
 
 describe("SessionCipher end-to-end", () => {

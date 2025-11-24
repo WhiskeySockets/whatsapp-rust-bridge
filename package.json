@@ -1,6 +1,6 @@
 {
   "name": "whatsapp-rust-bridge",
-  "version": "0.4.0-alpha.4",
+  "version": "0.4.0",
   "description": "A high-performance utilities for WhatsApp, powered by Rust and WebAssembly.",
   "author": "João Lucas <jlucaso@hotmail.com>",
   "license": "MIT",
@@ -14,15 +14,15 @@
     "pkg/whatsapp_rust_bridge.d.ts"
   ],
   "exports": {
-    "./binary": {
-      "import": "./dist/binary.js",
-      "types": "./dist/binary.d.ts"
+    ".": {
+      "import": "./dist/index.js",
+      "types": "./dist/index.d.ts"
     }
   },
   "scripts": {
-    "bench": "bun run build && bun run benches/binary.ts",
+    "bench": "bun run build && bun run benches/binary.ts && bun run benches/signal.ts",
     "build:wasm": "wasm-pack build --target web --out-dir pkg --no-pack",
-    "build:ts": "bun build ts/binary.ts --outfile dist/binary.js",
+    "build:ts": "bun build ts/index.ts --outfile dist/index.js",
     "postbuild": "tsc -p tsconfig.json --outDir dist",
     "build": "bun run build:wasm && bun run build:ts && bun run postbuild",
     "prepublishOnly": "bun run build"
