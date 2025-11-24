@@ -1,0 +1,94 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+  NODE_VERSION: 24
+
+jobs:
+  fmt-clippy:
+    name: Rust Format & Clippy
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust (nightly)
+        uses: dtolnay/rust-toolchain@nightly
+        with:
+          components: rustfmt, clippy
+
+      - name: Cargo fmt --check
+        run: cargo fmt --all -- --check
+
+      - name: Cargo clippy
+        run: cargo clippy --all-targets --all-features -- -D warnings
+
+  build-and-test:
+    name: Build + Test (Bun) + Benchmark (Node.js)
+    runs-on: ubuntu-latest
+    needs: fmt-clippy
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust (nightly)
+        uses: dtolnay/rust-toolchain@nightly
+
+      - name: Cache Rust dependencies
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: "."
+          key: "${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}"
+
+      - name: Install wasm-pack
+        run: curl https://rustwasm.github.io/wasm-pack/installer/init.sh -sSf | sh
+
+      - name: Install Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+
+      - name: Install Node.js ${{ env.NODE_VERSION }}
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: "npm"
+
+      - name: Install JavaScript dependencies
+        run: bun install
+
+      - name: Build WASM package
+        run: |
+          wasm-pack build --target web --out-dir pkg --release
+          # Fix .gitignore issue in pkg (wasm-pack includes it by default)
+          rm -f pkg/.gitignore
+
+      - name: Run TypeScript compilation (generate .d.ts)
+        run: bun run build:ts
+
+      - name: Run Tests with Bun
+        run: bun test
+        env:
+          # Optional: make test output clearer
+          CI: true
+
+      - name: Run Benchmarks with Node.js 24
+        run: |
+          bun run bench:node
+        env:
+          CI: true
+
+  success:
+    name: All checks passed
+    if: success()
+    needs: [fmt-clippy, build-and-test]
+    runs-on: ubuntu-latest
+    steps:
+      - run: echo "All checks passed!"
