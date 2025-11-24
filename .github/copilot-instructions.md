@@ -1,5 +1,57 @@
 # WhatsApp Rust Bridge - AI Coding Guidelines
 
+Quick orientation for AI agents and contributors: this repo is a Rust → WebAssembly bridge that provides binary encoding/decoding utilities for WhatsApp protocols and a small LibSignal helper layer with JS bindings and TS types.
+
+Core summary
+
+- Rust WASM core (`src/`) exposes functions (via `wasm_bindgen`) consumed in JS/TS.
+- TypeScript wrapper (`ts/binary.ts`) bundles wasm + lightweight entry API and exposes the `dist/` exports.
+- Tests are in `test/` (Bun) and benches in `benches/` (Mitata).
+
+Key files to review
+
+- `src/wasm_api.rs` — JS ↔ Rust conversions, zero-copy decoding, caching, wasm exports (`encode_node`/`decode_node`).
+- `src/key_helper_api.rs` — LibSignal helpers and key generation exposed to JS.
+- `ts/binary.ts` + `ts/macro.ts` — WASM initialization and build-time embedding for runtime/CI.
+- `test/` — Rigorous round-trip tests that illustrate supported content/attr conventions.
+
+Important patterns (do not deviate without a PR note)
+
+- Zero-copy decoding: `InternalBinaryNode` keeps an owned `Arc<Box<[u8]>>` buffer and returns `NodeRef` references (unsafe `mem::transmute` into `'static`). Be careful when adjusting lifetimes.
+- JS → Rust encoding: `js_to_node()` coerces non-string attrs to strings and skips empty values; content can be `string`, `Uint8Array` or `BinaryNode[]`.
+- Content types: decoded string content is returned as `Uint8Array` (UTF-8). Known token strings are encoded efficiently (small bytes). Ensure tests cover token vs binary behavior.
+- Export naming: `#[wasm_bindgen(js_name = XXX)]` controls JS names (e.g., `encode_node` → `encodeNode`). Keep `typescript_custom_section` updated for TS types.
+
+Build, test & release flow
+
+- Local dev build (WASM + TS):
+  - `bun run build` — runs `wasm-pack build` then TypeScript bundling; produces `pkg/` and `dist/`.
+  - `bun test` — run unit tests in `test/`. (always remember to run `bun run build` first to ensure latest changes are tested)
+  - `bun run bench` — build + run benches in `benches/`.
+- Ensure you have `wasm-pack`, `bun`, and `wasm-opt` available when building.
+
+Conventions & examples
+
+- Naming: Rust functions are `snake_case`, exports use a `js_name` camelCase; TS uses camelCase for functions.
+- Mutation model: `InternalBinaryNode` exposes JS getters/setters for `attrs` and `content`. Tests mutate and re-encode — ensure setters reflect intended semantics and re-encode correctly.
+
+Tests & contributing guidance
+
+- Follow the round-trip tests in `test/binary.test.ts` for behavior coverage: token strings, binary vs string content, attr coercion, and mutation/round-trip persistence.
+- Prefer adding tests whenever changing encoding/decoding semantics; maintain parity between `encodeNode`/`decodeNode`.
+
+Gotchas
+
+- Unsafe lifetime coercion: the crate uses `transmute` to create a `'static` slice for NodeRef — any change must preserve memory ownership semantics.
+- Type conversions: `js_to_node` converts numbers/booleans to strings and drops null/undefined/empty attrs.
+- Build order matters: wasm build (pkg) must be generated before TS bundling.
+
+If anything's unclear, ask for the target: (a) add a new wasm export, (b) change payload format, or (c) alter the Node lifetime/caching semantics.
+
+— End of guide —
+
+# WhatsApp Rust Bridge - AI Coding Guidelines
+
 ## Architecture Overview
 
 This is a high-performance Rust-WebAssembly bridge for WhatsApp's binary protocol. The core architecture consists of:
