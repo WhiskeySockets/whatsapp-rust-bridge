@@ -1,10 +1,10 @@
 import {
   SessionRecord,
-  KeyPairType,
-  SignedPreKeyType,
+  type KeyPairType,
+  type SignedPreKeyType,
   generateIdentityKeyPair,
   generateRegistrationId,
-} from "../../dist";
+} from "../../dist/index.js";
 
 export class FakeStorage {
   private sessions = new Map<string, Uint8Array>();
