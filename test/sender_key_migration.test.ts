@@ -29,8 +29,10 @@ describe("Legacy SenderKey Migration", () => {
     const legacyBytes = Buffer.from(legacyJson, "utf-8");
 
     // Store it in the fake storage
-    // @ts-ignore
-    storage.senderKeys.set(`${groupId}::${sender.toString()}`, legacyBytes);
+    storage.senderKeys.set(
+      `${groupId}::${sender.id}::${sender.deviceId}`,
+      legacyBytes
+    );
 
     const cipher = new GroupCipher(storage, groupId, sender);
 

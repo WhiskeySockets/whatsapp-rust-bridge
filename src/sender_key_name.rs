@@ -15,7 +15,7 @@ impl fmt::Display for SenderKeyName {
 impl SenderKeyName {
     #[wasm_bindgen(constructor)]
     pub fn new(group_id: String, sender: &ProtocolAddress) -> Self {
-        let sender_id = sender.0.to_string();
+        let sender_id = format!("{}::{}", sender.0.name(), sender.0.device_id());
         Self(CoreSenderKeyName::new(group_id, sender_id))
     }
 

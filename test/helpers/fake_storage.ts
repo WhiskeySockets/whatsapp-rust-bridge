@@ -10,7 +10,7 @@ export class FakeStorage {
   private sessions = new Map<string, Uint8Array>();
   private identities = new Map<string, Uint8Array>();
   private preKeys = new Map<number, KeyPairType>();
-  private senderKeys = new Map<string, Uint8Array>();
+  public senderKeys = new Map<string, Uint8Array>();
   private signedPreKeys = new Map<number, SignedPreKeyType>();
 
   public ourIdentityKeyPair: KeyPairType;
