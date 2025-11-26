@@ -9,7 +9,7 @@ describe("Image Utils", () => {
   const imageBuffer = Buffer.from(SAMPLE_IMAGE, "base64");
 
   it("extracts an image thumbnail", () => {
-    const result = extractImageThumb(imageBuffer, 32) as any;
+    const result = extractImageThumb(imageBuffer, 32);
 
     expect(result).toBeDefined();
     expect(result.original).toBeDefined();
@@ -22,7 +22,7 @@ describe("Image Utils", () => {
 
   it("generates a square profile picture", () => {
     const targetWidth = 64;
-    const result = generateProfilePicture(imageBuffer, targetWidth) as any;
+    const result = generateProfilePicture(imageBuffer, targetWidth);
 
     expect(result).toBeDefined();
     expect(result.img).toBeInstanceOf(Uint8Array);
