@@ -3,12 +3,35 @@ use image::imageops::FilterType;
 use image::{DynamicImage, GenericImageView};
 use js_sys::{Object, Reflect, Uint8Array};
 use std::io::Cursor;
-use wasm_bindgen::prelude::*;
+use wasm_bindgen::{JsCast, prelude::*};
 
 const JPEG_QUALITY: u8 = 50;
 
+#[wasm_bindgen(typescript_custom_section)]
+const IMAGE_TYPES: &'static str = r#"
+export interface ImageThumbResult {
+    buffer: Uint8Array;
+    original: { width: number; height: number };
+}
+
+export interface ProfilePictureResult {
+    img: Uint8Array;
+}
+"#;
+
+#[wasm_bindgen]
+extern "C" {
+    #[wasm_bindgen(
+        typescript_type = "{ buffer: Uint8Array; original: { width: number; height: number } }"
+    )]
+    pub type ImageThumbResult;
+
+    #[wasm_bindgen(typescript_type = "{ img: Uint8Array }")]
+    pub type ProfilePictureResult;
+}
+
 #[wasm_bindgen(js_name = extractImageThumb)]
-pub fn extract_image_thumb(image_data: &[u8], width: u32) -> Result<Object, JsValue> {
+pub fn extract_image_thumb(image_data: &[u8], width: u32) -> Result<ImageThumbResult, JsValue> {
     if width == 0 {
         return Err(JsValue::from_str("width must be greater than zero"));
     }
@@ -40,11 +63,14 @@ pub fn extract_image_thumb(image_data: &[u8], width: u32) -> Result<Object, JsVa
     )?;
     Reflect::set(&result, &JsValue::from_str("original"), &original.into())?;
 
-    Ok(result)
+    Ok(result.unchecked_into())
 }
 
 #[wasm_bindgen(js_name = generateProfilePicture)]
-pub fn generate_profile_picture(image_data: &[u8], target_width: u32) -> Result<Object, JsValue> {
+pub fn generate_profile_picture(
+    image_data: &[u8],
+    target_width: u32,
+) -> Result<ProfilePictureResult, JsValue> {
     if target_width == 0 {
         return Err(JsValue::from_str("target width must be greater than zero"));
     }
@@ -60,7 +86,7 @@ pub fn generate_profile_picture(image_data: &[u8], target_width: u32) -> Result<
         &Uint8Array::from(jpeg.as_slice()).into(),
     )?;
 
-    Ok(result)
+    Ok(result.unchecked_into())
 }
 
 fn load_image(image_data: &[u8]) -> Result<DynamicImage, JsValue> {
