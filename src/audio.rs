@@ -20,32 +20,12 @@ pub fn generate_audio_waveform(audio_data: &[u8]) -> Result<Uint8Array, JsValue>
         return Err(JsValue::from_str("Audio buffer is empty"));
     }
 
-    // Feed the raw bytes into Symphonia via an in-memory cursor.
-    let cursor = Cursor::new(audio_data.to_vec());
-    let mss = MediaSourceStream::new(Box::new(cursor), Default::default());
-
-    let hint = Hint::new();
-    let format_opts = FormatOptions::default();
-    let metadata_opts = MetadataOptions::default();
-    let decoder_opts = DecoderOptions::default();
-
-    let probed = symphonia::default::get_probe()
-        .format(&hint, mss, &format_opts, &metadata_opts)
-        .map_err(|e| JsValue::from_str(&format!("Failed to probe audio format: {e}")))?;
-
-    let mut format = probed.format;
-
-    let track = format
-        .tracks()
-        .iter()
-        .find(|t| t.codec_params.codec != CODEC_TYPE_NULL)
-        .ok_or_else(|| JsValue::from_str("No supported audio track found"))?;
-
-    let mut decoder = symphonia::default::get_codecs()
-        .make(&track.codec_params, &decoder_opts)
-        .map_err(|e| JsValue::from_str(&format!("Failed to create decoder: {e}")))?;
-
-    let track_id = track.id;
+    let DecoderContext {
+        mut format,
+        mut decoder,
+        track_id,
+        ..
+    } = prepare_decoder(audio_data)?;
     let mut samples: Vec<f32> = Vec::new();
 
     loop {
@@ -299,9 +279,10 @@ async fn read_from_reader(reader: ReadableStreamDefaultReader) -> Result<Vec<u8>
         let value = Reflect::get(&result, &JsValue::from_str("value"))?;
         if !value.is_undefined() && !value.is_null() {
             let chunk = Uint8Array::new(&value);
-            let mut buffer = vec![0; chunk.length() as usize];
-            chunk.copy_to(&mut buffer);
-            chunks.extend_from_slice(&buffer);
+            let chunk_len = chunk.length() as usize;
+            let prev_len = chunks.len();
+            chunks.resize(prev_len + chunk_len, 0);
+            chunk.copy_to(&mut chunks[prev_len..]);
         }
     }
 

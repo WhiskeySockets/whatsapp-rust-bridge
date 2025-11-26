@@ -58,4 +58,13 @@ describe("Audio Duration", () => {
     expect(duration).toBeLessThan(5);
     expect(duration).toBeCloseTo(EXPECTED_DURATION_SECONDS, 6);
   });
+
+  it("throws on invalid audio data", async () => {
+    const randomBytes = new Uint8Array(256).fill(0x55);
+    await expect(getAudioDuration(randomBytes)).rejects.toThrow();
+  });
+
+  it("throws on empty input", async () => {
+    await expect(getAudioDuration(new Uint8Array())).rejects.toThrow();
+  });
 });
