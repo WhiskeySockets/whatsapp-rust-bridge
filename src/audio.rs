@@ -1,18 +1,22 @@
 use js_sys::{ArrayBuffer, Reflect, Uint8Array};
 use std::io::Cursor;
-use symphonia::core::audio::SampleBuffer;
+use symphonia::core::audio::{AudioBuffer, AudioBufferRef, Signal};
 use symphonia::core::codecs::{CODEC_TYPE_NULL, Decoder, DecoderOptions};
 use symphonia::core::errors::Error;
-use symphonia::core::formats::{FormatOptions, FormatReader};
+use symphonia::core::formats::{FormatOptions, FormatReader, Track};
 use symphonia::core::io::MediaSourceStream;
 use symphonia::core::meta::MetadataOptions;
 use symphonia::core::probe::Hint;
+use symphonia::core::units::TimeBase;
+use symphonia::core::{conv::IntoSample, sample::Sample};
 use wasm_bindgen::{JsCast, prelude::*};
 use wasm_bindgen_futures::JsFuture;
 use web_sys::{ReadableStream, ReadableStreamDefaultReader};
 
 /// WhatsApp uses 64 buckets for visual waveforms.
 const WAVEFORM_SAMPLES: usize = 64;
+/// Aggregate raw samples into medium-sized chunks to keep memory bounded.
+const WAVEFORM_CHUNK_SIZE: usize = 2048;
 
 #[wasm_bindgen(js_name = generateAudioWaveform)]
 pub fn generate_audio_waveform(audio_data: &[u8]) -> Result<Uint8Array, JsValue> {
@@ -26,7 +30,7 @@ pub fn generate_audio_waveform(audio_data: &[u8]) -> Result<Uint8Array, JsValue>
         track_id,
         ..
     } = prepare_decoder(audio_data)?;
-    let mut samples: Vec<f32> = Vec::new();
+    let mut builder = WaveformBuilder::new(WAVEFORM_CHUNK_SIZE);
 
     loop {
         let packet = match format.next_packet() {
@@ -54,27 +58,7 @@ pub fn generate_audio_waveform(audio_data: &[u8]) -> Result<Uint8Array, JsValue>
 
         match decoder.decode(&packet) {
             Ok(audio_buf) => {
-                let spec = *audio_buf.spec();
-                let channel_count = spec.channels.count();
-                if channel_count == 0 {
-                    continue;
-                }
-
-                let capacity = audio_buf.capacity() as u64;
-                let mut sample_buf = SampleBuffer::<f32>::new(capacity, spec);
-                sample_buf.copy_interleaved_ref(audio_buf);
-
-                let data = sample_buf.samples();
-                let frame_count = data.len() / channel_count;
-
-                for frame_idx in 0..frame_count {
-                    let mut sum = 0.0;
-                    for channel in 0..channel_count {
-                        let sample = data[frame_idx * channel_count + channel];
-                        sum += sample;
-                    }
-                    samples.push(sum / channel_count as f32);
-                }
+                accumulate_waveform_samples(&audio_buf, &mut builder);
             }
             Err(Error::IoError(ref e))
                 if matches!(
@@ -97,11 +81,13 @@ pub fn generate_audio_waveform(audio_data: &[u8]) -> Result<Uint8Array, JsValue>
         }
     }
 
-    if samples.is_empty() {
+    let chunks = builder.finish();
+
+    if chunks.is_empty() {
         return Err(JsValue::from_str("No audio samples decoded"));
     }
 
-    let waveform = process_waveform(&samples, WAVEFORM_SAMPLES);
+    let waveform = build_waveform(&chunks, WAVEFORM_SAMPLES);
     Ok(Uint8Array::from(waveform.as_slice()))
 }
 
@@ -133,10 +119,18 @@ fn compute_audio_duration(audio_data: &[u8]) -> Result<f64, JsValue> {
         sample_rate,
     } = prepare_decoder(audio_data)?;
 
-    let sample_rate =
-        sample_rate.ok_or_else(|| JsValue::from_str("Audio track missing sample rate"))?;
+    let track = format
+        .tracks()
+        .iter()
+        .find(|track| track.id == track_id)
+        .cloned()
+        .ok_or_else(|| JsValue::from_str("No supported audio track found"))?;
 
-    let mut total_frames: u64 = 0;
+    if let Some(duration) = duration_from_track_metadata(&track) {
+        return Ok(duration);
+    }
+
+    let mut stats = DurationAccumulator::default();
 
     loop {
         let packet = match format.next_packet() {
@@ -162,71 +156,230 @@ fn compute_audio_duration(audio_data: &[u8]) -> Result<f64, JsValue> {
             continue;
         }
 
-        match decoder.decode(&packet) {
-            Ok(audio_buf) => {
-                total_frames += audio_buf.frames() as u64;
-            }
-            Err(Error::IoError(ref e))
-                if matches!(
-                    e.kind(),
-                    std::io::ErrorKind::UnexpectedEof | std::io::ErrorKind::NotFound
-                ) =>
-            {
-                break;
-            }
-            Err(Error::DecodeError(_)) => continue,
-            Err(Error::ResetRequired) => {
-                decoder.reset();
-                continue;
-            }
-            Err(e) => {
-                return Err(JsValue::from_str(&format!(
-                    "Failed to decode audio frame: {e}"
-                )));
-            }
-        }
+        stats.update(packet.ts(), packet.dur());
     }
 
-    if total_frames == 0 {
-        return Err(JsValue::from_str("No audio samples decoded"));
-    }
+    let ticks = stats
+        .elapsed_ticks()
+        .ok_or_else(|| JsValue::from_str("No audio samples decoded"))?;
 
-    Ok(total_frames as f64 / sample_rate as f64)
+    let duration = convert_ticks_to_seconds(
+        ticks,
+        track.codec_params.time_base,
+        sample_rate.or(track.codec_params.sample_rate),
+    )
+    .ok_or_else(|| JsValue::from_str("Missing timing information for audio track"))?;
+
+    Ok(duration)
 }
 
-fn process_waveform(samples: &[f32], target_bins: usize) -> Vec<u8> {
-    if samples.is_empty() {
+fn build_waveform(chunks: &[WaveformChunk], target_bins: usize) -> Vec<u8> {
+    if chunks.is_empty() || target_bins == 0 {
         return vec![0; target_bins];
     }
 
-    let total_samples = samples.len();
-    let chunk_size = (total_samples as f64 / target_bins as f64).max(1.0);
+    let total_samples: u64 = chunks.iter().map(|chunk| chunk.count as u64).sum();
+    if total_samples == 0 {
+        return vec![0; target_bins];
+    }
 
-    let mut bins = Vec::with_capacity(target_bins);
-    let mut max_val: f32 = 0.0;
+    let samples_per_bin = (total_samples as f64 / target_bins as f64).max(1.0);
+    let mut bin_sums = vec![0.0f64; target_bins];
+    let mut bin_counts = vec![0.0f64; target_bins];
+    let mut bin_idx = 0usize;
+    let mut bin_remaining = samples_per_bin;
 
-    for i in 0..target_bins {
-        let start = (i as f64 * chunk_size).floor() as usize;
-        let end = (((i + 1) as f64 * chunk_size).floor() as usize).min(total_samples);
-
-        if start >= end {
-            bins.push(0.0);
+    for chunk in chunks {
+        if chunk.count == 0 {
             continue;
         }
 
-        let mut sum = 0.0;
-        for sample in &samples[start..end] {
-            sum += sample.abs();
+        let chunk_total = f64::from(chunk.count);
+        let mut chunk_remaining = chunk_total;
+
+        while chunk_remaining > 0.0 && bin_idx < target_bins {
+            let take = bin_remaining.min(chunk_remaining);
+            let contribution = chunk.sum_abs * (take / chunk_total);
+            bin_sums[bin_idx] += contribution;
+            bin_counts[bin_idx] += take;
+            chunk_remaining -= take;
+            bin_remaining -= take;
+
+            if bin_remaining <= f64::EPSILON {
+                bin_idx += 1;
+                bin_remaining = samples_per_bin;
+            }
         }
-        let avg = sum / (end - start) as f32;
-        max_val = max_val.max(avg);
-        bins.push(avg);
+
+        if bin_idx >= target_bins {
+            break;
+        }
     }
 
-    let multiplier = if max_val > 0.0 { 100.0 / max_val } else { 0.0 };
-    bins.iter()
-        .map(|val| (val * multiplier).clamp(0.0, 100.0) as u8)
+    let mut max_avg = 0.0f64;
+    let mut averages = vec![0.0f64; target_bins];
+    for i in 0..target_bins {
+        if bin_counts[i] > 0.0 {
+            let avg = bin_sums[i] / bin_counts[i];
+            averages[i] = avg;
+            if avg > max_avg {
+                max_avg = avg;
+            }
+        }
+    }
+
+    if max_avg == 0.0 {
+        return vec![0; target_bins];
+    }
+
+    averages
+        .into_iter()
+        .map(|avg| (avg * (100.0 / max_avg)).clamp(0.0, 100.0) as u8)
         .collect()
+}
+
+fn accumulate_waveform_samples(buffer: &AudioBufferRef<'_>, builder: &mut WaveformBuilder) {
+    match buffer {
+        AudioBufferRef::U8(buf) => accumulate_from_buffer(buf.as_ref(), builder),
+        AudioBufferRef::U16(buf) => accumulate_from_buffer(buf.as_ref(), builder),
+        AudioBufferRef::U24(buf) => accumulate_from_buffer(buf.as_ref(), builder),
+        AudioBufferRef::U32(buf) => accumulate_from_buffer(buf.as_ref(), builder),
+        AudioBufferRef::S8(buf) => accumulate_from_buffer(buf.as_ref(), builder),
+        AudioBufferRef::S16(buf) => accumulate_from_buffer(buf.as_ref(), builder),
+        AudioBufferRef::S24(buf) => accumulate_from_buffer(buf.as_ref(), builder),
+        AudioBufferRef::S32(buf) => accumulate_from_buffer(buf.as_ref(), builder),
+        AudioBufferRef::F32(buf) => accumulate_from_buffer(buf.as_ref(), builder),
+        AudioBufferRef::F64(buf) => accumulate_from_buffer(buf.as_ref(), builder),
+    }
+}
+
+fn accumulate_from_buffer<S>(buffer: &AudioBuffer<S>, builder: &mut WaveformBuilder)
+where
+    S: Sample + IntoSample<f32>,
+{
+    let channel_count = buffer.spec().channels.count();
+    if channel_count == 0 {
+        return;
+    }
+
+    let frames = buffer.frames();
+    if frames == 0 {
+        return;
+    }
+
+    let mut channel_slices: Vec<&[S]> = Vec::with_capacity(channel_count);
+    for channel in 0..channel_count {
+        channel_slices.push(buffer.chan(channel));
+    }
+
+    for frame_idx in 0..frames {
+        let mut sum = 0.0f32;
+        for plane in &channel_slices {
+            sum += plane[frame_idx].into_sample();
+        }
+
+        let avg = sum / channel_count as f32;
+        builder.ingest(f64::from(avg.abs()));
+    }
+}
+
+struct WaveformBuilder {
+    chunks: Vec<WaveformChunk>,
+    chunk_sum: f64,
+    chunk_count: u32,
+    chunk_size: usize,
+}
+
+impl WaveformBuilder {
+    fn new(chunk_size: usize) -> Self {
+        WaveformBuilder {
+            chunks: Vec::new(),
+            chunk_sum: 0.0,
+            chunk_count: 0,
+            chunk_size,
+        }
+    }
+
+    fn ingest(&mut self, sample: f64) {
+        self.chunk_sum += sample;
+        self.chunk_count += 1;
+
+        if self.chunk_count as usize == self.chunk_size {
+            self.flush();
+        }
+    }
+
+    fn flush(&mut self) {
+        if self.chunk_count == 0 {
+            return;
+        }
+
+        self.chunks.push(WaveformChunk {
+            sum_abs: self.chunk_sum,
+            count: self.chunk_count,
+        });
+
+        self.chunk_sum = 0.0;
+        self.chunk_count = 0;
+    }
+
+    fn finish(mut self) -> Vec<WaveformChunk> {
+        self.flush();
+        self.chunks
+    }
+}
+
+fn duration_from_track_metadata(track: &Track) -> Option<f64> {
+    let codec_params = &track.codec_params;
+    let frames = codec_params.n_frames?;
+
+    convert_ticks_to_seconds(frames, codec_params.time_base, codec_params.sample_rate)
+}
+
+fn convert_ticks_to_seconds(
+    ticks: u64,
+    time_base: Option<TimeBase>,
+    sample_rate: Option<u32>,
+) -> Option<f64> {
+    if ticks == 0 {
+        return None;
+    }
+
+    if let Some(tb) = time_base {
+        let time = tb.calc_time(ticks);
+        return Some(time.seconds as f64 + time.frac);
+    }
+
+    sample_rate.map(|rate| ticks as f64 / rate as f64)
+}
+
+#[derive(Default)]
+struct DurationAccumulator {
+    first_ts: Option<u64>,
+    max_end_ts: u64,
+}
+
+impl DurationAccumulator {
+    fn update(&mut self, ts: u64, dur: u64) {
+        if self.first_ts.is_none() {
+            self.first_ts = Some(ts);
+        }
+
+        let end = ts.saturating_add(dur);
+        if end > self.max_end_ts {
+            self.max_end_ts = end;
+        }
+    }
+
+    fn elapsed_ticks(&self) -> Option<u64> {
+        let start = self.first_ts?;
+        Some(self.max_end_ts.saturating_sub(start))
+    }
+}
+
+struct WaveformChunk {
+    sum_abs: f64,
+    count: u32,
 }
 
 async fn normalize_audio_input(input: JsValue) -> Result<Vec<u8>, JsValue> {

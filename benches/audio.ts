@@ -1,6 +1,9 @@
 import { bench, do_not_optimize, boxplot, summary, run } from "mitata";
-import { generateAudioWaveform } from "../dist/index.js";
-import { getAudioWaveform as getAudioWaveformOld } from "baileys";
+import { generateAudioWaveform, getAudioDuration } from "../dist/index.js";
+import {
+  getAudioWaveform as getAudioWaveformOld,
+  getAudioDuration as getAudioDurationOld,
+} from "baileys";
 import fs from "node:fs";
 
 const fileBuffer = fs.readFileSync("./assets/sonata.mp3");
@@ -15,6 +18,18 @@ boxplot(() => {
     bench("Waveform libsignal-node", async () => {
       const waveform = await getAudioWaveformOld(fileBuffer);
       do_not_optimize(waveform);
+    });
+  });
+
+  summary(() => {
+    bench("Duration wasm/rust", async () => {
+      const duration = await getAudioDuration(fileBuffer);
+      do_not_optimize(duration);
+    });
+
+    bench("Duration libsignal-node", async () => {
+      const duration = await getAudioDurationOld(fileBuffer);
+      do_not_optimize(duration);
     });
   });
 });
