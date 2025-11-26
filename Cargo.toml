@@ -39,6 +39,11 @@ curve25519-dalek = { version = "4.1.3", default-features = false, features = [
   "digest",
 ] }
 getrandom = { version = "0.3.4", features = ["wasm_js"] }
+image = { version = "0.25.5", default-features = false, features = [
+  "jpeg",
+  "png",
+  "webp",
+] }
 js-sys = "0.3"
 log = "0.4"
 prost = { version = "0.14.1", default-features = false }

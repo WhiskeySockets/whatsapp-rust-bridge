@@ -2,6 +2,7 @@ pub mod binary;
 pub mod curve;
 pub mod group_cipher;
 pub mod group_types;
+pub mod image_utils;
 pub mod key_helper;
 pub mod logger;
 pub mod protocol_address;
