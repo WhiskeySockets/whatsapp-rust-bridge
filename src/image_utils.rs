@@ -75,8 +75,8 @@ pub fn generate_profile_picture(
         return Err(JsValue::from_str("target width must be greater than zero"));
     }
 
-    let img = load_image(image_data)?;
-    let resized = img.resize_to_fill(target_width, target_width, FilterType::Triangle);
+    let resized =
+        load_image(image_data)?.resize_to_fill(target_width, target_width, FilterType::Triangle);
     let jpeg = encode_jpeg(&resized)?;
 
     let result = Object::new();
