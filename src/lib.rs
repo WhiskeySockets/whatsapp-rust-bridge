@@ -1,3 +1,4 @@
+pub mod audio_waveform;
 pub mod binary;
 pub mod curve;
 pub mod group_cipher;
