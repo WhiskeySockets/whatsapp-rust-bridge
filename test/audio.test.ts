@@ -1,22 +1,13 @@
 import { describe, it, expect } from "bun:test";
 import { generateAudioWaveform, getAudioDuration } from "../dist";
+import fs from "node:fs";
 
-const MP3_BASE64 =
-  "SUQzBAAAAAAAIlRTU0UAAAAOAAADTGF2ZjYyLjMuMTAwAAAAAAAAAAAAAAD/+0DAAAAAAAAAAAAAAAAAAAAAAABJbmZvAAAA" +
-  "DwAAAAUAAAK+AGhoaGhoaGhoaGhoaGhoaGhoaGiOjo6Ojo6Ojo6Ojo6Ojo6Ojo6OjrS0tLS0tLS0tLS0tLS0tLS0tLS02tra2tr" +
-  "a2tra2tra2tra2tra2tr//////////////////////////wAAAABMYXZjNjIuMTEAAAAAAAAAAAAAAAAkAwYAAAAAAAACvhC6F/0AA" +
-  "AAAAP/7EMQAA8AAAaQAAAAgAAA0gAAABExBTUUzLjEwMFVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVV" +
-  "VVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVV//sQxCmDwAABpAAAACAAADSAAAAEVVVVVVVVVVVVVVVVVVVVVVVVVVVV" +
-  "VVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVX/+xDEUwPAAAGkAAAAIAAANIAAAAR" +
-  "VVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVV" +
-  "VVVVVVVVVVVf/7EMR8g8AAAaQAAAAgAAA0gAAABFVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVV" +
-  "VVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVV//sQxKYDwAABpAAAACAAADSAAAAEVVVVVVVVVVVVVVVVVVVVVVVVV" +
-  "VVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVU=%";
-const EXPECTED_DURATION_SECONDS = 0.052244897959183675;
+const EXPECTED_DURATION_SECONDS = 42.736326530612246;
+
+const audioBuffer = fs.readFileSync("./assets/sonata.mp3");
 
 describe("Audio Waveform Generation", () => {
   it("creates a 64-sample waveform from MP3 audio", () => {
-    const audioBuffer = Buffer.from(MP3_BASE64, "base64");
     const waveform = generateAudioWaveform(audioBuffer);
 
     expect(waveform).toBeInstanceOf(Uint8Array);
@@ -36,26 +27,28 @@ describe("Audio Waveform Generation", () => {
 
 describe("Audio Duration", () => {
   it("returns duration for Uint8Array input", async () => {
-    const audioBuffer = Buffer.from(MP3_BASE64, "base64");
     const duration = await getAudioDuration(audioBuffer);
 
     expect(duration).toBeGreaterThan(0);
-    expect(duration).toBeLessThan(5);
+    expect(duration).toBeGreaterThan(40);
+    expect(duration).toBeLessThan(45);
     expect(duration).toBeCloseTo(EXPECTED_DURATION_SECONDS, 6);
   });
 
   it("supports ReadableStream input", async () => {
-    const audioBuffer = Buffer.from(MP3_BASE64, "base64");
+    const chunkSize = 64 * 1024;
     const stream = new ReadableStream<Uint8Array>({
       start(controller) {
-        controller.enqueue(audioBuffer);
+        for (let offset = 0; offset < audioBuffer.length; offset += chunkSize) {
+          controller.enqueue(audioBuffer.subarray(offset, offset + chunkSize));
+        }
         controller.close();
       },
     });
 
     const duration = await getAudioDuration(stream);
-    expect(duration).toBeGreaterThan(0);
-    expect(duration).toBeLessThan(5);
+    expect(duration).toBeGreaterThan(40);
+    expect(duration).toBeLessThan(45);
     expect(duration).toBeCloseTo(EXPECTED_DURATION_SECONDS, 6);
   });
 
