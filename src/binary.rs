@@ -1,7 +1,8 @@
+use indexmap::IndexMap;
 use js_sys::{Array, Object, Uint8Array};
+use std::cell::RefCell;
 use std::mem;
 use std::sync::Arc;
-use std::{cell::RefCell, collections::HashMap};
 use wacore_binary::{
     marshal::{marshal, unmarshal_ref},
     node::{Node, NodeContent, NodeContentRef, NodeRef},
@@ -35,7 +36,7 @@ extern "C" {
 fn js_to_node(val: &EncodingNode) -> Result<Node, JsValue> {
     let attrs_obj = val.attrs().unchecked_into::<Object>();
     let entries = Object::entries(&attrs_obj);
-    let mut attrs = HashMap::with_capacity(entries.length() as usize);
+    let mut attrs = IndexMap::with_capacity(entries.length() as usize);
 
     for i in 0..entries.length() {
         let entry = entries.get(i);
