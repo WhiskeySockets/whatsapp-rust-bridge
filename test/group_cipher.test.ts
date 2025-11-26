@@ -38,7 +38,7 @@ describe("Group Encryption end-to-end", () => {
 
     // === 2. SESSION ESTABLISHMENT (Alice creates, Bob processes) ===
     console.log("--- Step 1: Alice creates group session ---");
-    const aliceBuilder = new GroupSessionBuilder(aliceStorage as any);
+    const aliceBuilder = new GroupSessionBuilder(aliceStorage);
     const aliceSenderKeyName = new SenderKeyName(groupId, aliceAddress);
 
     // Alice creates the initial distribution message
@@ -57,7 +57,7 @@ describe("Group Encryption end-to-end", () => {
     console.log(
       "--- Step 2: Bob processes Alice's session creation message ---"
     );
-    const bobBuilder = new GroupSessionBuilder(bobStorage as any);
+    const bobBuilder = new GroupSessionBuilder(bobStorage);
 
     // Bob processes the message from Alice. The SenderKeyName must identify Alice.
     await bobBuilder.process(aliceSenderKeyName, aliceSkdm);
@@ -74,11 +74,7 @@ describe("Group Encryption end-to-end", () => {
 
     // === 3. ALICE SENDS A MESSAGE ===
     console.log("--- Step 3: Alice encrypts a message for the group ---");
-    const aliceCipher = new GroupCipher(
-      aliceStorage as any,
-      groupId,
-      aliceAddress
-    );
+    const aliceCipher = new GroupCipher(aliceStorage, groupId, aliceAddress);
     const plaintext1 = Buffer.from("Hello from Alice!");
 
     const ciphertext1 = await aliceCipher.encrypt(plaintext1);
@@ -89,7 +85,7 @@ describe("Group Encryption end-to-end", () => {
     console.log("--- Step 4: Bob decrypts Alice's message ---");
     // To decrypt a message from Alice, Bob's cipher must be configured for Alice's SenderKeyName
     const bobCipherForAlice = new GroupCipher(
-      bobStorage as any,
+      bobStorage,
       groupId,
       aliceAddress
     );
@@ -122,7 +118,7 @@ describe("Group Encryption end-to-end", () => {
     const aliceAddress = new ProtocolAddress("alice", 1);
 
     // Alice sets up her side and encrypts
-    const aliceBuilder = new GroupSessionBuilder(aliceStorage as any);
+    const aliceBuilder = new GroupSessionBuilder(aliceStorage);
     const aliceSenderKeyName = new SenderKeyName(groupId, aliceAddress);
     await aliceBuilder.create(aliceSenderKeyName);
 

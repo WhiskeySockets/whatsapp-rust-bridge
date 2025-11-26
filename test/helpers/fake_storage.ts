@@ -70,7 +70,7 @@ export class FakeStorage {
 
   storeSignedPreKey(id: number, signedPreKey: SignedPreKeyType): void {
     const withTimestamp = { ...signedPreKey, timestamp: Date.now() };
-    this.signedPreKeys.set(id, withTimestamp as any);
+    this.signedPreKeys.set(id, withTimestamp);
   }
 
   async loadSignedPreKey(id: number): Promise<SignedPreKeyType | undefined> {

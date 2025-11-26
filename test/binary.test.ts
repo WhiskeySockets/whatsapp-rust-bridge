@@ -328,7 +328,7 @@ test("should handle non-string attribute values during encoding (lenient convers
   expect(attrs.bar).toBeUndefined();
 
   // Round-trip: Re-encode and check persistence (non-strings become strings)
-  const reencoded = encodeNode(decoded as any);
+  const reencoded = encodeNode(decoded);
   const roundtrip = decodeNode(reencoded);
   const roundtripAttrs = roundtrip.attrs;
   expect(roundtripAttrs.id).toBe("123"); // Persists as string

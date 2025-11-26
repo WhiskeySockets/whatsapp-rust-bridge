@@ -34,7 +34,7 @@ describe("SessionRecord Compatibility & Migration", () => {
 
     // Attempt to deserialize the legacy object
     // This should NOT throw, but instead return a reset SessionRecord
-    const record = SessionRecord.deserialize(legacyJson as any);
+    const record = SessionRecord.deserialize(legacyJson);
 
     expect(record).toBeInstanceOf(SessionRecord);
 
@@ -59,7 +59,7 @@ describe("SessionRecord Compatibility & Migration", () => {
       data: [1, 2, 3, 4, 5, 255],
     };
 
-    const record = SessionRecord.deserialize(bufferObj as any);
+    const record = SessionRecord.deserialize(bufferObj);
 
     expect(record).toBeInstanceOf(SessionRecord);
 
@@ -78,15 +78,15 @@ describe("SessionRecord Compatibility & Migration", () => {
 
   it("should handle plain JS Arrays", () => {
     const input = [10, 20, 30, 40];
-    const record = SessionRecord.deserialize(input as any);
+    const record = SessionRecord.deserialize(input);
 
     expect(record).toBeInstanceOf(SessionRecord);
     expect(record.serialize()).toEqual(new Uint8Array(input));
   });
 
   it("should throw on invalid input", () => {
-    expect(() => SessionRecord.deserialize("invalid string" as any)).toThrow();
-    expect(() => SessionRecord.deserialize(12345 as any)).toThrow();
-    expect(() => SessionRecord.deserialize(null as any)).toThrow();
+    expect(() => SessionRecord.deserialize("invalid string")).toThrow();
+    expect(() => SessionRecord.deserialize(12345)).toThrow();
+    expect(() => SessionRecord.deserialize(null)).toThrow();
   });
 });

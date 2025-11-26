@@ -24,7 +24,7 @@ class LibsignalStore implements SignalStorage {
   async loadSession(address: string) {
     const serialized = this.sessions.get(address);
     return serialized
-      ? libsignalNode.SessionRecord.deserialize(serialized as any)
+      ? libsignalNode.SessionRecord.deserialize(serialized)
       : undefined;
   }
 
@@ -32,7 +32,7 @@ class LibsignalStore implements SignalStorage {
     address: string,
     record: InstanceType<typeof libsignalNode.SessionRecord>
   ) {
-    this.sessions.set(address, record.serialize() as any);
+    this.sessions.set(address, record.serialize());
   }
 
   getOurIdentity() {

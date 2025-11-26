@@ -139,7 +139,7 @@ describe("SessionCipher end-to-end", () => {
       if (existing) {
         return existing;
       }
-      return { _sessions: {}, version: "v1" } as any;
+      return { _sessions: {}, version: "v1" };
     }) as any;
 
     const bobCipher = new SessionCipher(bobStorage, aliceAddress);
