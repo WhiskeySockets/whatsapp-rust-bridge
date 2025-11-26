@@ -1,4 +1,4 @@
-pub mod audio_waveform;
+pub mod audio;
 pub mod binary;
 pub mod curve;
 pub mod group_cipher;

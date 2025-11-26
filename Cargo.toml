@@ -74,6 +74,10 @@ wacore-libsignal = { git = "https://github.com/jlucaso1/whatsapp-rust.git", bran
 waproto = { git = "https://github.com/jlucaso1/whatsapp-rust.git", branch = "main", package = "waproto" }
 wasm-bindgen = "0.2.100"
 wasm-bindgen-futures = "0.4.55"
+web-sys = { version = "0.3", features = [
+  "ReadableStream",
+  "ReadableStreamDefaultReader",
+] }
 
 [profile.release]
 lto = "fat"

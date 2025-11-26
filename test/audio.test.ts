@@ -1,5 +1,5 @@
 import { describe, it, expect } from "bun:test";
-import { generateAudioWaveform } from "../dist";
+import { generateAudioWaveform, getAudioDuration } from "../dist";
 
 const MP3_BASE64 =
   "SUQzBAAAAAAAIlRTU0UAAAAOAAADTGF2ZjYyLjMuMTAwAAAAAAAAAAAAAAD/+0DAAAAAAAAAAAAAAAAAAAAAAABJbmZvAAAA" +
@@ -12,6 +12,7 @@ const MP3_BASE64 =
   "VVVVVVVVVVVf/7EMR8g8AAAaQAAAAgAAA0gAAABFVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVV" +
   "VVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVV//sQxKYDwAABpAAAACAAADSAAAAEVVVVVVVVVVVVVVVVVVVVVVVVV" +
   "VVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVU=%";
+const EXPECTED_DURATION_SECONDS = 0.052244897959183675;
 
 describe("Audio Waveform Generation", () => {
   it("creates a 64-sample waveform from MP3 audio", () => {
@@ -30,5 +31,31 @@ describe("Audio Waveform Generation", () => {
 
   it("throws on empty input", () => {
     expect(() => generateAudioWaveform(new Uint8Array())).toThrow();
+  });
+});
+
+describe("Audio Duration", () => {
+  it("returns duration for Uint8Array input", async () => {
+    const audioBuffer = Buffer.from(MP3_BASE64, "base64");
+    const duration = await getAudioDuration(audioBuffer);
+
+    expect(duration).toBeGreaterThan(0);
+    expect(duration).toBeLessThan(5);
+    expect(duration).toBeCloseTo(EXPECTED_DURATION_SECONDS, 6);
+  });
+
+  it("supports ReadableStream input", async () => {
+    const audioBuffer = Buffer.from(MP3_BASE64, "base64");
+    const stream = new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.enqueue(audioBuffer);
+        controller.close();
+      },
+    });
+
+    const duration = await getAudioDuration(stream);
+    expect(duration).toBeGreaterThan(0);
+    expect(duration).toBeLessThan(5);
+    expect(duration).toBeCloseTo(EXPECTED_DURATION_SECONDS, 6);
   });
 });
