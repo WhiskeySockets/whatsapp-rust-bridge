@@ -2,7 +2,7 @@ use js_sys::{Array, Object, Uint8Array};
 use std::borrow::Cow;
 use std::cell::RefCell;
 use std::mem;
-use std::sync::Arc;
+use std::rc::Rc;
 use wacore_binary::{
     marshal::{marshal_ref, unmarshal_ref},
     node::{NodeContentRef, NodeRef},
@@ -35,17 +35,18 @@ extern "C" {
 
 fn js_to_node_ref(val: &EncodingNode) -> Result<NodeRef<'static>, JsValue> {
     let attrs_obj = val.attrs().unchecked_into::<Object>();
-    let entries = Object::entries(&attrs_obj);
-    let mut attrs = Vec::with_capacity(entries.length() as usize);
+    let keys = Object::keys(&attrs_obj);
+    let len = keys.length();
+    let mut attrs = Vec::with_capacity(len as usize);
 
-    for i in 0..entries.length() {
-        let entry = entries.get(i);
-        let entry_arr = Array::from(&entry);
-        let key_js = entry_arr.get(0);
-        let value_js = entry_arr.get(1);
+    for i in 0..len {
+        let key_js = keys.get(i);
         let key = key_js
             .as_string()
             .ok_or_else(|| JsValue::from_str("Attribute key must be a string"))?;
+
+        let value_js = js_sys::Reflect::get(&attrs_obj, &key_js)
+            .map_err(|_| JsValue::from_str("Failed to get attribute value"))?;
 
         let value_str = if let Some(s) = value_js.as_string() {
             s
@@ -113,8 +114,8 @@ export interface BinaryNode {
 
 #[wasm_bindgen]
 pub struct InternalBinaryNode {
-    _owned_data: Arc<Box<[u8]>>,
-    node_ref: Box<NodeRef<'static>>,
+    _owned_data: Rc<[u8]>,
+    node_ref: NodeRef<'static>,
     #[wasm_bindgen(skip)]
     cached_attrs: RefCell<Option<Attrs>>,
     #[wasm_bindgen(skip)]
@@ -122,6 +123,7 @@ pub struct InternalBinaryNode {
 }
 
 impl InternalBinaryNode {
+    #[inline(always)]
     fn node_ref(&self) -> &NodeRef<'static> {
         &self.node_ref
     }
@@ -138,13 +140,15 @@ impl InternalBinaryNode {
     pub fn attrs(&self) -> Attrs {
         let mut cached = self.cached_attrs.borrow_mut();
         if cached.is_none() {
-            let parser = self.node_ref().attr_parser();
+            // Access attrs directly from node_ref instead of going through AttrParser
+            // which unnecessarily allocates a Vec<BinaryError>
+            let attrs = &self.node_ref().attrs;
 
-            let obj = js_sys::Object::new();
-            for (k, v) in parser.attrs.iter() {
+            let obj = Object::new();
+            for (k, v) in attrs.iter() {
                 let key = JsValue::from_str(k);
                 let value = JsValue::from_str(v);
-                js_sys::Reflect::set(&obj, &key, &value).expect("Failed to cache attribute entry");
+                js_sys::Reflect::set(&obj, &key, &value).expect("Failed to set attribute");
             }
 
             *cached = Some(obj.unchecked_into());
@@ -178,8 +182,8 @@ impl InternalBinaryNode {
                     let arr = Array::new_with_length(nodes.len() as u32);
                     for (i, node_ref) in nodes.iter().enumerate() {
                         let child = InternalBinaryNode {
-                            _owned_data: Arc::clone(&self._owned_data),
-                            node_ref: Box::new(node_ref.clone()),
+                            _owned_data: Rc::clone(&self._owned_data),
+                            node_ref: node_ref.clone(),
                             cached_attrs: RefCell::new(None),
                             cached_content: RefCell::new(None),
                         };
@@ -216,14 +220,15 @@ pub fn decode_node(data: Vec<u8>) -> Result<InternalBinaryNode, JsValue> {
     }
 
     let unpacked_cow = unpack(&data).map_err(|e| JsValue::from_str(&e.to_string()))?;
-    let owned_data: Box<[u8]> = unpacked_cow.into_owned().into_boxed_slice();
+    // Convert directly to Rc<[u8]> to avoid double indirection of Rc<Box<[u8]>>
+    let owned_data: Rc<[u8]> = Rc::from(unpacked_cow.into_owned().into_boxed_slice());
 
     let static_data: &'static [u8] = unsafe { mem::transmute(owned_data.as_ref()) };
     let node_ref = unmarshal_ref(static_data).map_err(|e| JsValue::from_str(&e.to_string()))?;
 
     Ok(InternalBinaryNode {
-        _owned_data: Arc::new(owned_data),
-        node_ref: Box::new(node_ref),
+        _owned_data: owned_data,
+        node_ref,
         cached_attrs: RefCell::new(None),
         cached_content: RefCell::new(None),
     })
