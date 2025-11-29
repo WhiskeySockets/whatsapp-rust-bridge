@@ -9,7 +9,7 @@ import {
 
 const random32 = () =>
   Buffer.from(
-    Array.from({ length: 32 }, () => Math.floor(Math.random() * 256))
+    Array.from({ length: 32 }, () => Math.floor(Math.random() * 256)),
   );
 
 describe("curve primitives", () => {
@@ -69,19 +69,19 @@ describe("curve primitives", () => {
   it("rejects malformed keys", () => {
     const privKey = random32();
     expect(() => calculateSignature(Buffer.alloc(0), Buffer.alloc(1))).toThrow(
-      "Invalid private key type"
+      "Invalid private key type",
     );
     expect(() =>
-      calculateSignature(Buffer.from("bad"), Buffer.alloc(1))
+      calculateSignature(Buffer.from("bad"), Buffer.alloc(1)),
     ).toThrow("Incorrect private key length");
     const badPub = Buffer.alloc(31);
     expect(() => calculateAgreement(badPub, privKey)).toThrow(
-      "Invalid public key"
+      "Invalid public key",
     );
     const badSig = Buffer.alloc(10);
     const pair = generateKeyPair();
     expect(() => verifySignature(pair.pubKey, Buffer.alloc(1), badSig)).toThrow(
-      "Invalid signature"
+      "Invalid signature",
     );
   });
 });

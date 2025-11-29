@@ -746,11 +746,10 @@ impl IdentityKeyStore for JsStorageAdapter {
         let address_name = address.name().to_string();
         let identity_bytes = identity.serialize();
 
-        // Check cache first - if we have a cached identity that matches, it's trusted
-        if let Some(cached_key) = self.cached_identities.borrow().get(&address_name) {
-            if cached_key.as_slice() == &*identity_bytes {
-                return Ok(true);
-            }
+        if let Some(cached_key) = self.cached_identities.borrow().get(&address_name)
+            && cached_key.as_slice() == &*identity_bytes
+        {
+            return Ok(true);
         }
 
         let direction_val = match direction {
@@ -785,10 +784,10 @@ impl IdentityKeyStore for JsStorageAdapter {
         let address_name = address.name().to_string();
         let identity_bytes = identity.serialize();
 
-        if let Some(cached_key) = self.cached_identities.borrow().get(&address_name) {
-            if cached_key.as_slice() == &*identity_bytes {
-                return Ok(IdentityChange::from_changed(false));
-            }
+        if let Some(cached_key) = self.cached_identities.borrow().get(&address_name)
+            && cached_key.as_slice() == &*identity_bytes
+        {
+            return Ok(IdentityChange::from_changed(false));
         }
 
         let promise = save_identity(&self.js_storage, address_name.clone(), &identity_bytes)

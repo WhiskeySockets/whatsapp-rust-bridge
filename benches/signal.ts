@@ -30,7 +30,7 @@ class LibsignalStore implements SignalStorage {
 
   async storeSession(
     address: string,
-    record: InstanceType<typeof libsignalNode.SessionRecord>
+    record: InstanceType<typeof libsignalNode.SessionRecord>,
   ) {
     this.sessions.set(address, record.serialize());
   }
@@ -46,7 +46,7 @@ class LibsignalStore implements SignalStorage {
   isTrustedIdentity(
     identifier: string,
     identityKey: Uint8Array,
-    _direction?: number
+    _direction?: number,
   ) {
     const key = Buffer.from(identityKey);
     const existing = this.identities.get(identifier);
@@ -105,17 +105,17 @@ aliceStorage.trustIdentity("bob", bobStorage.ourIdentityKeyPair.pubKey);
 bobStorage.trustIdentity("alice", aliceStorage.ourIdentityKeyPair.pubKey);
 aliceLibsignalStorage.trustIdentity(
   "bob",
-  Buffer.from(bobLibsignalStorage.ourIdentityKeyPair.pubKey)
+  Buffer.from(bobLibsignalStorage.ourIdentityKeyPair.pubKey),
 );
 bobLibsignalStorage.trustIdentity(
   "alice",
-  Buffer.from(aliceLibsignalStorage.ourIdentityKeyPair.pubKey)
+  Buffer.from(aliceLibsignalStorage.ourIdentityKeyPair.pubKey),
 );
 
 const bobSignedPreKeyId = 1;
 const bobSignedPreKey = generateSignedPreKey(
   bobStorage.ourIdentityKeyPair,
-  bobSignedPreKeyId
+  bobSignedPreKeyId,
 );
 const bobOneTimePreKey = generatePreKey(100);
 
@@ -144,23 +144,23 @@ const aliceCipher = new SessionCipher(aliceStorage, wasmBobAddress);
 // Realistic plaintext: A typical WhatsApp text message (~100 bytes)
 const typicalMessage = Buffer.from(
   "Hey Bob! How's it going? Let's catch up soon. I have some news to share. 😊".repeat(
-    2
-  ) // ~100 bytes
+    2,
+  ), // ~100 bytes
 );
 
 const bobLibSignedPreKey = libsignalKeyHelper.generateSignedPreKey(
   bobLibsignalStorage.ourIdentityKeyPair,
-  bobSignedPreKeyId
+  bobSignedPreKeyId,
 );
 const bobLibOneTimePreKey = libsignalKeyHelper.generatePreKey(100);
 
 bobLibsignalStorage.storeSignedPreKey(
   bobLibSignedPreKey.keyId,
-  bobLibSignedPreKey
+  bobLibSignedPreKey,
 );
 bobLibsignalStorage.storePreKey(
   bobLibOneTimePreKey.keyId,
-  bobLibOneTimePreKey.keyPair
+  bobLibOneTimePreKey.keyPair,
 );
 
 const bobLibsignalBundle = {
@@ -179,13 +179,13 @@ const bobLibsignalBundle = {
 
 const aliceLibsignalBuilder = new libsignalNode.SessionBuilder(
   aliceLibsignalStorage,
-  libsignalBobAddress
+  libsignalBobAddress,
 );
 await aliceLibsignalBuilder.initOutgoing(bobLibsignalBundle);
 
 const aliceLibsignalCipher = new libsignalNode.SessionCipher(
   aliceLibsignalStorage,
-  libsignalBobAddress
+  libsignalBobAddress,
 );
 
 group("Signal Encryption (Session Established)", () => {

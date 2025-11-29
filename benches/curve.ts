@@ -24,11 +24,11 @@ boxplot(() => {
     bench("Calculate Agreement Rust/Wasm", () => {
       const shared1 = wasmCurve.calculateAgreement(
         bobKeyPair.pubKey,
-        aliceKeyPair.privKey
+        aliceKeyPair.privKey,
       );
       const shared2 = wasmCurve.calculateAgreement(
         aliceKeyPair.pubKey,
-        bobKeyPair.privKey
+        bobKeyPair.privKey,
       );
 
       do_not_optimize(shared1);
@@ -38,11 +38,11 @@ boxplot(() => {
     bench("Calculate Agreement libsignal-node", () => {
       const shared1 = nodeCurve.calculateAgreement(
         bobKeyPair.pubKey,
-        aliceKeyPair.privKey
+        aliceKeyPair.privKey,
       );
       const shared2 = nodeCurve.calculateAgreement(
         aliceKeyPair.pubKey,
-        bobKeyPair.privKey
+        bobKeyPair.privKey,
       );
 
       do_not_optimize(shared1);
@@ -54,7 +54,7 @@ boxplot(() => {
     bench("Calculate Signature Rust/Wasm", () => {
       const signature = wasmCurve.calculateSignature(
         aliceKeyPair.privKey,
-        message
+        message,
       );
       do_not_optimize(signature);
     });
@@ -62,7 +62,7 @@ boxplot(() => {
     bench("Calculate Signature libsignal-node", () => {
       const signature = nodeCurve.calculateSignature(
         aliceKeyPair.privKey,
-        message
+        message,
       );
       do_not_optimize(signature);
     });
@@ -71,18 +71,18 @@ boxplot(() => {
   summary(() => {
     const wasmSignature = wasmCurve.calculateSignature(
       aliceKeyPair.privKey,
-      message
+      message,
     );
     const nodeSignature = nodeCurve.calculateSignature(
       aliceKeyPair.privKey,
-      message
+      message,
     );
 
     bench("Verify Signature Rust/Wasm", () => {
       const isValid = wasmCurve.verifySignature(
         aliceKeyPair.pubKey,
         message,
-        wasmSignature
+        wasmSignature,
       );
       do_not_optimize(isValid);
     });
@@ -91,7 +91,7 @@ boxplot(() => {
       const isValid = nodeCurve.verifySignature(
         aliceKeyPair.pubKey,
         message,
-        nodeSignature
+        nodeSignature,
       );
       do_not_optimize(isValid);
     });

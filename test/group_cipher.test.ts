@@ -17,10 +17,10 @@ class LoggedFakeStorage extends FakeStorage {
 
   override async storeSenderKey(
     keyId: string,
-    record: Uint8Array
+    record: Uint8Array,
   ): Promise<void> {
     console.log(
-      `[Storage] Storing sender key for: ${keyId} (${record.length} bytes)`
+      `[Storage] Storing sender key for: ${keyId} (${record.length} bytes)`,
     );
     return super.storeSenderKey(keyId, record);
   }
@@ -47,7 +47,7 @@ describe("Group Encryption end-to-end", () => {
 
     // Verify that Alice's storage now contains her own sender key
     const aliceKeyInStorage = await aliceStorage.loadSenderKey(
-      aliceSenderKeyName.toString()
+      aliceSenderKeyName.toString(),
     );
     expect(aliceKeyInStorage).toBeDefined();
     expect(aliceKeyInStorage!.length).toBeGreaterThan(0);
@@ -55,7 +55,7 @@ describe("Group Encryption end-to-end", () => {
     expect(await aliceRecord.isEmpty()).toBe(false);
 
     console.log(
-      "--- Step 2: Bob processes Alice's session creation message ---"
+      "--- Step 2: Bob processes Alice's session creation message ---",
     );
     const bobBuilder = new GroupSessionBuilder(bobStorage);
 
@@ -64,11 +64,11 @@ describe("Group Encryption end-to-end", () => {
 
     // Verify Bob's storage now contains Alice's sender key
     const aliceKeyInBobsStorage = await bobStorage.loadSenderKey(
-      aliceSenderKeyName.toString()
+      aliceSenderKeyName.toString(),
     );
     expect(aliceKeyInBobsStorage).toBeDefined();
     const bobRecordForAlice = SenderKeyRecord.deserialize(
-      aliceKeyInBobsStorage!
+      aliceKeyInBobsStorage!,
     );
     expect(await bobRecordForAlice.isEmpty()).toBe(false);
 
@@ -87,7 +87,7 @@ describe("Group Encryption end-to-end", () => {
     const bobCipherForAlice = new GroupCipher(
       bobStorage,
       groupId,
-      aliceAddress
+      aliceAddress,
     );
 
     const decrypted1 = await bobCipherForAlice.decrypt(ciphertext1);
@@ -95,10 +95,10 @@ describe("Group Encryption end-to-end", () => {
 
     // === 5. RATCHETING TEST (Alice sends a second message) ===
     console.log(
-      "--- Step 5: Alice encrypts a second message (testing ratchet) ---"
+      "--- Step 5: Alice encrypts a second message (testing ratchet) ---",
     );
     const plaintext2 = Buffer.from(
-      "This is a second message to test the chain key."
+      "This is a second message to test the chain key.",
     );
     const ciphertext2 = await aliceCipher.encrypt(plaintext2);
 

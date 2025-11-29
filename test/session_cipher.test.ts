@@ -29,7 +29,7 @@ describe("SessionCipher end-to-end", () => {
     const bobSignedPreKeyId = 1;
     const bobSignedPreKey = generateSignedPreKey(
       bobStorage.ourIdentityKeyPair,
-      bobSignedPreKeyId
+      bobSignedPreKeyId,
     );
     const bobOneTimePreKey = generatePreKey(100);
 
@@ -66,7 +66,7 @@ describe("SessionCipher end-to-end", () => {
     // === 5. BOB RECEIVES AND DECRYPTS THE FIRST MESSAGE ===
     const bobCipher = new SessionCipher(bobStorage, aliceAddress);
     const decryptedByBob = await bobCipher.decryptPreKeyWhisperMessage(
-      encryptedMessageForBob.body
+      encryptedMessageForBob.body,
     );
 
     expect(Buffer.from(decryptedByBob)).toEqual(plaintext1);
@@ -83,7 +83,7 @@ describe("SessionCipher end-to-end", () => {
 
     // === 7. ALICE RECEIVES AND DECRYPTS THE REPLY ===
     const decryptedByAlice = await aliceCipher.decryptWhisperMessage(
-      encryptedMessageForAlice.body
+      encryptedMessageForAlice.body,
     );
 
     expect(Buffer.from(decryptedByAlice)).toEqual(plaintext2);
@@ -104,7 +104,7 @@ describe("SessionCipher end-to-end", () => {
     const bobSignedPreKeyId = 7;
     const bobSignedPreKey = generateSignedPreKey(
       bobStorage.ourIdentityKeyPair,
-      bobSignedPreKeyId
+      bobSignedPreKeyId,
     );
     const bobOneTimePreKey = generatePreKey(701);
 
@@ -148,7 +148,7 @@ describe("SessionCipher end-to-end", () => {
     // Since this is a PreKeyWhisperMessage, it establishes a new session.
     // So decryption should SUCCEED (self-healing).
     const decrypted = await bobCipher.decryptPreKeyWhisperMessage(
-      encryptedMessageForBob.body
+      encryptedMessageForBob.body,
     );
     expect(Buffer.from(decrypted)).toEqual(plaintext);
   });

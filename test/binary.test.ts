@@ -11,7 +11,7 @@ function arraysEqual(a: Uint8Array, b: Uint8Array): boolean {
 
 function compareINodeToDecoded(
   original: BinaryNode,
-  decoded: BinaryNode
+  decoded: BinaryNode,
 ): boolean {
   const decTag = decoded.tag;
   if (original.tag !== decTag) return false;
@@ -107,7 +107,7 @@ describe("Binary Marshalling", () => {
 
       expect(resultHandle.content).toBeInstanceOf(Uint8Array);
       const decodedText = textDecoder.decode(
-        resultHandle.content as Uint8Array
+        resultHandle.content as Uint8Array,
       );
       expect(decodedText).toBe("this is a simple string");
     });
@@ -212,7 +212,7 @@ test("should throw error when decoding truncated binary data", () => {
   const truncatedData = binaryData.slice(0, 3);
 
   expect(() => decodeNode(truncatedData)).toThrow(
-    "Unexpected end of binary data"
+    "Unexpected end of binary data",
   );
 });
 
@@ -269,7 +269,7 @@ test("should allow content mutation and reassignment", () => {
   expect(Array.isArray(roundtrip.content)).toBe(true);
   expect((roundtrip.content as BinaryNode[])[0].tag).toBe("final");
   expect((roundtrip.content as BinaryNode[])[0].content).toEqual(
-    new Uint8Array([1, 2, 3])
+    new Uint8Array([1, 2, 3]),
   );
 });
 
