@@ -1,11 +1,11 @@
-use indexmap::IndexMap;
 use js_sys::{Array, Object, Uint8Array};
+use std::borrow::Cow;
 use std::cell::RefCell;
 use std::mem;
 use std::sync::Arc;
 use wacore_binary::{
-    marshal::{marshal, unmarshal_ref},
-    node::{Node, NodeContent, NodeContentRef, NodeRef},
+    marshal::{marshal_ref, unmarshal_ref},
+    node::{NodeContentRef, NodeRef},
     util::unpack,
 };
 use wasm_bindgen::prelude::*;
@@ -33,10 +33,10 @@ extern "C" {
     pub fn content(this: &EncodingNode) -> JsValue;
 }
 
-fn js_to_node(val: &EncodingNode) -> Result<Node, JsValue> {
+fn js_to_node_ref(val: &EncodingNode) -> Result<NodeRef<'static>, JsValue> {
     let attrs_obj = val.attrs().unchecked_into::<Object>();
     let entries = Object::entries(&attrs_obj);
-    let mut attrs = IndexMap::with_capacity(entries.length() as usize);
+    let mut attrs = Vec::with_capacity(entries.length() as usize);
 
     for i in 0..entries.length() {
         let entry = entries.get(i);
@@ -61,7 +61,7 @@ fn js_to_node(val: &EncodingNode) -> Result<Node, JsValue> {
             continue;
         }
 
-        attrs.insert(key.to_string(), value_str);
+        attrs.push((Cow::Owned(key), Cow::Owned(value_str)));
     }
 
     let content_js = val.content();
@@ -73,14 +73,14 @@ fn js_to_node(val: &EncodingNode) -> Result<Node, JsValue> {
             let string_value = content_js.as_string().ok_or_else(|| {
                 JsValue::from_str("Content marked as string could not be extracted")
             })?;
-            Ok(Some(NodeContent::String(string_value)))
+            Ok(Some(NodeContentRef::String(Cow::Owned(string_value))))
         }
 
         _ if content_js.is_instance_of::<Uint8Array>() => {
             let byte_array = Uint8Array::from(content_js);
             let mut bytes = vec![0; byte_array.length() as usize];
             byte_array.copy_to(&mut bytes);
-            Ok(Some(NodeContent::Bytes(bytes)))
+            Ok(Some(NodeContentRef::Bytes(Cow::Owned(bytes))))
         }
 
         _ if Array::is_array(&content_js) => {
@@ -89,21 +89,17 @@ fn js_to_node(val: &EncodingNode) -> Result<Node, JsValue> {
                 .map(|i| {
                     let child_val = arr.get(i);
                     let child_node = child_val.unchecked_into::<EncodingNode>();
-                    js_to_node(&child_node)
+                    js_to_node_ref(&child_node)
                 })
-                .collect::<Result<Vec<Node>, _>>()?;
+                .collect::<Result<Vec<NodeRef<'static>>, _>>()?;
 
-            Ok(Some(NodeContent::Nodes(nodes)))
+            Ok(Some(NodeContentRef::Nodes(Box::new(nodes))))
         }
 
         _ => Err(JsValue::from_str("Invalid content type")),
     };
 
-    Ok(Node {
-        tag: val.tag(),
-        attrs,
-        content: content?,
-    })
+    Ok(NodeRef::new(Cow::Owned(val.tag()), attrs, content?))
 }
 
 #[wasm_bindgen(typescript_custom_section)]
@@ -207,8 +203,8 @@ impl InternalBinaryNode {
 
 #[wasm_bindgen(js_name = encodeNode)]
 pub fn encode_node(node_val: EncodingNode) -> Result<Uint8Array, JsValue> {
-    let internal: Node = js_to_node(&node_val)?;
-    let bytes = marshal(&internal).map_err(|e| JsValue::from_str(&e.to_string()))?;
+    let node_ref = js_to_node_ref(&node_val)?;
+    let bytes = marshal_ref(&node_ref).map_err(|e| JsValue::from_str(&e.to_string()))?;
 
     Ok(Uint8Array::from(&bytes[..]))
 }
