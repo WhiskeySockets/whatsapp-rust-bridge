@@ -23,7 +23,7 @@ describe("keyhelper", () => {
     expect(signed.keyPair.pubKey.length).toBe(33);
     expect(signed.signature.length).toBe(64);
     expect(
-      verifySignature(identity.pubKey, signed.keyPair.pubKey, signed.signature)
+      verifySignature(identity.pubKey, signed.keyPair.pubKey, signed.signature),
     ).toBe(true);
   });
 

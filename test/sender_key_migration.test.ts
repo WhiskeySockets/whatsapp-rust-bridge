@@ -31,7 +31,7 @@ describe("Legacy SenderKey Migration", () => {
     // Store it in the fake storage
     storage.senderKeys.set(
       `${groupId}::${sender.id}::${sender.deviceId}`,
-      legacyBytes
+      legacyBytes,
     );
 
     const cipher = new GroupCipher(storage, groupId, sender);

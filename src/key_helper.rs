@@ -38,10 +38,10 @@ fn map_err(err: impl std::fmt::Display) -> JsValue {
 }
 
 #[wasm_bindgen(js_name = generateIdentityKeyPair)]
-pub fn generate_identity_key_pair() -> Result<KeyPairType, JsValue> {
-    let key_pair_js_value = crate::curve::generate_key_pair()?;
+pub fn generate_identity_key_pair() -> KeyPairType {
+    let key_pair_js_value = crate::curve::generate_key_pair();
 
-    Ok(key_pair_js_value.unchecked_into::<KeyPairType>())
+    key_pair_js_value.unchecked_into::<KeyPairType>()
 }
 
 #[wasm_bindgen(js_name = generateRegistrationId)]

@@ -28,6 +28,9 @@ export class FakeStorage {
   async storeSession(address: string, record: SessionRecord): Promise<void> {
     this.sessions.set(address, record.serialize());
   }
+  async storeSessionRaw(address: string, data: Uint8Array): Promise<void> {
+    this.sessions.set(address, new Uint8Array(data));
+  }
   async loadSenderKey(keyId: string): Promise<Uint8Array | undefined> {
     const existing = this.senderKeys.get(keyId);
     return existing ? new Uint8Array(existing) : undefined;
@@ -45,7 +48,7 @@ export class FakeStorage {
   async isTrustedIdentity(
     identifier: string,
     identityKey: Uint8Array,
-    _direction?: number
+    _direction?: number,
   ): Promise<boolean> {
     const existing = this.identities.get(identifier);
     if (!existing) {

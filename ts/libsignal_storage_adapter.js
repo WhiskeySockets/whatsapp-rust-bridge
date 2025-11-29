@@ -4,6 +4,15 @@
 
 import { SessionRecord } from "../../../whatsapp_rust_bridge.js";
 
+// Helper to compare Uint8Arrays (web-compatible replacement for Buffer.equals)
+function uint8ArrayEquals(a, b) {
+  if (a.length !== b.length) return false;
+  for (let i = 0; i < a.length; i++) {
+    if (a[i] !== b[i]) return false;
+  }
+  return true;
+}
+
 export async function loadSession(storage, address) {
   try {
     const recordInstance = await storage.loadSession(address);
@@ -20,9 +29,18 @@ export async function loadSession(storage, address) {
 
 export async function storeSession(storage, address, sessionData) {
   try {
+    // Pass raw bytes directly - avoid deserialize/serialize round-trip
+    // The storage implementation can wrap it in SessionRecord if needed
     const sessionDataCopy = new Uint8Array(sessionData);
-    const recordInstance = SessionRecord.deserialize(sessionDataCopy);
-    await storage.storeSession(address, recordInstance);
+
+    // Check if storage expects raw bytes or SessionRecord
+    // Most implementations just store the bytes anyway
+    if (storage.storeSessionRaw) {
+      await storage.storeSessionRaw(address, sessionDataCopy);
+    } else {
+      const recordInstance = SessionRecord.deserialize(sessionDataCopy);
+      await storage.storeSession(address, recordInstance);
+    }
   } catch (e) {
     console.error("Error in storage.storeSession:", e);
     throw e;
@@ -45,15 +63,18 @@ export async function getLocalRegistrationId(storage) {
 export async function isTrustedIdentity(storage, name, identityKey, direction) {
   return await storage.isTrustedIdentity(
     name,
-    Buffer.from(identityKey),
-    direction
+    new Uint8Array(identityKey),
+    direction,
   );
 }
 
 export async function saveIdentity(storage, name, identityKey) {
   const existing = storage.identities?.get(name);
   if (existing) {
-    return !Buffer.from(existing).equals(Buffer.from(identityKey));
+    return !uint8ArrayEquals(
+      new Uint8Array(existing),
+      new Uint8Array(identityKey),
+    );
   }
   return false;
 }

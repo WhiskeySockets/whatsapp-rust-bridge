@@ -21,7 +21,7 @@ describe("SessionBuilder", () => {
     const bobSignedPreKeyId = 1337;
     const bobSignedPreKey = generateSignedPreKey(
       bobIdentityKeyPair,
-      bobSignedPreKeyId
+      bobSignedPreKeyId,
     );
     const bobPreKeyId = 22;
     const bobPreKey = generatePreKey(bobPreKeyId);
@@ -51,7 +51,7 @@ describe("SessionBuilder", () => {
     const isTrusted = await aliceStorage.isTrustedIdentity(
       "bob",
       bobIdentityKeyPair.pubKey,
-      0
+      0,
     );
     expect(isTrusted).toBe(true);
   });
@@ -78,7 +78,7 @@ describe("SessionBuilder", () => {
     };
 
     await expect(
-      aliceSessionBuilder.processPreKeyBundle(bobBundle)
+      aliceSessionBuilder.processPreKeyBundle(bobBundle),
     ).rejects.toThrow("untrusted identity for address bob.1");
   });
 });

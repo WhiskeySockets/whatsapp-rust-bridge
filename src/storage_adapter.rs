@@ -108,6 +108,7 @@ pub struct JsStorageAdapter {
     cached_registration_id: Rc<RefCell<Option<u32>>>,
     cached_sessions: Rc<RefCell<HashMap<String, CoreSessionRecord>>>,
     cached_sender_keys: Rc<RefCell<HashMap<String, CoreSenderKeyRecord>>>,
+    cached_identities: Rc<RefCell<HashMap<String, Vec<u8>>>>,
 }
 
 impl JsStorageAdapter {
@@ -118,6 +119,7 @@ impl JsStorageAdapter {
             cached_registration_id: Rc::new(RefCell::new(None)),
             cached_sessions: Rc::new(RefCell::new(HashMap::new())),
             cached_sender_keys: Rc::new(RefCell::new(HashMap::new())),
+            cached_identities: Rc::new(RefCell::new(HashMap::new())),
         }
     }
 
@@ -741,6 +743,15 @@ impl IdentityKeyStore for JsStorageAdapter {
         identity: &libsignal::IdentityKey,
         direction: StoreDirection,
     ) -> SignalResult<bool> {
+        let address_name = address.name().to_string();
+        let identity_bytes = identity.serialize();
+
+        if let Some(cached_key) = self.cached_identities.borrow().get(&address_name)
+            && cached_key.as_slice() == &*identity_bytes
+        {
+            return Ok(true);
+        }
+
         let direction_val = match direction {
             StoreDirection::Sending => 0,
             StoreDirection::Receiving => 1,
@@ -748,13 +759,21 @@ impl IdentityKeyStore for JsStorageAdapter {
 
         let promise = is_trusted_identity(
             &self.js_storage,
-            address.name().to_string(),
-            &identity.serialize(),
+            address_name.clone(),
+            &identity_bytes,
             direction_val,
         )
         .map_err(js_to_signal_error)?;
         let result = JsFuture::from(promise).await.map_err(js_to_signal_error)?;
-        Ok(result.as_bool().unwrap_or(false))
+        let trusted = result.as_bool().unwrap_or(false);
+
+        if trusted {
+            self.cached_identities
+                .borrow_mut()
+                .insert(address_name, identity_bytes.to_vec());
+        }
+
+        Ok(trusted)
     }
 
     async fn save_identity(
@@ -762,14 +781,24 @@ impl IdentityKeyStore for JsStorageAdapter {
         address: &libsignal::ProtocolAddress,
         identity: &libsignal::IdentityKey,
     ) -> SignalResult<IdentityChange> {
-        let promise = save_identity(
-            &self.js_storage,
-            address.name().to_string(),
-            &identity.serialize(),
-        )
-        .map_err(js_to_signal_error)?;
+        let address_name = address.name().to_string();
+        let identity_bytes = identity.serialize();
+
+        if let Some(cached_key) = self.cached_identities.borrow().get(&address_name)
+            && cached_key.as_slice() == &*identity_bytes
+        {
+            return Ok(IdentityChange::from_changed(false));
+        }
+
+        let promise = save_identity(&self.js_storage, address_name.clone(), &identity_bytes)
+            .map_err(js_to_signal_error)?;
         let result = JsFuture::from(promise).await.map_err(js_to_signal_error)?;
         let changed = result.as_bool().unwrap_or(false);
+
+        self.cached_identities
+            .borrow_mut()
+            .insert(address_name, identity_bytes.to_vec());
+
         Ok(IdentityChange::from_changed(changed))
     }
     async fn get_identity(
