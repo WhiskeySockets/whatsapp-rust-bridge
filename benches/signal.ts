@@ -1,4 +1,4 @@
-import { run, bench, group, do_not_optimize } from "mitata";
+import { run, bench, do_not_optimize, boxplot, summary } from "mitata";
 import {
   ProtocolAddress,
   SessionBuilder,
@@ -12,6 +12,7 @@ import * as libsignalNode from "@whiskeysockets/libsignal-node";
 import { type SignalStorage } from "@whiskeysockets/libsignal-node";
 
 const libsignalKeyHelper = (libsignalNode as any).keyhelper;
+
 class LibsignalStore implements SignalStorage {
   private sessions = new Map<string, any>();
   private identities = new Map<string, Buffer>();
@@ -82,36 +83,31 @@ class LibsignalStore implements SignalStorage {
   }
 
   loadSignedPreKey(id?: number) {
+    let signedPreKey;
     if (typeof id === "number" && this.signedPreKeys.has(id)) {
-      return this.signedPreKeys.get(id);
+      signedPreKey = this.signedPreKeys.get(id);
+    } else {
+      signedPreKey = this.signedPreKeys.values().next().value;
     }
-    return this.signedPreKeys.values().next().value;
+    // libsignal-node expects { privKey, pubKey } directly, not the full signedPreKey object
+    return signedPreKey?.keyPair;
   }
 }
 
-// Realistic setup: Simulate Alice encrypting messages to Bob in an established session
-// - Typical WhatsApp text message: ~50-200 bytes (e.g., "Hey, how are you? Let's meet at 5 PM.")
-// - Use a 100-byte placeholder message
-// - Setup done once outside bench; benchmark focuses on encrypt() call
+// ============================================================================
+// Setup for Rust WASM benchmarks
+// ============================================================================
 const aliceStorage = new FakeStorage();
 const bobStorage = new FakeStorage();
-const aliceLibsignalStorage = new LibsignalStore();
-const bobLibsignalStorage = new LibsignalStore();
 
 const wasmBobAddress = new ProtocolAddress("bob", 1);
-const libsignalBobAddress = new libsignalNode.ProtocolAddress("bob", 1);
+const wasmAliceAddress = new ProtocolAddress("alice", 1);
 
+// Trust each other's identities
 aliceStorage.trustIdentity("bob", bobStorage.ourIdentityKeyPair.pubKey);
 bobStorage.trustIdentity("alice", aliceStorage.ourIdentityKeyPair.pubKey);
-aliceLibsignalStorage.trustIdentity(
-  "bob",
-  Buffer.from(bobLibsignalStorage.ourIdentityKeyPair.pubKey),
-);
-bobLibsignalStorage.trustIdentity(
-  "alice",
-  Buffer.from(aliceLibsignalStorage.ourIdentityKeyPair.pubKey),
-);
 
+// Generate Bob's pre-keys for WASM
 const bobSignedPreKeyId = 1;
 const bobSignedPreKey = generateSignedPreKey(
   bobStorage.ourIdentityKeyPair,
@@ -136,18 +132,33 @@ const bobBundle = {
   },
 };
 
+// Alice processes Bob's bundle and establishes session
 const aliceSessionBuilder = new SessionBuilder(aliceStorage, wasmBobAddress);
 await aliceSessionBuilder.processPreKeyBundle(bobBundle);
 
 const aliceCipher = new SessionCipher(aliceStorage, wasmBobAddress);
+const bobCipher = new SessionCipher(bobStorage, wasmAliceAddress);
 
-// Realistic plaintext: A typical WhatsApp text message (~100 bytes)
-const typicalMessage = Buffer.from(
-  "Hey Bob! How's it going? Let's catch up soon. I have some news to share. 😊".repeat(
-    2,
-  ), // ~100 bytes
+// ============================================================================
+// Setup for libsignal-node benchmarks
+// ============================================================================
+const aliceLibsignalStorage = new LibsignalStore();
+const bobLibsignalStorage = new LibsignalStore();
+
+const libsignalBobAddress = new libsignalNode.ProtocolAddress("bob", 1);
+const libsignalAliceAddress = new libsignalNode.ProtocolAddress("alice", 1);
+
+// Trust each other's identities
+aliceLibsignalStorage.trustIdentity(
+  "bob",
+  Buffer.from(bobLibsignalStorage.ourIdentityKeyPair.pubKey),
+);
+bobLibsignalStorage.trustIdentity(
+  "alice",
+  Buffer.from(aliceLibsignalStorage.ourIdentityKeyPair.pubKey),
 );
 
+// Generate Bob's pre-keys for libsignal-node
 const bobLibSignedPreKey = libsignalKeyHelper.generateSignedPreKey(
   bobLibsignalStorage.ourIdentityKeyPair,
   bobSignedPreKeyId,
@@ -177,6 +188,7 @@ const bobLibsignalBundle = {
   },
 };
 
+// Alice processes Bob's bundle and establishes session
 const aliceLibsignalBuilder = new libsignalNode.SessionBuilder(
   aliceLibsignalStorage,
   libsignalBobAddress,
@@ -187,17 +199,117 @@ const aliceLibsignalCipher = new libsignalNode.SessionCipher(
   aliceLibsignalStorage,
   libsignalBobAddress,
 );
+const bobLibsignalCipher = new libsignalNode.SessionCipher(
+  bobLibsignalStorage,
+  libsignalAliceAddress,
+);
 
-group("Signal Encryption (Session Established)", () => {
-  bench("Encrypt typical message (Rust WASM)", async () => {
-    const result = await aliceCipher.encrypt(typicalMessage);
-    do_not_optimize(result);
-  }).gc("inner");
+// ============================================================================
+// Test Messages
+// ============================================================================
 
-  bench("Encrypt typical message (libsignal-node)", async () => {
-    const result = await aliceLibsignalCipher.encrypt(typicalMessage);
-    do_not_optimize(result);
-  }).gc("inner");
+// Realistic plaintext: A typical WhatsApp text message (~100 bytes)
+const typicalMessage = Buffer.from(
+  "Hey Bob! How's it going? Let's catch up soon. I have some news to share. 😊".repeat(
+    2,
+  ),
+);
+
+// ============================================================================
+// Establish bidirectional sessions (required for decrypt benchmarks)
+// ============================================================================
+
+// WASM: Alice sends first message (PreKeyWhisperMessage)
+const wasmFirstEncrypted = await aliceCipher.encrypt(typicalMessage);
+// Bob decrypts first message - this establishes Bob's session with Alice
+await bobCipher.decryptPreKeyWhisperMessage(wasmFirstEncrypted.body);
+// Bob replies to Alice - this completes the ratchet setup
+const wasmBobReply = await bobCipher.encrypt(typicalMessage);
+// Alice decrypts Bob's reply - now both sides have established sessions
+await aliceCipher.decryptWhisperMessage(wasmBobReply.body);
+
+// libsignal-node: Same pattern
+const libsignalFirstEncrypted =
+  await aliceLibsignalCipher.encrypt(typicalMessage);
+await bobLibsignalCipher.decryptPreKeyWhisperMessage(
+  libsignalFirstEncrypted.body as unknown as Uint8Array,
+);
+const libsignalBobReply = await bobLibsignalCipher.encrypt(typicalMessage);
+await aliceLibsignalCipher.decryptWhisperMessage(
+  libsignalBobReply.body as unknown as Uint8Array,
+);
+
+// Now both Alice and Bob have fully established sessions in both libraries
+
+// ============================================================================
+// Benchmarks
+// ============================================================================
+
+boxplot(() => {
+  summary(() => {
+    bench("Encrypt typical message (Rust WASM)", async () => {
+      const result = await aliceCipher.encrypt(typicalMessage);
+      do_not_optimize(result);
+    }).gc("inner");
+
+    bench("Encrypt typical message (libsignal-node)", async () => {
+      const result = await aliceLibsignalCipher.encrypt(typicalMessage);
+      do_not_optimize(result);
+    }).gc("inner");
+  });
+
+  summary(() => {
+    // Decrypt benchmarks - Alice encrypts, Bob decrypts
+    // Both sides now have established sessions, so these are WhisperMessages (type 1)
+    bench("Decrypt WhisperMessage (Rust WASM)", async () => {
+      // Alice encrypts a fresh message to Bob
+      const encrypted = await aliceCipher.encrypt(typicalMessage);
+      // Bob decrypts it - this advances the ratchet
+      const result = await bobCipher.decryptWhisperMessage(encrypted.body);
+      do_not_optimize(result);
+    }).gc("inner");
+
+    bench("Decrypt WhisperMessage (libsignal-node)", async () => {
+      // Alice encrypts a fresh message to Bob
+      const encrypted = await aliceLibsignalCipher.encrypt(typicalMessage);
+      // Bob decrypts it - this advances the ratchet
+      const result = await bobLibsignalCipher.decryptWhisperMessage(
+        encrypted.body as unknown as Uint8Array,
+      );
+      do_not_optimize(result);
+    }).gc("inner");
+  });
+
+  summary(() => {
+    // Full round-trip: Alice -> Bob -> Alice
+    bench("Full round-trip encrypt+decrypt (Rust WASM)", async () => {
+      // Alice sends to Bob
+      const toBob = await aliceCipher.encrypt(typicalMessage);
+      const decryptedByBob = await bobCipher.decryptWhisperMessage(toBob.body);
+      // Bob replies to Alice
+      const toAlice = await bobCipher.encrypt(typicalMessage);
+      const decryptedByAlice = await aliceCipher.decryptWhisperMessage(
+        toAlice.body,
+      );
+      do_not_optimize(decryptedByBob);
+      do_not_optimize(decryptedByAlice);
+    }).gc("inner");
+
+    bench("Full round-trip encrypt+decrypt (libsignal-node)", async () => {
+      // Alice sends to Bob
+      const toBob = await aliceLibsignalCipher.encrypt(typicalMessage);
+      const decryptedByBob = await bobLibsignalCipher.decryptWhisperMessage(
+        toBob.body as unknown as Uint8Array,
+      );
+      // Bob replies to Alice
+      const toAlice = await bobLibsignalCipher.encrypt(typicalMessage);
+      const decryptedByAlice = await aliceLibsignalCipher.decryptWhisperMessage(
+        toAlice.body as unknown as Uint8Array,
+      );
+      do_not_optimize(decryptedByBob);
+      do_not_optimize(decryptedByAlice);
+    }).gc("inner");
+  });
 });
 
 await run();

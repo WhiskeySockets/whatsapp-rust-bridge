@@ -1,5 +1,9 @@
 import { decodeNode, encodeNode, type BinaryNode } from "../dist/index.js";
-import { run, bench, group, do_not_optimize } from "mitata";
+import { run, bench, do_not_optimize, boxplot, summary } from "mitata";
+import {
+  encodeBinaryNode as encodeBinaryNodeOld,
+  decodeBinaryNode as decodeBinaryNodeOld,
+} from "baileys";
 
 const testNode: BinaryNode = {
   tag: "message",
@@ -27,28 +31,46 @@ const testNode: BinaryNode = {
   ],
 };
 
-const wasmEncoded = encodeNode(testNode);
+const wasmEncoded = Buffer.from(encodeNode(testNode));
 
-group("Encoding (JS Object -> Binary)", () => {
-  bench("Rust WASM (marshal - allocates)", () => {
-    const result = encodeNode(testNode);
-    do_not_optimize(result);
-  }).gc("inner");
-});
+boxplot(() => {
+  summary(() => {
+    bench("encodeNode Rust WASM", () => {
+      const result = encodeNode(testNode);
+      do_not_optimize(result);
+    }).gc("inner");
 
-group("Decoding (Binary -> JS Handle)", () => {
-  bench("Rust WASM (decode to handle)", () => {
-    const handle = decodeNode(wasmEncoded);
-    do_not_optimize(handle);
-  }).gc("inner");
-});
+    bench("encodeNode Old Baileys", () => {
+      const result = encodeBinaryNodeOld(testNode);
+      do_not_optimize(result);
+    }).gc("inner");
+  });
 
-group("Decoding and getting attrs (Binary -> JS Handle)", () => {
-  bench("Rust WASM attrs (decode to handle)", () => {
-    const handle = decodeNode(wasmEncoded);
-    handle.attrs;
-    handle.attrs;
-  }).gc("inner");
+  summary(() => {
+    bench("decodeNode Rust WASM", () => {
+      const handle = decodeNode(wasmEncoded);
+      do_not_optimize(handle);
+    }).gc("inner");
+
+    bench("decodeNode Old Baileys", async () => {
+      const handle = await decodeBinaryNodeOld(wasmEncoded);
+      do_not_optimize(handle);
+    }).gc("inner");
+  });
+
+  summary(() => {
+    bench("decode and attrs Rust WASM", () => {
+      const handle = decodeNode(wasmEncoded);
+      handle.attrs;
+      handle.attrs;
+    }).gc("inner");
+
+    bench("decode and attrs Old Baileys", async () => {
+      const handle = await decodeBinaryNodeOld(wasmEncoded);
+      handle.attrs;
+      handle.attrs;
+    }).gc("inner");
+  });
 });
 
 await run();
