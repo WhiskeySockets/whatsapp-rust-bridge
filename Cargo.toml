@@ -33,7 +33,7 @@ simd-adler32 = { version = "0.3.7", default-features = false, features = [
 ] }
 uuid = { version = "1.18.1", features = ["v4", "js"] }
 
-wacore-binary = { git = "https://github.com/jlucaso1/whatsapp-rust.git", features = [
+wacore-binary = { git = "https://github.com/jlucaso1/whatsapp-rust.git", branch = "main", features = [
   "serde",
 ] }
 wacore-libsignal = { git = "https://github.com/jlucaso1/whatsapp-rust.git", branch = "main", package = "wacore-libsignal" }
