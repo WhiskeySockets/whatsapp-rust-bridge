@@ -59,7 +59,7 @@ impl SessionBuilder {
     #[wasm_bindgen(constructor)]
     pub fn new(storage: SignalStorage, remote_address: &ProtocolAddress) -> Self {
         Self {
-            storage_adapter: JsStorageAdapter::new(storage.into()),
+            storage_adapter: JsStorageAdapter::new(storage),
             // We need to clone the inner data, as ProtocolAddress is passed by reference
             remote_address: ProtocolAddress(remote_address.0.clone()),
         }

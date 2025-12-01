@@ -25,7 +25,7 @@ impl SessionCipher {
     #[wasm_bindgen(constructor)]
     pub fn new(storage: SignalStorage, remote_address: &ProtocolAddress) -> Self {
         Self {
-            storage_adapter: JsStorageAdapter::new(storage.into()),
+            storage_adapter: JsStorageAdapter::new(storage),
             remote_address: ProtocolAddress(remote_address.0.clone()),
         }
     }

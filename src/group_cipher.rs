@@ -22,7 +22,7 @@ impl GroupCipher {
     #[wasm_bindgen(constructor)]
     pub fn new(storage: SignalStorage, group_id: String, sender: &ProtocolAddress) -> Self {
         Self {
-            storage_adapter: JsStorageAdapter::new(storage.into()),
+            storage_adapter: JsStorageAdapter::new(storage),
             sender_key_name: SenderKeyName::new(group_id, sender),
         }
     }
@@ -63,7 +63,7 @@ impl GroupSessionBuilder {
     #[wasm_bindgen(constructor)]
     pub fn new(storage: SignalStorage) -> Self {
         Self {
-            storage_adapter: JsStorageAdapter::new(storage.into()),
+            storage_adapter: JsStorageAdapter::new(storage),
         }
     }
 
