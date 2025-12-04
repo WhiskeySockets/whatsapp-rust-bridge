@@ -136,12 +136,52 @@ impl InternalBinaryNode {
         self.node_ref().tag.to_string()
     }
 
+    #[wasm_bindgen(js_name = toJSON)]
+    pub fn to_json(&self) -> JsValue {
+        let obj = Object::new();
+
+        let tag_key = JsValue::from_str("tag");
+        let tag_value = JsValue::from_str(&self.node_ref().tag);
+        js_sys::Reflect::set(&obj, &tag_key, &tag_value).expect("Failed to set tag");
+
+        let attrs_key = JsValue::from_str("attrs");
+        let attrs_value: JsValue = self.attrs().into();
+        js_sys::Reflect::set(&obj, &attrs_key, &attrs_value).expect("Failed to set attrs");
+
+        let content_key = JsValue::from_str("content");
+        if let Some(content) = self.content() {
+            let content_js: JsValue = content.into();
+            if Array::is_array(&content_js) {
+                let arr = Array::from(&content_js);
+                let json_arr = Array::new_with_length(arr.length());
+                for i in 0..arr.length() {
+                    let item = arr.get(i);
+                    if let Ok(to_json_fn) =
+                        js_sys::Reflect::get(&item, &JsValue::from_str("toJSON"))
+                        && to_json_fn.is_function()
+                    {
+                        let func = to_json_fn.unchecked_into::<js_sys::Function>();
+                        if let Ok(json_item) = func.call0(&item) {
+                            json_arr.set(i, json_item);
+                            continue;
+                        }
+                    }
+                    json_arr.set(i, item);
+                }
+                js_sys::Reflect::set(&obj, &content_key, &json_arr).expect("Failed to set content");
+            } else {
+                js_sys::Reflect::set(&obj, &content_key, &content_js)
+                    .expect("Failed to set content");
+            }
+        }
+
+        obj.into()
+    }
+
     #[wasm_bindgen(getter)]
     pub fn attrs(&self) -> Attrs {
         let mut cached = self.cached_attrs.borrow_mut();
         if cached.is_none() {
-            // Access attrs directly from node_ref instead of going through AttrParser
-            // which unnecessarily allocates a Vec<BinaryError>
             let attrs = &self.node_ref().attrs;
 
             let obj = Object::new();
@@ -220,7 +260,6 @@ pub fn decode_node(data: Vec<u8>) -> Result<InternalBinaryNode, JsValue> {
     }
 
     let unpacked_cow = unpack(&data).map_err(|e| JsValue::from_str(&e.to_string()))?;
-    // Convert directly to Rc<[u8]> to avoid double indirection of Rc<Box<[u8]>>
     let owned_data: Rc<[u8]> = Rc::from(unpacked_cow.into_owned().into_boxed_slice());
 
     let static_data: &'static [u8] = unsafe { mem::transmute(owned_data.as_ref()) };
