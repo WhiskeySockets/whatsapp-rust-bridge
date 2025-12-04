@@ -53,24 +53,15 @@ export interface SignalStorage {
 }
 "#;
 
-// =============================================================================
-// Direct structural bindings to user's storage object
-// =============================================================================
-
 #[wasm_bindgen]
 extern "C" {
-    /// The user's storage implementation object.
-    /// This type is used both as the TypeScript interface marker and for structural method calls.
     #[wasm_bindgen(typescript_type = "SignalStorage")]
     #[derive(Clone)]
     pub type SignalStorage;
 
-    // loadSession(address: string): MaybePromise<Uint8Array | null | undefined>
     #[wasm_bindgen(structural, method, catch, js_name = loadSession)]
     fn js_load_session(this: &SignalStorage, address: &str) -> Result<JsValue, JsValue>;
 
-    // storeSession(address: string, record: SessionRecord): MaybePromise<void>
-    // Note: We pass the SessionRecord as JsValue since wasm_bindgen doesn't support &SessionRecord directly
     #[wasm_bindgen(structural, method, catch, js_name = storeSession)]
     fn js_store_session(
         this: &SignalStorage,
@@ -78,7 +69,6 @@ extern "C" {
         record: JsValue,
     ) -> Result<JsValue, JsValue>;
 
-    // storeSessionRaw(address: string, data: Uint8Array): MaybePromise<void> - optional optimized path
     #[wasm_bindgen(structural, method, catch, js_name = storeSessionRaw)]
     fn js_store_session_raw(
         this: &SignalStorage,
@@ -86,15 +76,12 @@ extern "C" {
         data: &Uint8Array,
     ) -> Result<JsValue, JsValue>;
 
-    // getOurIdentity(): MaybePromise<KeyPairType>
     #[wasm_bindgen(structural, method, catch, js_name = getOurIdentity)]
     fn js_get_our_identity(this: &SignalStorage) -> Result<JsValue, JsValue>;
 
-    // getOurRegistrationId(): MaybePromise<number>
     #[wasm_bindgen(structural, method, catch, js_name = getOurRegistrationId)]
     fn js_get_our_registration_id(this: &SignalStorage) -> Result<JsValue, JsValue>;
 
-    // isTrustedIdentity(name: string, identityKey: Uint8Array, direction: number): MaybePromise<boolean>
     #[wasm_bindgen(structural, method, catch, js_name = isTrustedIdentity)]
     fn js_is_trusted_identity(
         this: &SignalStorage,
@@ -103,23 +90,18 @@ extern "C" {
         direction: u32,
     ) -> Result<JsValue, JsValue>;
 
-    // loadPreKey(id: number): MaybePromise<KeyPairType | null | undefined>
     #[wasm_bindgen(structural, method, catch, js_name = loadPreKey)]
     fn js_load_pre_key(this: &SignalStorage, id: u32) -> Result<JsValue, JsValue>;
 
-    // removePreKey(id: number): MaybePromise<void>
     #[wasm_bindgen(structural, method, catch, js_name = removePreKey)]
     fn js_remove_pre_key(this: &SignalStorage, id: u32) -> Result<JsValue, JsValue>;
 
-    // loadSignedPreKey(id: number): MaybePromise<SignedPreKeyType | null | undefined>
     #[wasm_bindgen(structural, method, catch, js_name = loadSignedPreKey)]
     fn js_load_signed_pre_key(this: &SignalStorage, id: u32) -> Result<JsValue, JsValue>;
 
-    // loadSenderKey(keyId: string): MaybePromise<Uint8Array | null | undefined>
     #[wasm_bindgen(structural, method, catch, js_name = loadSenderKey)]
     fn js_load_sender_key(this: &SignalStorage, key_id: &str) -> Result<JsValue, JsValue>;
 
-    // storeSenderKey(keyId: string, record: Uint8Array): MaybePromise<void>
     #[wasm_bindgen(structural, method, catch, js_name = storeSenderKey)]
     fn js_store_sender_key(
         this: &SignalStorage,
@@ -127,10 +109,6 @@ extern "C" {
         record: &Uint8Array,
     ) -> Result<JsValue, JsValue>;
 }
-
-// =============================================================================
-// JsStorageAdapter - bridges JS storage object to Rust Signal protocol stores
-// =============================================================================
 
 #[derive(Clone)]
 pub struct JsStorageAdapter {
@@ -154,9 +132,35 @@ impl JsStorageAdapter {
         }
     }
 
-    /// Migrate legacy libsignal-node JSON session format to protobuf
+    pub async fn load_session(&self, address_str: &str) -> SignalResult<Option<Vec<u8>>> {
+        if let Some(record) = self.cached_sessions.borrow().get(address_str) {
+            return Ok(Some(record.serialize()?));
+        }
+
+        let result = self
+            .js_storage
+            .js_load_session(address_str)
+            .map_err(js_to_signal_error)?;
+        let value = resolve_maybe_promise(result)
+            .await
+            .map_err(js_to_signal_error)?;
+
+        if value.is_null() || value.is_undefined() {
+            return Ok(None);
+        }
+
+        let bytes = if let Some(b) = js_value_to_bytes(&value) {
+            Some(b)
+        } else if is_legacy_session_object(&value) {
+            self.migrate_legacy_json(value).await?
+        } else {
+            value.dyn_into::<Uint8Array>().ok().map(|arr| arr.to_vec())
+        };
+
+        Ok(bytes)
+    }
+
     async fn migrate_legacy_json(&self, value: JsValue) -> SignalResult<Option<Vec<u8>>> {
-        // Check if it looks like legacy session
         let has_reg_id =
             js_sys::Reflect::has(&value, &JsValue::from_str("registrationId")).unwrap_or(false);
         let has_ratchet =
@@ -165,7 +169,6 @@ impl JsStorageAdapter {
         let session_data = if has_reg_id && has_ratchet {
             value
         } else {
-            // Check for _sessions wrapper
             let has_sessions =
                 js_sys::Reflect::has(&value, &JsValue::from_str("_sessions")).unwrap_or(false);
             if !has_sessions {
@@ -184,12 +187,10 @@ impl JsStorageAdapter {
                 return Ok(None);
             }
 
-            // Use the first session found
             let key = keys.get(0);
             js_sys::Reflect::get(&sessions, &key).map_err(js_to_signal_error)?
         };
 
-        // Verify we actually have a session object now
         let has_reg_id_inner =
             js_sys::Reflect::has(&session_data, &JsValue::from_str("registrationId"))
                 .unwrap_or(false);
@@ -233,7 +234,6 @@ impl JsStorageAdapter {
         let base_key_b64 = get_string(&index_info, "baseKey").unwrap_or_default();
         let base_key = BASE64_STANDARD.decode(base_key_b64).unwrap_or_default();
 
-        // Chains
         let chains = get_object(&session_data, "_chains")
             .ok_or_else(|| invalid_js_data("migrate", "Missing _chains"))?;
         let chains_obj = chains
@@ -266,7 +266,6 @@ impl JsStorageAdapter {
             let key_b64 = get_string(&chain_key_obj, "key").unwrap_or_default();
             let key_bytes = BASE64_STANDARD.decode(key_b64).unwrap_or_default();
 
-            // Message Keys
             let message_keys_obj = get_object(&chain, "messageKeys").ok_or_else(|| {
                 invalid_js_data("migrate", "Missing messageKeys for legacy chain entry")
             })?;
@@ -385,14 +384,12 @@ impl JsStorageAdapter {
         Ok(Some(record.encode_to_vec()))
     }
 
-    /// Migrate legacy sender key JSON format to protobuf
     fn migrate_legacy_sender_key(&self, data: &[u8]) -> SignalResult<Option<Vec<u8>>> {
         let json_str = match std::str::from_utf8(data) {
             Ok(s) => s,
             Err(_) => return Ok(None),
         };
 
-        // If it doesn't look like JSON (starts with [), return None
         if !json_str.trim().starts_with('[') {
             return Ok(None);
         }
@@ -462,10 +459,6 @@ impl JsStorageAdapter {
         Ok(Some(record.encode_to_vec()))
     }
 }
-
-// =============================================================================
-// Serde deserialization types for JS objects
-// =============================================================================
 
 #[derive(Debug, Default, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -582,10 +575,6 @@ impl JsIdentityKeyPairPayload {
     }
 }
 
-// =============================================================================
-// Helper functions
-// =============================================================================
-
 fn invalid_js_data(context: &'static str, message: impl Into<String>) -> SignalProtocolError {
     SignalProtocolError::InvalidState(context, message.into())
 }
@@ -609,10 +598,7 @@ fn js_to_signal_error(e: JsValue) -> libsignal::SignalProtocolError {
     libsignal::SignalProtocolError::FfiBindingError(format!("{:?}", e))
 }
 
-/// Resolves a value that may be either a direct value or a Promise.
-/// This handles the MaybePromise<T> pattern from the SignalStorage interface.
 async fn resolve_maybe_promise(value: JsValue) -> Result<JsValue, JsValue> {
-    // Check if it's a Promise by looking for .then method
     if let Ok(then_fn) = js_sys::Reflect::get(&value, &JsValue::from_str("then"))
         && then_fn.is_function()
     {
@@ -621,7 +607,6 @@ async fn resolve_maybe_promise(value: JsValue) -> Result<JsValue, JsValue> {
     Ok(value)
 }
 
-/// Resolves a maybe-promise and returns None if null/undefined
 async fn resolve_maybe_promise_optional(value: JsValue) -> SignalResult<Option<JsValue>> {
     let resolved = resolve_maybe_promise(value)
         .await
@@ -640,14 +625,11 @@ fn deserialize_js_value<T: DeserializeOwned>(
     serde_wasm_bindgen::from_value(value).map_err(|err| invalid_js_data(context, err.to_string()))
 }
 
-/// Convert a JsValue to bytes, handling various formats (Uint8Array, Buffer-like, legacy JSON)
 fn js_value_to_bytes(value: &JsValue) -> Option<Vec<u8>> {
-    // 1. Try as Uint8Array
     if let Ok(arr) = value.clone().dyn_into::<Uint8Array>() {
         return Some(arr.to_vec());
     }
 
-    // 2. Try as standard Array
     if js_sys::Array::is_array(value) {
         let array = js_sys::Array::from(value);
         let mut bytes = Vec::with_capacity(array.length() as usize);
@@ -659,7 +641,6 @@ fn js_value_to_bytes(value: &JsValue) -> Option<Vec<u8>> {
         return Some(bytes);
     }
 
-    // 3. Buffer-like objects { type: 'Buffer', data: [...] }
     if let Ok(data) = js_sys::Reflect::get(value, &JsValue::from_str("data"))
         && js_sys::Array::is_array(&data)
     {
@@ -676,7 +657,6 @@ fn js_value_to_bytes(value: &JsValue) -> Option<Vec<u8>> {
     None
 }
 
-/// Check if a value is a legacy session object (libsignal-node JSON format)
 fn is_legacy_session_object(value: &JsValue) -> bool {
     let has_sessions =
         js_sys::Reflect::has(value, &JsValue::from_str("_sessions")).unwrap_or(false);
@@ -688,19 +668,16 @@ fn is_legacy_session_object(value: &JsValue) -> bool {
     has_sessions || (has_reg_id && has_ratchet)
 }
 
-// Helper to get property as string
 fn get_string(obj: &JsValue, key: &str) -> Option<String> {
     js_sys::Reflect::get(obj, &JsValue::from_str(key))
         .ok()
         .and_then(|v| v.as_string())
 }
 
-// Helper to get property as object
 fn get_object(obj: &JsValue, key: &str) -> Option<JsValue> {
     js_sys::Reflect::get(obj, &JsValue::from_str(key)).ok()
 }
 
-// Helper to get property as number
 fn get_number(obj: &JsValue, key: &str) -> Option<f64> {
     js_sys::Reflect::get(obj, &JsValue::from_str(key))
         .ok()
@@ -713,7 +690,6 @@ fn get_bytes_from_buffer_json(obj: &JsValue, key: &str) -> Option<Vec<u8>> {
         return None;
     }
 
-    // Check for { type: 'Buffer', data: [...] }
     let type_prop = js_sys::Reflect::get(&val, &JsValue::from_str("type")).ok();
     let data_prop = js_sys::Reflect::get(&val, &JsValue::from_str("data")).ok();
 
@@ -731,7 +707,6 @@ fn get_bytes_from_buffer_json(obj: &JsValue, key: &str) -> Option<Vec<u8>> {
         return Some(bytes);
     }
 
-    // Fallback: try to treat as array or Uint8Array
     if let Ok(arr) = val.clone().dyn_into::<Uint8Array>() {
         return Some(arr.to_vec());
     }
@@ -747,7 +722,6 @@ fn get_bytes_from_buffer_json(obj: &JsValue, key: &str) -> Option<Vec<u8>> {
         return Some(bytes);
     }
 
-    // Fallback: base64 string?
     if let Some(b) = val
         .as_string()
         .and_then(|s| BASE64_STANDARD.decode(&s).ok())
@@ -757,10 +731,6 @@ fn get_bytes_from_buffer_json(obj: &JsValue, key: &str) -> Option<Vec<u8>> {
 
     None
 }
-
-// =============================================================================
-// SessionStore implementation
-// =============================================================================
 
 #[async_trait(?Send)]
 impl SessionStore for JsStorageAdapter {
@@ -772,12 +742,10 @@ impl SessionStore for JsStorageAdapter {
 
         let address_str = address.to_string();
 
-        // Check cache first
         if let Some(record) = self.cached_sessions.borrow().get(&address_str) {
             return Ok(Some(record.clone()));
         }
 
-        // Call JS storage directly
         let result = self
             .js_storage
             .js_load_session(&address_str)
@@ -790,14 +758,11 @@ impl SessionStore for JsStorageAdapter {
             return Ok(None);
         }
 
-        // Try to convert to bytes
         let bytes = if let Some(b) = js_value_to_bytes(&value) {
             Some(b)
         } else if is_legacy_session_object(&value) {
-            // Try migration for legacy JSON format
             self.migrate_legacy_json(value).await?
         } else {
-            // Unknown format - try to cast to Uint8Array as last resort
             value.dyn_into::<Uint8Array>().ok().map(|arr| arr.to_vec())
         };
 
@@ -822,14 +787,12 @@ impl SessionStore for JsStorageAdapter {
 
         let address_str = address.to_string();
 
-        // Update cache
         self.cached_sessions
             .borrow_mut()
             .insert(address_str.clone(), record.clone());
 
         let bytes = record.serialize()?;
 
-        // Check if storeSessionRaw exists (optimized path)
         let has_raw = js_sys::Reflect::has(&self.js_storage, &JsValue::from_str("storeSessionRaw"))
             .unwrap_or(false);
 
@@ -837,7 +800,6 @@ impl SessionStore for JsStorageAdapter {
             let uint8 = Uint8Array::from(bytes.as_slice());
             self.js_storage.js_store_session_raw(&address_str, &uint8)
         } else {
-            // Create SessionRecord wrapper for JS and convert to JsValue
             let session_record = SessionRecord::new(bytes);
             let js_record: JsValue = session_record.into();
             self.js_storage.js_store_session(&address_str, js_record)
@@ -852,14 +814,9 @@ impl SessionStore for JsStorageAdapter {
     }
 }
 
-// =============================================================================
-// IdentityKeyStore implementation
-// =============================================================================
-
 #[async_trait(?Send)]
 impl IdentityKeyStore for JsStorageAdapter {
     async fn get_identity_key_pair(&self) -> SignalResult<IdentityKeyPair> {
-        // Check cache first
         if let Some(pair) = *self.cached_identity_key_pair.borrow() {
             return Ok(pair);
         }
@@ -884,7 +841,6 @@ impl IdentityKeyStore for JsStorageAdapter {
     }
 
     async fn get_local_registration_id(&self) -> SignalResult<u32> {
-        // Check cache first
         if let Some(id) = *self.cached_registration_id.borrow() {
             return Ok(id);
         }
@@ -920,7 +876,6 @@ impl IdentityKeyStore for JsStorageAdapter {
         let address_name = address.name().to_string();
         let identity_bytes = identity.serialize();
 
-        // Check cache first
         if let Some(cached_key) = self.cached_identities.borrow().get(&address_name)
             && cached_key.as_slice() == &*identity_bytes
         {
@@ -961,14 +916,12 @@ impl IdentityKeyStore for JsStorageAdapter {
         let address_name = address.name().to_string();
         let identity_bytes = identity.serialize();
 
-        // Check if identity changed
         let changed = if let Some(cached_key) = self.cached_identities.borrow().get(&address_name) {
             cached_key.as_slice() != &*identity_bytes
         } else {
             false
         };
 
-        // Update cache
         self.cached_identities
             .borrow_mut()
             .insert(address_name, identity_bytes.to_vec());
@@ -983,10 +936,6 @@ impl IdentityKeyStore for JsStorageAdapter {
         Ok(None)
     }
 }
-
-// =============================================================================
-// PreKeyStore implementation
-// =============================================================================
 
 #[cfg_attr(target_arch = "wasm32", async_trait(?Send))]
 #[cfg_attr(not(target_arch = "wasm32"), async_trait)]
@@ -1008,7 +957,6 @@ impl PreKeyStore for JsStorageAdapter {
         _prekey_id: PreKeyId,
         _record: &PreKeyRecord,
     ) -> SignalResult<()> {
-        // Pre-keys are typically stored by the user, not by the protocol
         Ok(())
     }
 
@@ -1023,10 +971,6 @@ impl PreKeyStore for JsStorageAdapter {
         Ok(())
     }
 }
-
-// =============================================================================
-// SignedPreKeyStore implementation
-// =============================================================================
 
 #[cfg_attr(target_arch = "wasm32", async_trait(?Send))]
 #[cfg_attr(not(target_arch = "wasm32"), async_trait)]
@@ -1052,14 +996,9 @@ impl SignedPreKeyStore for JsStorageAdapter {
         _id: SignedPreKeyId,
         _record: &SignedPreKeyRecord,
     ) -> SignalResult<()> {
-        // Signed pre-keys are typically stored by the user, not by the protocol
         Ok(())
     }
 }
-
-// =============================================================================
-// SenderKeyStore implementation
-// =============================================================================
 
 #[async_trait(?Send)]
 impl SenderKeyStore for JsStorageAdapter {
@@ -1075,7 +1014,6 @@ impl SenderKeyStore for JsStorageAdapter {
             sender_key_name.sender_id()
         );
 
-        // Check cache first
         if let Some(record) = self.cached_sender_keys.borrow().get(&key_id) {
             return Ok(Some(record.clone()));
         }
@@ -1096,7 +1034,6 @@ impl SenderKeyStore for JsStorageAdapter {
 
         match bytes {
             Some(data) => {
-                // Try to deserialize as CoreSenderKeyRecord
                 if let Ok(record) = CoreSenderKeyRecord::deserialize(&data) {
                     self.cached_sender_keys
                         .borrow_mut()
@@ -1104,7 +1041,6 @@ impl SenderKeyStore for JsStorageAdapter {
                     return Ok(Some(record));
                 }
 
-                // If failed, try to migrate from JSON bytes
                 if let Ok(Some(migrated_bytes)) = self.migrate_legacy_sender_key(&data) {
                     let record = CoreSenderKeyRecord::deserialize(&migrated_bytes)?;
                     self.cached_sender_keys
@@ -1113,7 +1049,6 @@ impl SenderKeyStore for JsStorageAdapter {
                     return Ok(Some(record));
                 }
 
-                // If migration also failed, return error from original deserialize attempt
                 let record = CoreSenderKeyRecord::deserialize(&data)?;
                 self.cached_sender_keys
                     .borrow_mut()
@@ -1137,7 +1072,6 @@ impl SenderKeyStore for JsStorageAdapter {
             sender_key_name.sender_id()
         );
 
-        // Update cache
         self.cached_sender_keys
             .borrow_mut()
             .insert(key_id.clone(), record.clone());

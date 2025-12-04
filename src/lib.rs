@@ -3,6 +3,7 @@ pub mod curve;
 pub mod group_cipher;
 pub mod group_types;
 pub mod key_helper;
+pub mod logger;
 pub mod protocol_address;
 pub mod sender_key_name;
 pub mod session_builder;

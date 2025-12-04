@@ -1,0 +1,160 @@
+use js_sys::Object;
+use log::{Level, LevelFilter, Log, Metadata, Record};
+use std::cell::RefCell;
+use std::sync::atomic::{AtomicBool, Ordering};
+use wasm_bindgen::prelude::*;
+
+#[wasm_bindgen(typescript_custom_section)]
+const LOGGER_TS: &str = r#"
+export interface ILogger {
+    level: string;
+    trace(obj: object, msg?: string): void;
+    debug(obj: object, msg?: string): void;
+    info(obj: object, msg?: string): void;
+    warn(obj: object, msg?: string): void;
+    error(obj: object, msg?: string): void;
+}
+"#;
+
+#[wasm_bindgen]
+extern "C" {
+    #[wasm_bindgen(typescript_type = "ILogger")]
+    #[derive(Clone)]
+    pub type JsLogger;
+
+    #[wasm_bindgen(structural, method, getter, js_name = level)]
+    fn js_level(this: &JsLogger) -> String;
+
+    #[wasm_bindgen(structural, method, js_name = trace)]
+    fn js_trace(this: &JsLogger, obj: &Object, msg: Option<&str>);
+
+    #[wasm_bindgen(structural, method, js_name = debug)]
+    fn js_debug(this: &JsLogger, obj: &Object, msg: Option<&str>);
+
+    #[wasm_bindgen(structural, method, js_name = info)]
+    fn js_info(this: &JsLogger, obj: &Object, msg: Option<&str>);
+
+    #[wasm_bindgen(structural, method, js_name = warn)]
+    fn js_warn(this: &JsLogger, obj: &Object, msg: Option<&str>);
+
+    #[wasm_bindgen(structural, method, js_name = error)]
+    fn js_error(this: &JsLogger, obj: &Object, msg: Option<&str>);
+}
+
+thread_local! {
+    static JS_LOGGER: RefCell<Option<JsLogger>> = const { RefCell::new(None) };
+}
+
+static LOGGER_INITIALIZED: AtomicBool = AtomicBool::new(false);
+
+struct BridgeLogger;
+
+impl BridgeLogger {
+    fn get_level_filter_from_js() -> LevelFilter {
+        JS_LOGGER.with(|logger| {
+            if let Some(ref js_logger) = *logger.borrow() {
+                let level_str = js_logger.js_level();
+                match level_str.to_lowercase().as_str() {
+                    "trace" => LevelFilter::Trace,
+                    "debug" => LevelFilter::Debug,
+                    "info" => LevelFilter::Info,
+                    "warn" | "warning" => LevelFilter::Warn,
+                    "error" => LevelFilter::Error,
+                    "silent" | "off" => LevelFilter::Off,
+                    "10" => LevelFilter::Trace,
+                    "20" => LevelFilter::Debug,
+                    "30" => LevelFilter::Info,
+                    "40" => LevelFilter::Warn,
+                    "50" | "60" => LevelFilter::Error,
+                    _ => LevelFilter::Info,
+                }
+            } else {
+                LevelFilter::Off
+            }
+        })
+    }
+}
+
+impl Log for BridgeLogger {
+    fn enabled(&self, metadata: &Metadata) -> bool {
+        JS_LOGGER.with(|logger| {
+            if logger.borrow().is_none() {
+                return false;
+            }
+            let max_level = Self::get_level_filter_from_js();
+            metadata.level() <= max_level
+        })
+    }
+
+    fn log(&self, record: &Record) {
+        if !self.enabled(record.metadata()) {
+            return;
+        }
+
+        JS_LOGGER.with(|logger| {
+            if let Some(ref js_logger) = *logger.borrow() {
+                let obj = Object::new();
+
+                let target = record.target();
+                if !target.is_empty() {
+                    let _ =
+                        js_sys::Reflect::set(&obj, &JsValue::from_str("target"), &target.into());
+                }
+
+                let msg = record.args().to_string();
+
+                match record.level() {
+                    Level::Trace => js_logger.js_trace(&obj, Some(&msg)),
+                    Level::Debug => js_logger.js_debug(&obj, Some(&msg)),
+                    Level::Info => js_logger.js_info(&obj, Some(&msg)),
+                    Level::Warn => js_logger.js_warn(&obj, Some(&msg)),
+                    Level::Error => js_logger.js_error(&obj, Some(&msg)),
+                }
+            }
+        });
+    }
+
+    fn flush(&self) {}
+}
+
+static BRIDGE_LOGGER: BridgeLogger = BridgeLogger;
+
+#[wasm_bindgen(js_name = setLogger)]
+pub fn set_logger(logger: JsLogger) -> Result<(), JsValue> {
+    JS_LOGGER.with(|cell| {
+        *cell.borrow_mut() = Some(logger);
+    });
+
+    if !LOGGER_INITIALIZED.swap(true, Ordering::SeqCst) {
+        log::set_logger(&BRIDGE_LOGGER)
+            .map_err(|e| JsValue::from_str(&format!("Failed to set logger: {}", e)))?;
+
+        log::set_max_level(LevelFilter::Trace);
+    }
+
+    Ok(())
+}
+
+#[wasm_bindgen(js_name = updateLogger)]
+pub fn update_logger(logger: JsLogger) {
+    JS_LOGGER.with(|cell| {
+        *cell.borrow_mut() = Some(logger);
+    });
+}
+
+#[wasm_bindgen(js_name = hasLogger)]
+pub fn has_logger() -> bool {
+    JS_LOGGER.with(|logger| logger.borrow().is_some())
+}
+
+#[wasm_bindgen(js_name = logMessage)]
+pub fn log_message(level: &str, message: &str) {
+    match level.to_lowercase().as_str() {
+        "trace" => log::trace!("{}", message),
+        "debug" => log::debug!("{}", message),
+        "info" => log::info!("{}", message),
+        "warn" | "warning" => log::warn!("{}", message),
+        "error" => log::error!("{}", message),
+        _ => log::info!("{}", message),
+    }
+}

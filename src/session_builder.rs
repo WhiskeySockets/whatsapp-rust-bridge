@@ -60,7 +60,6 @@ impl SessionBuilder {
     pub fn new(storage: SignalStorage, remote_address: &ProtocolAddress) -> Self {
         Self {
             storage_adapter: JsStorageAdapter::new(storage),
-            // We need to clone the inner data, as ProtocolAddress is passed by reference
             remote_address: ProtocolAddress(remote_address.0.clone()),
         }
     }
@@ -118,6 +117,20 @@ impl SessionBuilder {
 
     #[wasm_bindgen(js_name = initOutgoing)]
     pub async fn init_outgoing(&mut self, bundle_val: PreKeyBundleInput) -> Result<(), JsValue> {
+        let address_str = self.remote_address.0.to_string();
+        let existing_session = self.storage_adapter.load_session(&address_str).await;
+
+        if let Ok(Some(session_bytes)) = existing_session
+            && let Ok(record) = CoreSessionRecord::deserialize(&session_bytes)
+            && record.has_usable_sender_chain().unwrap_or(false)
+        {
+            log::debug!(
+                "initOutgoing: Session already exists for {}, skipping injection",
+                address_str
+            );
+            return Ok(());
+        }
+
         self.process_prekey_bundle(bundle_val).await
     }
 }

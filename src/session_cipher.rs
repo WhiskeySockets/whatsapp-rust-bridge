@@ -134,9 +134,7 @@ impl SessionCipher {
 
     #[wasm_bindgen(js_name = hasOpenSession)]
     pub async fn has_open_session(&self) -> Result<bool, JsValue> {
-        let record = self
-            .storage_adapter
-            .load_session(&self.remote_address.0)
+        let record = SessionStore::load_session(&self.storage_adapter, &self.remote_address.0)
             .await
             .map_err(|e| JsValue::from_str(&e.to_string()))?;
 
