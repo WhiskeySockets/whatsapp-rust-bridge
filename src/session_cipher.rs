@@ -1,5 +1,6 @@
 use js_sys::{Object, Reflect, Uint8Array};
 use rand::{TryRngCore, rngs::OsRng};
+use std::cell::RefCell;
 use wasm_bindgen::prelude::*;
 
 use crate::{
@@ -12,6 +13,11 @@ use wacore_libsignal::protocol::{self as libsignal, SessionStore, UsePQRatchet};
 extern "C" {
     #[wasm_bindgen(extends = Object, typescript_type = "{ type: number; body: Uint8Array }")]
     pub type EncryptResult;
+}
+
+thread_local! {
+    static TYPE_KEY: RefCell<JsValue> = RefCell::new(JsValue::from_str("type"));
+    static BODY_KEY: RefCell<JsValue> = RefCell::new(JsValue::from_str("body"));
 }
 
 #[wasm_bindgen(js_name = SessionCipher)]
@@ -31,9 +37,6 @@ impl SessionCipher {
     }
 
     pub async fn encrypt(&mut self, plaintext: &[u8]) -> Result<EncryptResult, JsValue> {
-        #[cfg(debug_assertions)]
-        console_error_panic_hook::set_once();
-
         let mut session_store = self.storage_adapter.clone();
         let mut identity_store = session_store.clone();
 
@@ -52,9 +55,12 @@ impl SessionCipher {
         let body = ciphertext_message.serialize();
         let type_id = ciphertext_message.message_type() as u8;
 
+        let body_array = Uint8Array::new_with_length(body.len() as u32);
+        body_array.copy_from(body);
+
         let result = Object::new();
-        Reflect::set(&result, &"type".into(), &(type_id as u32).into())?;
-        Reflect::set(&result, &"body".into(), &Uint8Array::from(body).into())?;
+        TYPE_KEY.with(|k| Reflect::set(&result, &k.borrow(), &(type_id as u32).into()))?;
+        BODY_KEY.with(|k| Reflect::set(&result, &k.borrow(), &body_array.into()))?;
 
         Ok(result.unchecked_into())
     }
@@ -64,9 +70,6 @@ impl SessionCipher {
         &mut self,
         ciphertext: &[u8],
     ) -> Result<Uint8Array, JsValue> {
-        #[cfg(debug_assertions)]
-        console_error_panic_hook::set_once();
-
         let prekey_message = libsignal::PreKeySignalMessage::try_from(ciphertext)
             .map_err(|e| {
                 let msg = format!("SessionCipher.decryptPreKeyWhisperMessage failed: Invalid PreKeyMessage format: {}", e);
@@ -94,7 +97,9 @@ impl SessionCipher {
             JsValue::from_str(&msg)
         })?;
 
-        Ok(Uint8Array::from(plaintext.as_slice()))
+        let result = Uint8Array::new_with_length(plaintext.len() as u32);
+        result.copy_from(&plaintext);
+        Ok(result)
     }
 
     #[wasm_bindgen(js_name = decryptWhisperMessage)]
@@ -102,9 +107,6 @@ impl SessionCipher {
         &mut self,
         ciphertext: &[u8],
     ) -> Result<Uint8Array, JsValue> {
-        #[cfg(debug_assertions)]
-        console_error_panic_hook::set_once();
-
         let signal_message = libsignal::SignalMessage::try_from(ciphertext).map_err(|e| {
             let msg = format!(
                 "SessionCipher.decryptWhisperMessage failed: Invalid WhisperMessage format: {}",
@@ -129,7 +131,9 @@ impl SessionCipher {
             JsValue::from_str(&msg)
         })?;
 
-        Ok(Uint8Array::from(plaintext.as_slice()))
+        let result = Uint8Array::new_with_length(plaintext.len() as u32);
+        result.copy_from(&plaintext);
+        Ok(result)
     }
 
     #[wasm_bindgen(js_name = hasOpenSession)]

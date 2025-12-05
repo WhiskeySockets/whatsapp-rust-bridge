@@ -33,22 +33,28 @@ extern "C" {
     pub fn content(this: &EncodingNode) -> JsValue;
 }
 
+#[inline]
 fn js_to_node_ref(val: &EncodingNode) -> Result<NodeRef<'static>, JsValue> {
     let attrs_obj = val.attrs().unchecked_into::<Object>();
-    let keys = Object::keys(&attrs_obj);
-    let len = keys.length();
+    let entries = Object::entries(&attrs_obj);
+    let len = entries.length();
     let mut attrs = Vec::with_capacity(len as usize);
 
     for i in 0..len {
-        let key_js = keys.get(i);
-        let key = key_js
-            .as_string()
-            .ok_or_else(|| JsValue::from_str("Attribute key must be a string"))?;
+        let entry = entries.get(i);
+        let entry_arr = entry.unchecked_into::<Array>();
+        let key_js = entry_arr.get(0);
+        let value_js = entry_arr.get(1);
 
-        let value_js = js_sys::Reflect::get(&attrs_obj, &key_js)
-            .map_err(|_| JsValue::from_str("Failed to get attribute value"))?;
+        let key = match key_js.as_string() {
+            Some(k) => k,
+            None => continue,
+        };
 
         let value_str = if let Some(s) = value_js.as_string() {
+            if s.is_empty() || s.chars().all(|c| c.is_whitespace()) {
+                continue;
+            }
             s
         } else if let Some(n) = value_js.as_f64() {
             n.to_string()
@@ -57,10 +63,6 @@ fn js_to_node_ref(val: &EncodingNode) -> Result<NodeRef<'static>, JsValue> {
         } else {
             continue;
         };
-
-        if value_str.trim().is_empty() {
-            continue;
-        }
 
         attrs.push((Cow::Owned(key), Cow::Owned(value_str)));
     }
@@ -78,8 +80,9 @@ fn js_to_node_ref(val: &EncodingNode) -> Result<NodeRef<'static>, JsValue> {
         }
 
         _ if content_js.is_instance_of::<Uint8Array>() => {
-            let byte_array = Uint8Array::from(content_js);
-            let mut bytes = vec![0; byte_array.length() as usize];
+            let byte_array: Uint8Array = content_js.unchecked_into();
+            let len = byte_array.length() as usize;
+            let mut bytes = vec![0; len];
             byte_array.copy_to(&mut bytes);
             Ok(Some(NodeContentRef::Bytes(Cow::Owned(bytes))))
         }
@@ -186,9 +189,7 @@ impl InternalBinaryNode {
 
             let obj = Object::new();
             for (k, v) in attrs.iter() {
-                let key = JsValue::from_str(k);
-                let value = JsValue::from_str(v);
-                js_sys::Reflect::set(&obj, &key, &value).expect("Failed to set attribute");
+                let _ = js_sys::Reflect::set(&obj, &JsValue::from_str(k), &JsValue::from_str(v));
             }
 
             *cached = Some(obj.unchecked_into());
@@ -212,7 +213,9 @@ impl InternalBinaryNode {
         if cached.is_none() {
             match self.node_ref().content.as_deref() {
                 Some(NodeContentRef::Bytes(bytes)) => {
-                    let u8arr = Uint8Array::from(bytes.as_ref());
+                    let bytes_ref = bytes.as_ref();
+                    let u8arr = Uint8Array::new_with_length(bytes_ref.len() as u32);
+                    u8arr.copy_from(bytes_ref);
                     *cached = Some(u8arr.unchecked_into());
                 }
                 Some(NodeContentRef::String(s)) => {
@@ -250,7 +253,9 @@ pub fn encode_node(node_val: EncodingNode) -> Result<Uint8Array, JsValue> {
     let node_ref = js_to_node_ref(&node_val)?;
     let bytes = marshal_ref(&node_ref).map_err(|e| JsValue::from_str(&e.to_string()))?;
 
-    Ok(Uint8Array::from(&bytes[..]))
+    let result = Uint8Array::new_with_length(bytes.len() as u32);
+    result.copy_from(&bytes);
+    Ok(result)
 }
 
 #[wasm_bindgen(js_name = decodeNode)]
@@ -260,7 +265,11 @@ pub fn decode_node(data: Vec<u8>) -> Result<InternalBinaryNode, JsValue> {
     }
 
     let unpacked_cow = unpack(&data).map_err(|e| JsValue::from_str(&e.to_string()))?;
-    let owned_data: Rc<[u8]> = Rc::from(unpacked_cow.into_owned().into_boxed_slice());
+
+    let owned_data: Rc<[u8]> = match unpacked_cow {
+        Cow::Owned(vec) => Rc::from(vec.into_boxed_slice()),
+        Cow::Borrowed(slice) => Rc::from(slice),
+    };
 
     let static_data: &'static [u8] = unsafe { mem::transmute(owned_data.as_ref()) };
     let node_ref = unmarshal_ref(static_data).map_err(|e| JsValue::from_str(&e.to_string()))?;

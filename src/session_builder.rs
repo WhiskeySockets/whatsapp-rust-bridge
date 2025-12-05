@@ -69,8 +69,6 @@ impl SessionBuilder {
         &mut self,
         bundle_val: PreKeyBundleInput,
     ) -> Result<(), JsValue> {
-        console_error_panic_hook::set_once();
-
         let js_value = JsValue::from(bundle_val);
         let js_bundle: JsPreKeyBundle = serde_wasm_bindgen::from_value(js_value)?;
 

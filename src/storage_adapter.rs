@@ -118,6 +118,8 @@ pub struct JsStorageAdapter {
     cached_sessions: Rc<RefCell<HashMap<String, CoreSessionRecord>>>,
     cached_sender_keys: Rc<RefCell<HashMap<String, CoreSenderKeyRecord>>>,
     cached_identities: Rc<RefCell<HashMap<String, Vec<u8>>>>,
+    has_store_session_raw: Rc<RefCell<Option<bool>>>,
+    last_address_cache: Rc<RefCell<Option<(String, String)>>>,
 }
 
 impl JsStorageAdapter {
@@ -129,7 +131,38 @@ impl JsStorageAdapter {
             cached_sessions: Rc::new(RefCell::new(HashMap::new())),
             cached_sender_keys: Rc::new(RefCell::new(HashMap::new())),
             cached_identities: Rc::new(RefCell::new(HashMap::new())),
+            has_store_session_raw: Rc::new(RefCell::new(None)),
+            last_address_cache: Rc::new(RefCell::new(None)),
         }
+    }
+
+    fn has_store_session_raw(&self) -> bool {
+        if let Some(has_raw) = *self.has_store_session_raw.borrow() {
+            return has_raw;
+        }
+
+        let has_raw = js_sys::Reflect::has(&self.js_storage, &JsValue::from_str("storeSessionRaw"))
+            .unwrap_or(false);
+        self.has_store_session_raw.borrow_mut().replace(has_raw);
+        has_raw
+    }
+
+    #[inline]
+    fn get_address_string(&self, address: &libsignal::ProtocolAddress) -> String {
+        let name = address.name();
+        let cache = self.last_address_cache.borrow();
+        if let Some((cached_name, cached_str)) = cache.as_ref()
+            && cached_name == name
+        {
+            return cached_str.clone();
+        }
+        drop(cache);
+
+        let addr_str = address.to_string();
+        self.last_address_cache
+            .borrow_mut()
+            .replace((name.to_string(), addr_str.clone()));
+        addr_str
     }
 
     async fn migrate_legacy_json(&self, value: JsValue) -> SignalResult<Option<Vec<u8>>> {
@@ -566,19 +599,20 @@ fn ensure_curve_key_with_prefix(bytes: Vec<u8>) -> Vec<u8> {
     bytes
 }
 
+#[inline]
 fn js_to_signal_error(e: JsValue) -> libsignal::SignalProtocolError {
     libsignal::SignalProtocolError::FfiBindingError(format!("{:?}", e))
 }
 
+#[inline]
 async fn resolve_maybe_promise(value: JsValue) -> Result<JsValue, JsValue> {
-    if let Ok(then_fn) = js_sys::Reflect::get(&value, &JsValue::from_str("then"))
-        && then_fn.is_function()
-    {
+    if value.is_instance_of::<Promise>() {
         return JsFuture::from(Promise::unchecked_from_js(value)).await;
     }
     Ok(value)
 }
 
+#[inline]
 async fn resolve_maybe_promise_optional(value: JsValue) -> SignalResult<Option<JsValue>> {
     let resolved = resolve_maybe_promise(value)
         .await
@@ -590,6 +624,7 @@ async fn resolve_maybe_promise_optional(value: JsValue) -> SignalResult<Option<J
     }
 }
 
+#[inline]
 fn deserialize_js_value<T: DeserializeOwned>(
     value: JsValue,
     context: &'static str,
@@ -597,6 +632,7 @@ fn deserialize_js_value<T: DeserializeOwned>(
     serde_wasm_bindgen::from_value(value).map_err(|err| invalid_js_data(context, err.to_string()))
 }
 
+#[inline]
 fn js_value_to_bytes(value: &JsValue) -> Option<Vec<u8>> {
     if let Ok(arr) = value.clone().dyn_into::<Uint8Array>() {
         return Some(arr.to_vec());
@@ -710,9 +746,7 @@ impl SessionStore for JsStorageAdapter {
         &self,
         address: &libsignal::ProtocolAddress,
     ) -> SignalResult<Option<CoreSessionRecord>> {
-        console_error_panic_hook::set_once();
-
-        let address_str = address.to_string();
+        let address_str = self.get_address_string(address);
 
         if let Some(record) = self.cached_sessions.borrow().get(&address_str) {
             return Ok(Some(record.clone()));
@@ -741,10 +775,12 @@ impl SessionStore for JsStorageAdapter {
         match bytes {
             Some(data) => {
                 let record = CoreSessionRecord::deserialize(&data)?;
+                // Insert into cache and return a clone - this is required since HashMap takes ownership
+                let result = record.clone();
                 self.cached_sessions
                     .borrow_mut()
-                    .insert(address_str, record.clone());
-                Ok(Some(record))
+                    .insert(address_str, record);
+                Ok(Some(result))
             }
             None => Ok(None),
         }
@@ -755,9 +791,7 @@ impl SessionStore for JsStorageAdapter {
         address: &libsignal::ProtocolAddress,
         record: &CoreSessionRecord,
     ) -> SignalResult<()> {
-        console_error_panic_hook::set_once();
-
-        let address_str = address.to_string();
+        let address_str = self.get_address_string(address);
 
         self.cached_sessions
             .borrow_mut()
@@ -765,10 +799,7 @@ impl SessionStore for JsStorageAdapter {
 
         let bytes = record.serialize()?;
 
-        let has_raw = js_sys::Reflect::has(&self.js_storage, &JsValue::from_str("storeSessionRaw"))
-            .unwrap_or(false);
-
-        let result = if has_raw {
+        let result = if self.has_store_session_raw() {
             let uint8 = Uint8Array::from(bytes.as_slice());
             self.js_storage.js_store_session_raw(&address_str, &uint8)
         } else {
@@ -978,8 +1009,6 @@ impl SenderKeyStore for JsStorageAdapter {
         &mut self,
         sender_key_name: &CoreSenderKeyName,
     ) -> SignalResult<Option<CoreSenderKeyRecord>> {
-        console_error_panic_hook::set_once();
-
         let key_id = format!(
             "{}::{}",
             sender_key_name.group_id(),
@@ -1036,8 +1065,6 @@ impl SenderKeyStore for JsStorageAdapter {
         sender_key_name: &CoreSenderKeyName,
         record: &CoreSenderKeyRecord,
     ) -> SignalResult<()> {
-        console_error_panic_hook::set_once();
-
         let key_id = format!(
             "{}::{}",
             sender_key_name.group_id(),

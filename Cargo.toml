@@ -5,12 +5,27 @@ edition = "2024"
 
 [package.metadata.wasm-pack.profile.release]
 wasm-opt = [
-  "-O4",
-  "--gufa-optimizing",
-  "--inlining-optimizing",
-  "--ignore-implicit-traps",
-  "--coalesce-locals-learning",
-  "--enable-simd",
+    "-O4",
+    "--gufa-optimizing",
+    "--inlining-optimizing",
+    "--ignore-implicit-traps",
+    "--traps-never-happen",
+    "--coalesce-locals-learning",
+    "--converge",
+    # Enable modern WASM features for better optimization
+    "--enable-simd",
+    "--enable-bulk-memory",
+    "--enable-nontrapping-float-to-int",
+    "--enable-sign-ext",
+    "--enable-mutable-globals",
+    "--enable-multivalue",
+    # Additional optimization passes
+    "--fast-math",
+    "--zero-filled-memory",
+    "--dce",
+    "--vacuum",
+    "--directize",
+    "--optimize-stack-ir",
 ]
 
 [lib]
@@ -19,7 +34,6 @@ crate-type = ["cdylib", "rlib"]
 [dependencies]
 async-trait = "0.1.89"
 base64 = { version = "0.22.1", default-features = false, features = ["alloc"] }
-console_error_panic_hook = "0.1.7"
 curve25519-dalek = { version = "4.1.3", default-features = false, features = [
   "alloc",
   "digest",
