@@ -926,7 +926,7 @@ checksum = "0b928f33d975fc6ad9f86c8f283853ad26bdd5b10b7f1542aa2fa15e2289105a"
 [[package]]
 name = "wacore-binary"
 version = "0.1.0"
-source = "git+https://github.com/jlucaso1/whatsapp-rust.git?branch=main#2f7801be8c0f0f89cb36c2b506e78c0331f103ad"
+source = "git+https://github.com/jlucaso1/whatsapp-rust.git?branch=main#446546d7278f6b22653a705ff78c43e095183d6f"
 dependencies = [
  "flate2",
  "indexmap",
@@ -939,7 +939,7 @@ dependencies = [
 [[package]]
 name = "wacore-libsignal"
 version = "0.1.0"
-source = "git+https://github.com/jlucaso1/whatsapp-rust.git?branch=main#2f7801be8c0f0f89cb36c2b506e78c0331f103ad"
+source = "git+https://github.com/jlucaso1/whatsapp-rust.git?branch=main#446546d7278f6b22653a705ff78c43e095183d6f"
 dependencies = [
  "aes",
  "aes-gcm",
@@ -972,7 +972,7 @@ dependencies = [
 [[package]]
 name = "waproto"
 version = "0.1.0"
-source = "git+https://github.com/jlucaso1/whatsapp-rust.git?branch=main#2f7801be8c0f0f89cb36c2b506e78c0331f103ad"
+source = "git+https://github.com/jlucaso1/whatsapp-rust.git?branch=main#446546d7278f6b22653a705ff78c43e095183d6f"
 dependencies = [
  "prost",
  "prost-build",
