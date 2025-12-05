@@ -752,6 +752,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "serde-big-array"
+version = "0.5.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "11fc7cc2c76d73e0f27ee52abbd64eec84d46f370c88371120433196934e4b7f"
+dependencies = [
+ "serde",
+]
+
+[[package]]
 name = "serde-wasm-bindgen"
 version = "0.6.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -924,6 +933,24 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "0b928f33d975fc6ad9f86c8f283853ad26bdd5b10b7f1542aa2fa15e2289105a"
 
 [[package]]
+name = "wacore-appstate"
+version = "0.1.0"
+source = "git+https://github.com/jlucaso1/whatsapp-rust.git?branch=main#446546d7278f6b22653a705ff78c43e095183d6f"
+dependencies = [
+ "anyhow",
+ "hkdf",
+ "prost",
+ "serde",
+ "serde-big-array",
+ "serde_json",
+ "sha2",
+ "thiserror",
+ "wacore-binary",
+ "wacore-libsignal",
+ "waproto",
+]
+
+[[package]]
 name = "wacore-binary"
 version = "0.1.0"
 source = "git+https://github.com/jlucaso1/whatsapp-rust.git?branch=main#446546d7278f6b22653a705ff78c43e095183d6f"
@@ -1072,6 +1099,7 @@ dependencies = [
  "serde-wasm-bindgen",
  "serde_bytes",
  "simd-adler32",
+ "wacore-appstate",
  "wacore-binary",
  "wacore-libsignal",
  "waproto",
