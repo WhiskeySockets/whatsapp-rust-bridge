@@ -56,6 +56,7 @@ simd-adler32 = { version = "0.3.7", default-features = false, features = [
   "std",
 ] }
 
+wacore-appstate = { git = "https://github.com/jlucaso1/whatsapp-rust.git", branch = "main", package = "wacore-appstate" }
 wacore-binary = { git = "https://github.com/jlucaso1/whatsapp-rust.git", branch = "main", features = [
   "serde",
 ] }
