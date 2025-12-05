@@ -132,34 +132,6 @@ impl JsStorageAdapter {
         }
     }
 
-    pub async fn load_session(&self, address_str: &str) -> SignalResult<Option<Vec<u8>>> {
-        if let Some(record) = self.cached_sessions.borrow().get(address_str) {
-            return Ok(Some(record.serialize()?));
-        }
-
-        let result = self
-            .js_storage
-            .js_load_session(address_str)
-            .map_err(js_to_signal_error)?;
-        let value = resolve_maybe_promise(result)
-            .await
-            .map_err(js_to_signal_error)?;
-
-        if value.is_null() || value.is_undefined() {
-            return Ok(None);
-        }
-
-        let bytes = if let Some(b) = js_value_to_bytes(&value) {
-            Some(b)
-        } else if is_legacy_session_object(&value) {
-            self.migrate_legacy_json(value).await?
-        } else {
-            value.dyn_into::<Uint8Array>().ok().map(|arr| arr.to_vec())
-        };
-
-        Ok(bytes)
-    }
-
     async fn migrate_legacy_json(&self, value: JsValue) -> SignalResult<Option<Vec<u8>>> {
         let has_reg_id =
             js_sys::Reflect::has(&value, &JsValue::from_str("registrationId")).unwrap_or(false);
