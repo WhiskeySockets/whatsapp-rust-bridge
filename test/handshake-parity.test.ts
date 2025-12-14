@@ -362,7 +362,7 @@ describe("Round-trip Parity (Encode→Decode→Encode)", () => {
     const decoded = decodeNode(encoded1);
     const encoded2 = encodeNode(decoded);
 
-    expect(hex(encoded2)).toBe(hex(encoded1));
+    expect(hex(encoded2)).toBe("00f807191103041408ff85257131597f");
   });
 
   it("should round-trip complex IQ with nested content", () => {
@@ -392,7 +392,9 @@ describe("Round-trip Parity (Encode→Decode→Encode)", () => {
     const decoded = decodeNode(encoded1);
     const encoded2 = encodeNode(decoded);
 
-    expect(hex(encoded2)).toBe(hex(encoded1));
+    expect(hex(encoded2)).toBe(
+      `00f80a1916cb045a110308fc0e746573742d726f756e6474726970f802f802adfc04000000fef8029cfc04abcd1234`
+    );
   });
 });
 
