@@ -2,22 +2,19 @@ use js_sys::{ArrayBuffer, Reflect, Uint8Array};
 use std::io::Cursor;
 use symphonia::core::audio::{AudioBuffer, AudioBufferRef, Signal};
 use symphonia::core::codecs::{CODEC_TYPE_NULL, Decoder, DecoderOptions};
+use symphonia::core::conv::IntoSample;
 use symphonia::core::errors::Error;
 use symphonia::core::formats::{FormatOptions, FormatReader, Track};
 use symphonia::core::io::MediaSourceStream;
 use symphonia::core::meta::MetadataOptions;
 use symphonia::core::probe::Hint;
 use symphonia::core::units::TimeBase;
-use symphonia::core::{conv::IntoSample, sample::Sample};
 use wasm_bindgen::{JsCast, prelude::*};
 use wasm_bindgen_futures::JsFuture;
 use web_sys::{ReadableStream, ReadableStreamDefaultReader};
 
 /// WhatsApp uses 64 buckets for visual waveforms.
 const WAVEFORM_SAMPLES: usize = 64;
-/// Aggregate raw samples into larger chunks for better performance.
-/// Larger chunks = fewer allocations and flush operations.
-const WAVEFORM_CHUNK_SIZE: usize = 8192;
 
 #[wasm_bindgen(js_name = generateAudioWaveform)]
 pub fn generate_audio_waveform(audio_data: &[u8]) -> Result<Uint8Array, JsValue> {
@@ -29,9 +26,22 @@ pub fn generate_audio_waveform(audio_data: &[u8]) -> Result<Uint8Array, JsValue>
         mut format,
         mut decoder,
         track_id,
-        ..
+        total_frames,
     } = prepare_decoder(audio_data)?;
-    let mut builder = WaveformBuilder::new(WAVEFORM_CHUNK_SIZE);
+
+    // Pre-allocate bins for direct accumulation (sum, count)
+    let mut bins = [(0.0f32, 0u32); WAVEFORM_SAMPLES];
+
+    // Calculate decimation parameters
+    let estimated_samples = total_frames.unwrap_or(2_000_000);
+
+    // Balanced approach: moderate packet skipping for speed
+    let estimated_packets = (estimated_samples / 1152).max(64) as usize;
+    let target_packets = 512;
+    let packet_skip = (estimated_packets / target_packets).max(1);
+
+    let mut packet_counter = 0usize;
+    let mut total_samples_processed = 0u64;
 
     loop {
         let packet = match format.next_packet() {
@@ -57,9 +67,24 @@ pub fn generate_audio_waveform(audio_data: &[u8]) -> Result<Uint8Array, JsValue>
             continue;
         }
 
+        // Skip packets for speed while maintaining even distribution
+        packet_counter += 1;
+        if packet_skip > 1 && !packet_counter.is_multiple_of(packet_skip) {
+            continue;
+        }
+
+        // Use packet timestamp for accurate position tracking
+        let packet_start = packet.ts();
+
         match decoder.decode(&packet) {
             Ok(audio_buf) => {
-                accumulate_waveform_samples(&audio_buf, &mut builder);
+                accumulate_to_bins(
+                    &audio_buf,
+                    &mut bins,
+                    packet_start,
+                    estimated_samples,
+                    &mut total_samples_processed,
+                );
             }
             Err(Error::IoError(ref e))
                 if matches!(
@@ -69,7 +94,9 @@ pub fn generate_audio_waveform(audio_data: &[u8]) -> Result<Uint8Array, JsValue>
             {
                 break;
             }
-            Err(Error::DecodeError(_)) => continue,
+            Err(Error::DecodeError(_)) => {
+                continue;
+            }
             Err(Error::ResetRequired) => {
                 decoder.reset();
                 continue;
@@ -82,14 +109,224 @@ pub fn generate_audio_waveform(audio_data: &[u8]) -> Result<Uint8Array, JsValue>
         }
     }
 
-    let chunks = builder.finish();
-
-    if chunks.is_empty() {
+    if total_samples_processed == 0 {
         return Err(JsValue::from_str("No audio samples decoded"));
     }
 
-    let waveform = build_waveform(&chunks, WAVEFORM_SAMPLES);
+    // Convert bins to final waveform
+    let waveform = finalize_waveform(&bins);
     Ok(Uint8Array::from(waveform.as_slice()))
+}
+
+/// Accumulate audio samples into waveform bins
+#[inline]
+fn accumulate_to_bins(
+    buffer: &AudioBufferRef<'_>,
+    bins: &mut [(f32, u32); WAVEFORM_SAMPLES],
+    packet_start: u64,
+    estimated_total: u64,
+    total_processed: &mut u64,
+) {
+    // Optimized path for S16 (most common for MP3)
+    if let AudioBufferRef::S16(buf) = buffer {
+        accumulate_s16(
+            buf.as_ref(),
+            bins,
+            packet_start,
+            estimated_total,
+            total_processed,
+        );
+        return;
+    }
+
+    // Generic path for all other formats
+    let (frames, channel_count) = match buffer {
+        AudioBufferRef::F32(b) => (b.frames(), b.spec().channels.count()),
+        AudioBufferRef::U8(b) => (b.frames(), b.spec().channels.count()),
+        AudioBufferRef::U16(b) => (b.frames(), b.spec().channels.count()),
+        AudioBufferRef::U24(b) => (b.frames(), b.spec().channels.count()),
+        AudioBufferRef::U32(b) => (b.frames(), b.spec().channels.count()),
+        AudioBufferRef::S8(b) => (b.frames(), b.spec().channels.count()),
+        AudioBufferRef::S16(_) => unreachable!(),
+        AudioBufferRef::S24(b) => (b.frames(), b.spec().channels.count()),
+        AudioBufferRef::S32(b) => (b.frames(), b.spec().channels.count()),
+        AudioBufferRef::F64(b) => (b.frames(), b.spec().channels.count()),
+    };
+
+    if frames == 0 || channel_count == 0 {
+        return;
+    }
+
+    let inv_channels = 1.0f32 / channel_count as f32;
+
+    for i in 0..frames {
+        // Get sample value based on buffer type
+        let sample: f32 = match buffer {
+            AudioBufferRef::F32(b) => {
+                (0..channel_count).map(|c| b.chan(c)[i]).sum::<f32>() * inv_channels
+            }
+            AudioBufferRef::F64(b) => {
+                (0..channel_count).map(|c| b.chan(c)[i] as f32).sum::<f32>() * inv_channels
+            }
+            AudioBufferRef::U8(b) => {
+                (0..channel_count)
+                    .map(|c| IntoSample::<f32>::into_sample(b.chan(c)[i]))
+                    .sum::<f32>()
+                    * inv_channels
+            }
+            AudioBufferRef::U16(b) => {
+                (0..channel_count)
+                    .map(|c| IntoSample::<f32>::into_sample(b.chan(c)[i]))
+                    .sum::<f32>()
+                    * inv_channels
+            }
+            AudioBufferRef::U24(b) => {
+                (0..channel_count)
+                    .map(|c| IntoSample::<f32>::into_sample(b.chan(c)[i]))
+                    .sum::<f32>()
+                    * inv_channels
+            }
+            AudioBufferRef::U32(b) => {
+                (0..channel_count)
+                    .map(|c| IntoSample::<f32>::into_sample(b.chan(c)[i]))
+                    .sum::<f32>()
+                    * inv_channels
+            }
+            AudioBufferRef::S8(b) => {
+                (0..channel_count)
+                    .map(|c| IntoSample::<f32>::into_sample(b.chan(c)[i]))
+                    .sum::<f32>()
+                    * inv_channels
+            }
+            AudioBufferRef::S16(_) => unreachable!(),
+            AudioBufferRef::S24(b) => {
+                (0..channel_count)
+                    .map(|c| IntoSample::<f32>::into_sample(b.chan(c)[i]))
+                    .sum::<f32>()
+                    * inv_channels
+            }
+            AudioBufferRef::S32(b) => {
+                (0..channel_count)
+                    .map(|c| IntoSample::<f32>::into_sample(b.chan(c)[i]))
+                    .sum::<f32>()
+                    * inv_channels
+            }
+        };
+
+        add_sample_to_bin(bins, sample.abs(), packet_start + i as u64, estimated_total);
+        *total_processed += 1;
+    }
+}
+
+/// Optimized path for S16 (most common for MP3)
+#[inline]
+fn accumulate_s16(
+    buffer: &AudioBuffer<i16>,
+    bins: &mut [(f32, u32); WAVEFORM_SAMPLES],
+    packet_start: u64,
+    estimated_total: u64,
+    total_processed: &mut u64,
+) {
+    let channel_count = buffer.spec().channels.count();
+    let frames = buffer.frames();
+    if frames == 0 || channel_count == 0 {
+        return;
+    }
+
+    const SCALE: f32 = 1.0 / 32768.0;
+    let bin_count = WAVEFORM_SAMPLES as u64;
+    let est_max = estimated_total.max(1);
+
+    // Mono - most common case
+    if channel_count == 1 {
+        let chan0 = buffer.chan(0);
+        let mut i = 0;
+        while i < frames {
+            let sample = (chan0[i] as f32 * SCALE).abs();
+            let bin_idx = ((packet_start + i as u64) * bin_count / est_max) as usize;
+            let bin_idx = bin_idx.min(WAVEFORM_SAMPLES - 1);
+            bins[bin_idx].0 += sample;
+            bins[bin_idx].1 += 1;
+            i += 1;
+        }
+        *total_processed += frames as u64;
+        return;
+    }
+
+    // Stereo - second most common
+    if channel_count == 2 {
+        let (chan0, chan1) = (buffer.chan(0), buffer.chan(1));
+        let mut i = 0;
+        while i < frames {
+            let sample = ((chan0[i] as f32 + chan1[i] as f32) * 0.5 * SCALE).abs();
+            let bin_idx = ((packet_start + i as u64) * bin_count / est_max) as usize;
+            let bin_idx = bin_idx.min(WAVEFORM_SAMPLES - 1);
+            bins[bin_idx].0 += sample;
+            bins[bin_idx].1 += 1;
+            i += 1;
+        }
+        *total_processed += frames as u64;
+        return;
+    }
+
+    // Multi-channel fallback
+    let inv_channels = 1.0 / channel_count as f32;
+    let mut i = 0;
+    while i < frames {
+        let sum: i32 = (0..channel_count).map(|c| buffer.chan(c)[i] as i32).sum();
+        let sample = (sum as f32 * inv_channels * SCALE).abs();
+        let bin_idx = ((packet_start + i as u64) * bin_count / est_max) as usize;
+        let bin_idx = bin_idx.min(WAVEFORM_SAMPLES - 1);
+        bins[bin_idx].0 += sample;
+        bins[bin_idx].1 += 1;
+        i += 1;
+    }
+    *total_processed += frames as u64;
+}
+
+/// Add a sample to the appropriate bin based on its position
+#[inline(always)]
+fn add_sample_to_bin(
+    bins: &mut [(f32, u32); WAVEFORM_SAMPLES],
+    sample: f32,
+    position: u64,
+    total_samples: u64,
+) {
+    let bin_idx = ((position * WAVEFORM_SAMPLES as u64) / total_samples.max(1)) as usize;
+    let bin_idx = bin_idx.min(WAVEFORM_SAMPLES - 1);
+    bins[bin_idx].0 += sample;
+    bins[bin_idx].1 += 1;
+}
+
+/// Convert accumulated bins to final waveform (0-100 range)
+#[inline]
+fn finalize_waveform(bins: &[(f32, u32); WAVEFORM_SAMPLES]) -> Vec<u8> {
+    // Find max in single pass
+    let mut max_avg = 0.0f32;
+    let mut averages = [0.0f32; WAVEFORM_SAMPLES];
+
+    for i in 0..WAVEFORM_SAMPLES {
+        if bins[i].1 > 0 {
+            let avg = bins[i].0 / bins[i].1 as f32;
+            averages[i] = avg;
+            if avg > max_avg {
+                max_avg = avg;
+            }
+        }
+    }
+
+    if max_avg == 0.0 {
+        return vec![0; WAVEFORM_SAMPLES];
+    }
+
+    // Normalize to 0-100 range
+    let scale = 100.0 / max_avg;
+    let mut result = Vec::with_capacity(WAVEFORM_SAMPLES);
+    for avg in averages {
+        result.push((avg * scale).min(100.0) as u8);
+    }
+
+    result
 }
 
 #[wasm_bindgen(js_name = getAudioDuration, skip_typescript)]
@@ -113,24 +350,34 @@ fn compute_audio_duration(audio_data: &[u8]) -> Result<f64, JsValue> {
         return Err(JsValue::from_str("Audio buffer is empty"));
     }
 
-    let DecoderContext {
-        mut format,
-        mut decoder,
-        track_id,
-        sample_rate,
-    } = prepare_decoder(audio_data)?;
+    let cursor = Cursor::new(audio_data.to_vec());
+    let mss = MediaSourceStream::new(Box::new(cursor), Default::default());
+
+    let probed = symphonia::default::get_probe()
+        .format(
+            &Hint::new(),
+            mss,
+            &FormatOptions::default(),
+            &MetadataOptions::default(),
+        )
+        .map_err(|e| JsValue::from_str(&format!("Failed to probe audio format: {e}")))?;
+
+    let mut format = probed.format;
 
     let track = format
         .tracks()
         .iter()
-        .find(|track| track.id == track_id)
+        .find(|t| t.codec_params.codec != CODEC_TYPE_NULL)
         .cloned()
         .ok_or_else(|| JsValue::from_str("No supported audio track found"))?;
 
+    // Fast path: get duration from metadata (no packet iteration needed)
     if let Some(duration) = duration_from_track_metadata(&track) {
         return Ok(duration);
     }
 
+    // Slow path: iterate packets to calculate duration (NO DECODER NEEDED - just reads timestamps)
+    let track_id = track.id;
     let mut stats = DurationAccumulator::default();
 
     loop {
@@ -144,10 +391,7 @@ fn compute_audio_duration(audio_data: &[u8]) -> Result<f64, JsValue> {
             {
                 break;
             }
-            Err(Error::ResetRequired) => {
-                decoder.reset();
-                continue;
-            }
+            Err(Error::ResetRequired) => continue,
             Err(e) => {
                 return Err(JsValue::from_str(&format!("Audio decode error: {e}")));
             }
@@ -164,196 +408,12 @@ fn compute_audio_duration(audio_data: &[u8]) -> Result<f64, JsValue> {
         .elapsed_ticks()
         .ok_or_else(|| JsValue::from_str("No audio samples decoded"))?;
 
-    let duration = convert_ticks_to_seconds(
+    convert_ticks_to_seconds(
         ticks,
         track.codec_params.time_base,
-        sample_rate.or(track.codec_params.sample_rate),
+        track.codec_params.sample_rate,
     )
-    .ok_or_else(|| JsValue::from_str("Missing timing information for audio track"))?;
-
-    Ok(duration)
-}
-
-fn build_waveform(chunks: &[WaveformChunk], target_bins: usize) -> Vec<u8> {
-    if chunks.is_empty() || target_bins == 0 {
-        return vec![0; target_bins];
-    }
-
-    let total_samples: u64 = chunks.iter().map(|chunk| chunk.count as u64).sum();
-    if total_samples == 0 {
-        return vec![0; target_bins];
-    }
-
-    let samples_per_bin = (total_samples as f64 / target_bins as f64).max(1.0);
-    let mut bin_sums = vec![0.0f64; target_bins];
-    let mut bin_counts = vec![0.0f64; target_bins];
-    let mut bin_idx = 0usize;
-    let mut bin_remaining = samples_per_bin;
-
-    for chunk in chunks {
-        if chunk.count == 0 {
-            continue;
-        }
-
-        let chunk_total = f64::from(chunk.count);
-        let mut chunk_remaining = chunk_total;
-
-        while chunk_remaining > 0.0 && bin_idx < target_bins {
-            let take = bin_remaining.min(chunk_remaining);
-            let contribution = chunk.sum_abs * (take / chunk_total);
-            bin_sums[bin_idx] += contribution;
-            bin_counts[bin_idx] += take;
-            chunk_remaining -= take;
-            bin_remaining -= take;
-
-            if bin_remaining <= f64::EPSILON {
-                bin_idx += 1;
-                bin_remaining = samples_per_bin;
-            }
-        }
-
-        if bin_idx >= target_bins {
-            break;
-        }
-    }
-
-    let mut max_avg = 0.0f64;
-    let mut averages = vec![0.0f64; target_bins];
-    for i in 0..target_bins {
-        if bin_counts[i] > 0.0 {
-            let avg = bin_sums[i] / bin_counts[i];
-            averages[i] = avg;
-            if avg > max_avg {
-                max_avg = avg;
-            }
-        }
-    }
-
-    if max_avg == 0.0 {
-        return vec![0; target_bins];
-    }
-
-    averages
-        .into_iter()
-        .map(|avg| (avg * (100.0 / max_avg)).clamp(0.0, 100.0) as u8)
-        .collect()
-}
-
-fn accumulate_waveform_samples(buffer: &AudioBufferRef<'_>, builder: &mut WaveformBuilder) {
-    match buffer {
-        AudioBufferRef::U8(buf) => accumulate_from_buffer(buf.as_ref(), builder),
-        AudioBufferRef::U16(buf) => accumulate_from_buffer(buf.as_ref(), builder),
-        AudioBufferRef::U24(buf) => accumulate_from_buffer(buf.as_ref(), builder),
-        AudioBufferRef::U32(buf) => accumulate_from_buffer(buf.as_ref(), builder),
-        AudioBufferRef::S8(buf) => accumulate_from_buffer(buf.as_ref(), builder),
-        AudioBufferRef::S16(buf) => accumulate_from_buffer(buf.as_ref(), builder),
-        AudioBufferRef::S24(buf) => accumulate_from_buffer(buf.as_ref(), builder),
-        AudioBufferRef::S32(buf) => accumulate_from_buffer(buf.as_ref(), builder),
-        AudioBufferRef::F32(buf) => accumulate_from_buffer(buf.as_ref(), builder),
-        AudioBufferRef::F64(buf) => accumulate_from_buffer(buf.as_ref(), builder),
-    }
-}
-
-#[inline]
-fn accumulate_from_buffer<S>(buffer: &AudioBuffer<S>, builder: &mut WaveformBuilder)
-where
-    S: Sample + IntoSample<f32>,
-{
-    let channel_count = buffer.spec().channels.count();
-    if channel_count == 0 {
-        return;
-    }
-
-    let frames = buffer.frames();
-    if frames == 0 {
-        return;
-    }
-
-    let inv_channels = 1.0f32 / channel_count as f32;
-
-    // Optimize for common cases: mono and stereo
-    match channel_count {
-        1 => {
-            let chan0 = buffer.chan(0);
-            for sample in chan0 {
-                let s: f32 = (*sample).into_sample();
-                builder.ingest_f32(s.abs());
-            }
-        }
-        2 => {
-            let chan0 = buffer.chan(0);
-            let chan1 = buffer.chan(1);
-            for (s0, s1) in chan0.iter().zip(chan1.iter()) {
-                let v0: f32 = (*s0).into_sample();
-                let v1: f32 = (*s1).into_sample();
-                let avg = (v0 + v1) * 0.5f32;
-                builder.ingest_f32(avg.abs());
-            }
-        }
-        _ => {
-            // General case for multi-channel
-            let mut channel_slices: Vec<&[S]> = Vec::with_capacity(channel_count);
-            for channel in 0..channel_count {
-                channel_slices.push(buffer.chan(channel));
-            }
-
-            for frame_idx in 0..frames {
-                let mut sum = 0.0f32;
-                for plane in &channel_slices {
-                    sum += plane[frame_idx].into_sample();
-                }
-                builder.ingest_f32((sum * inv_channels).abs());
-            }
-        }
-    }
-}
-
-struct WaveformBuilder {
-    chunks: Vec<WaveformChunk>,
-    chunk_sum: f32,
-    chunk_count: u32,
-    chunk_size: u32,
-}
-
-impl WaveformBuilder {
-    fn new(chunk_size: usize) -> Self {
-        WaveformBuilder {
-            chunks: Vec::new(),
-            chunk_sum: 0.0,
-            chunk_count: 0,
-            chunk_size: chunk_size as u32,
-        }
-    }
-
-    #[inline(always)]
-    fn ingest_f32(&mut self, sample: f32) {
-        self.chunk_sum += sample;
-        self.chunk_count += 1;
-
-        if self.chunk_count == self.chunk_size {
-            self.flush();
-        }
-    }
-
-    #[inline]
-    fn flush(&mut self) {
-        if self.chunk_count == 0 {
-            return;
-        }
-
-        self.chunks.push(WaveformChunk {
-            sum_abs: self.chunk_sum as f64,
-            count: self.chunk_count,
-        });
-
-        self.chunk_sum = 0.0;
-        self.chunk_count = 0;
-    }
-
-    fn finish(mut self) -> Vec<WaveformChunk> {
-        self.flush();
-        self.chunks
-    }
+    .ok_or_else(|| JsValue::from_str("Missing timing information for audio track"))
 }
 
 fn duration_from_track_metadata(track: &Track) -> Option<f64> {
@@ -363,6 +423,7 @@ fn duration_from_track_metadata(track: &Track) -> Option<f64> {
     convert_ticks_to_seconds(frames, codec_params.time_base, codec_params.sample_rate)
 }
 
+#[inline]
 fn convert_ticks_to_seconds(
     ticks: u64,
     time_base: Option<TimeBase>,
@@ -387,6 +448,7 @@ struct DurationAccumulator {
 }
 
 impl DurationAccumulator {
+    #[inline]
     fn update(&mut self, ts: u64, dur: u64) {
         if self.first_ts.is_none() {
             self.first_ts = Some(ts);
@@ -398,30 +460,26 @@ impl DurationAccumulator {
         }
     }
 
+    #[inline]
     fn elapsed_ticks(&self) -> Option<u64> {
         let start = self.first_ts?;
         Some(self.max_end_ts.saturating_sub(start))
     }
 }
 
-struct WaveformChunk {
-    sum_abs: f64,
-    count: u32,
-}
-
 async fn normalize_audio_input(input: JsValue) -> Result<Vec<u8>, JsValue> {
     if input.is_instance_of::<Uint8Array>() {
         let arr = Uint8Array::new(&input);
-        return Ok(copy_uint8_array(arr));
+        return Ok(copy_uint8_array(&arr));
     }
 
     if input.is_instance_of::<ArrayBuffer>() {
         let arr = Uint8Array::new(&input);
-        return Ok(copy_uint8_array(arr));
+        return Ok(copy_uint8_array(&arr));
     }
 
     if input.is_instance_of::<ReadableStream>() {
-        let stream: ReadableStream = input.dyn_into()?;
+        let stream = input.unchecked_ref::<ReadableStream>();
         return read_stream(stream).await;
     }
 
@@ -430,20 +488,23 @@ async fn normalize_audio_input(input: JsValue) -> Result<Vec<u8>, JsValue> {
     ))
 }
 
-fn copy_uint8_array(array: Uint8Array) -> Vec<u8> {
-    let mut buffer = vec![0; array.length() as usize];
+#[inline]
+fn copy_uint8_array(array: &Uint8Array) -> Vec<u8> {
+    let len = array.length() as usize;
+    let mut buffer = vec![0; len];
     array.copy_to(&mut buffer);
     buffer
 }
 
-async fn read_stream(stream: ReadableStream) -> Result<Vec<u8>, JsValue> {
+async fn read_stream(stream: &ReadableStream) -> Result<Vec<u8>, JsValue> {
     let reader = stream.get_reader();
-    let reader: ReadableStreamDefaultReader = reader.dyn_into()?;
+    let reader = reader.unchecked_into::<ReadableStreamDefaultReader>();
     read_from_reader(reader).await
 }
 
 async fn read_from_reader(reader: ReadableStreamDefaultReader) -> Result<Vec<u8>, JsValue> {
-    let mut chunks: Vec<u8> = Vec::new();
+    // Pre-allocate with reasonable initial capacity
+    let mut chunks: Vec<u8> = Vec::with_capacity(64 * 1024);
 
     loop {
         let promise = reader.read();
@@ -461,6 +522,7 @@ async fn read_from_reader(reader: ReadableStreamDefaultReader) -> Result<Vec<u8>
             let chunk = Uint8Array::new(&value);
             let chunk_len = chunk.length() as usize;
             let prev_len = chunks.len();
+            chunks.reserve(chunk_len);
             chunks.resize(prev_len + chunk_len, 0);
             chunk.copy_to(&mut chunks[prev_len..]);
         }
@@ -474,7 +536,7 @@ struct DecoderContext {
     format: Box<dyn FormatReader>,
     decoder: Box<dyn Decoder>,
     track_id: u32,
-    sample_rate: Option<u32>,
+    total_frames: Option<u64>,
 }
 
 fn prepare_decoder(audio_data: &[u8]) -> Result<DecoderContext, JsValue> {
@@ -501,6 +563,7 @@ fn prepare_decoder(audio_data: &[u8]) -> Result<DecoderContext, JsValue> {
 
     let codec_params = track.codec_params.clone();
     let track_id = track.id;
+    let total_frames = track.codec_params.n_frames;
 
     let decoder = symphonia::default::get_codecs()
         .make(&codec_params, &decoder_opts)
@@ -510,6 +573,6 @@ fn prepare_decoder(audio_data: &[u8]) -> Result<DecoderContext, JsValue> {
         format,
         decoder,
         track_id,
-        sample_rate: codec_params.sample_rate,
+        total_frames,
     })
 }
