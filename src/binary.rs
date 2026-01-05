@@ -5,7 +5,7 @@ use std::mem;
 use std::rc::Rc;
 use wacore_binary::{
     marshal::{marshal_ref, unmarshal_ref},
-    node::{NodeContentRef, NodeRef},
+    node::{NodeContentRef, NodeRef, ValueRef},
     util::unpack,
 };
 use wasm_bindgen::prelude::*;
@@ -64,7 +64,7 @@ fn js_to_node_ref(val: &EncodingNode) -> Result<NodeRef<'static>, JsValue> {
             continue;
         };
 
-        attrs.push((Cow::Owned(key), Cow::Owned(value_str)));
+        attrs.push((Cow::Owned(key), ValueRef::String(Cow::Owned(value_str))));
     }
 
     let content_js = val.content();
@@ -189,7 +189,11 @@ impl InternalBinaryNode {
 
             let obj = Object::new();
             for (k, v) in attrs.iter() {
-                let _ = js_sys::Reflect::set(&obj, &JsValue::from_str(k), &JsValue::from_str(v));
+                let js_value = match v.as_str() {
+                    Some(s) => JsValue::from_str(s),
+                    None => JsValue::from_str(&v.to_string()),
+                };
+                let _ = js_sys::Reflect::set(&obj, &JsValue::from_str(k), &js_value);
             }
 
             *cached = Some(obj.unchecked_into());
