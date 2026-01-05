@@ -5,27 +5,28 @@ edition = "2024"
 
 [package.metadata.wasm-pack.profile.release]
 wasm-opt = [
-    "-O4",
-    "--gufa-optimizing",
-    "--inlining-optimizing",
-    "--ignore-implicit-traps",
-    "--traps-never-happen",
-    "--coalesce-locals-learning",
-    "--converge",
-    # Enable modern WASM features for better optimization
-    "--enable-simd",
-    "--enable-bulk-memory",
-    "--enable-nontrapping-float-to-int",
-    "--enable-sign-ext",
-    "--enable-mutable-globals",
-    "--enable-multivalue",
-    # Additional optimization passes
-    "--fast-math",
-    "--zero-filled-memory",
-    "--dce",
-    "--vacuum",
-    "--directize",
-    "--optimize-stack-ir",
+  "-O4",
+  "--gufa-optimizing",
+  "--inlining-optimizing",
+  "--ignore-implicit-traps",
+  "--traps-never-happen",
+  "--coalesce-locals-learning",
+  "--converge",
+  # Enable modern WASM features for better optimization
+  "--enable-simd",
+  "--enable-bulk-memory",
+  "--enable-nontrapping-float-to-int",
+  "--enable-sign-ext",
+  "--enable-mutable-globals",
+  "--enable-multivalue",
+  # Additional optimization passes
+  "--fast-math",
+  "--zero-filled-memory",
+  "--dce",
+  "--vacuum",
+  "--directize",
+  "--optimize-stack-ir",
+  "--strip-debug",
 ]
 
 [lib]
@@ -59,13 +60,18 @@ serde = { version = "1.0.228", default-features = false, features = [
 ] }
 serde-wasm-bindgen = "0.6.5"
 serde_bytes = "0.11"
-serde_json = "1.0"
+serde_json = { version = "1.0", default-features = false, features = ["alloc"] }
 simd-adler32 = { version = "0.3.7", default-features = false, features = [
   "std",
 ] }
-symphonia = { version = "0.5.4", default-features = false, features = ["mp3", "aac", "ogg", "vorbis", "pcm", "isomp4"] }
+symphonia = { version = "0.5.4", default-features = false, features = [
+  "mp3",
+  "aac",
+  "isomp4",
+  "ogg",
+] }
 tsify-next = { version = "0.5", default-features = false, features = ["js"] }
-uuid = { version = "1.18.1", features = ["v4", "js"] }
+uuid = { version = "1.18.1", default-features = false, features = ["v4", "js"] }
 
 wacore-appstate = { git = "https://github.com/jlucaso1/whatsapp-rust.git", branch = "main", package = "wacore-appstate" }
 wacore-binary = { git = "https://github.com/jlucaso1/whatsapp-rust.git", branch = "main", features = [
@@ -85,3 +91,4 @@ lto = "fat"
 opt-level = 3
 codegen-units = 1
 panic = "abort"
+strip = true
