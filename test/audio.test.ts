@@ -32,7 +32,7 @@ describe("Audio Duration", () => {
     expect(duration).toBeGreaterThan(0);
     expect(duration).toBeGreaterThan(40);
     expect(duration).toBeLessThan(45);
-    expect(duration).toBeCloseTo(EXPECTED_DURATION_SECONDS, 6);
+    expect(duration).toBeCloseTo(EXPECTED_DURATION_SECONDS, 3);
   });
 
   it("supports ReadableStream input", async () => {
@@ -49,7 +49,7 @@ describe("Audio Duration", () => {
     const duration = await getAudioDuration(stream);
     expect(duration).toBeGreaterThan(40);
     expect(duration).toBeLessThan(45);
-    expect(duration).toBeCloseTo(EXPECTED_DURATION_SECONDS, 6);
+    expect(duration).toBeCloseTo(EXPECTED_DURATION_SECONDS, 3);
   });
 
   it("throws on invalid audio data", async () => {

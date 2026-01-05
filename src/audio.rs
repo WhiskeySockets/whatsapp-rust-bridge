@@ -1,8 +1,7 @@
 use js_sys::{ArrayBuffer, Reflect, Uint8Array};
 use std::io::Cursor;
-use symphonia::core::audio::{AudioBuffer, AudioBufferRef, Signal};
+use symphonia::core::audio::{AudioBuffer, AudioBufferRef, SampleBuffer, Signal};
 use symphonia::core::codecs::{CODEC_TYPE_NULL, Decoder, DecoderOptions};
-use symphonia::core::conv::IntoSample;
 use symphonia::core::errors::Error;
 use symphonia::core::formats::{FormatOptions, FormatReader, Track};
 use symphonia::core::io::MediaSourceStream;
@@ -17,7 +16,7 @@ use web_sys::{ReadableStream, ReadableStreamDefaultReader};
 const WAVEFORM_SAMPLES: usize = 64;
 
 #[wasm_bindgen(js_name = generateAudioWaveform)]
-pub fn generate_audio_waveform(audio_data: &[u8]) -> Result<Uint8Array, JsValue> {
+pub fn generate_audio_waveform(audio_data: Vec<u8>) -> Result<Uint8Array, JsValue> {
     if audio_data.is_empty() {
         return Err(JsValue::from_str("Audio buffer is empty"));
     }
@@ -139,83 +138,37 @@ fn accumulate_to_bins(
         return;
     }
 
-    // Generic path for all other formats
-    let (frames, channel_count) = match buffer {
-        AudioBufferRef::F32(b) => (b.frames(), b.spec().channels.count()),
-        AudioBufferRef::U8(b) => (b.frames(), b.spec().channels.count()),
-        AudioBufferRef::U16(b) => (b.frames(), b.spec().channels.count()),
-        AudioBufferRef::U24(b) => (b.frames(), b.spec().channels.count()),
-        AudioBufferRef::U32(b) => (b.frames(), b.spec().channels.count()),
-        AudioBufferRef::S8(b) => (b.frames(), b.spec().channels.count()),
-        AudioBufferRef::S16(_) => unreachable!(),
-        AudioBufferRef::S24(b) => (b.frames(), b.spec().channels.count()),
-        AudioBufferRef::S32(b) => (b.frames(), b.spec().channels.count()),
-        AudioBufferRef::F64(b) => (b.frames(), b.spec().channels.count()),
-    };
+    // Generic path using SampleBuffer for format conversion
+    let spec = buffer.spec();
+    let frames = buffer.frames();
+    let channel_count = spec.channels.count();
 
     if frames == 0 || channel_count == 0 {
         return;
     }
 
+    // Convert to f32 using SampleBuffer (clone is cheap - just copying references)
+    let mut sample_buf = SampleBuffer::<f32>::new(frames as u64, *spec);
+    sample_buf.copy_planar_ref(buffer.clone());
+    let samples = sample_buf.samples();
+
     let inv_channels = 1.0f32 / channel_count as f32;
+    let bin_count = WAVEFORM_SAMPLES as u64;
+    let est_max = estimated_total.max(1);
 
     for i in 0..frames {
-        // Get sample value based on buffer type
-        let sample: f32 = match buffer {
-            AudioBufferRef::F32(b) => {
-                (0..channel_count).map(|c| b.chan(c)[i]).sum::<f32>() * inv_channels
-            }
-            AudioBufferRef::F64(b) => {
-                (0..channel_count).map(|c| b.chan(c)[i] as f32).sum::<f32>() * inv_channels
-            }
-            AudioBufferRef::U8(b) => {
-                (0..channel_count)
-                    .map(|c| IntoSample::<f32>::into_sample(b.chan(c)[i]))
-                    .sum::<f32>()
-                    * inv_channels
-            }
-            AudioBufferRef::U16(b) => {
-                (0..channel_count)
-                    .map(|c| IntoSample::<f32>::into_sample(b.chan(c)[i]))
-                    .sum::<f32>()
-                    * inv_channels
-            }
-            AudioBufferRef::U24(b) => {
-                (0..channel_count)
-                    .map(|c| IntoSample::<f32>::into_sample(b.chan(c)[i]))
-                    .sum::<f32>()
-                    * inv_channels
-            }
-            AudioBufferRef::U32(b) => {
-                (0..channel_count)
-                    .map(|c| IntoSample::<f32>::into_sample(b.chan(c)[i]))
-                    .sum::<f32>()
-                    * inv_channels
-            }
-            AudioBufferRef::S8(b) => {
-                (0..channel_count)
-                    .map(|c| IntoSample::<f32>::into_sample(b.chan(c)[i]))
-                    .sum::<f32>()
-                    * inv_channels
-            }
-            AudioBufferRef::S16(_) => unreachable!(),
-            AudioBufferRef::S24(b) => {
-                (0..channel_count)
-                    .map(|c| IntoSample::<f32>::into_sample(b.chan(c)[i]))
-                    .sum::<f32>()
-                    * inv_channels
-            }
-            AudioBufferRef::S32(b) => {
-                (0..channel_count)
-                    .map(|c| IntoSample::<f32>::into_sample(b.chan(c)[i]))
-                    .sum::<f32>()
-                    * inv_channels
-            }
-        };
+        // Average all channels
+        let sample: f32 = (0..channel_count)
+            .map(|c| samples[c * frames + i])
+            .sum::<f32>()
+            * inv_channels;
 
-        add_sample_to_bin(bins, sample.abs(), packet_start + i as u64, estimated_total);
-        *total_processed += 1;
+        let bin_idx = ((packet_start + i as u64) * bin_count / est_max) as usize;
+        let bin_idx = bin_idx.min(WAVEFORM_SAMPLES - 1);
+        bins[bin_idx].0 += sample.abs();
+        bins[bin_idx].1 += 1;
     }
+    *total_processed += frames as u64;
 }
 
 /// Optimized path for S16 (most common for MP3)
@@ -284,20 +237,6 @@ fn accumulate_s16(
     *total_processed += frames as u64;
 }
 
-/// Add a sample to the appropriate bin based on its position
-#[inline(always)]
-fn add_sample_to_bin(
-    bins: &mut [(f32, u32); WAVEFORM_SAMPLES],
-    sample: f32,
-    position: u64,
-    total_samples: u64,
-) {
-    let bin_idx = ((position * WAVEFORM_SAMPLES as u64) / total_samples.max(1)) as usize;
-    let bin_idx = bin_idx.min(WAVEFORM_SAMPLES - 1);
-    bins[bin_idx].0 += sample;
-    bins[bin_idx].1 += 1;
-}
-
 /// Convert accumulated bins to final waveform (0-100 range)
 #[inline]
 fn finalize_waveform(bins: &[(f32, u32); WAVEFORM_SAMPLES]) -> Vec<u8> {
@@ -332,7 +271,7 @@ fn finalize_waveform(bins: &[(f32, u32); WAVEFORM_SAMPLES]) -> Vec<u8> {
 #[wasm_bindgen(js_name = getAudioDuration, skip_typescript)]
 pub async fn get_audio_duration(input: JsValue) -> Result<f64, JsValue> {
     let audio_bytes = normalize_audio_input(input).await?;
-    compute_audio_duration(&audio_bytes)
+    compute_audio_duration(audio_bytes)
 }
 
 #[wasm_bindgen(typescript_custom_section)]
@@ -345,12 +284,13 @@ export type AudioDurationInput =
 export function getAudioDuration(input: AudioDurationInput): Promise<number>;
 "#;
 
-fn compute_audio_duration(audio_data: &[u8]) -> Result<f64, JsValue> {
+fn compute_audio_duration(audio_data: Vec<u8>) -> Result<f64, JsValue> {
     if audio_data.is_empty() {
         return Err(JsValue::from_str("Audio buffer is empty"));
     }
 
-    let cursor = Cursor::new(audio_data.to_vec());
+    // Use Symphonia to probe the format - it parses Xing/VBRI headers for MP3
+    let cursor = Cursor::new(audio_data);
     let mss = MediaSourceStream::new(Box::new(cursor), Default::default());
 
     let probed = symphonia::default::get_probe()
@@ -371,12 +311,13 @@ fn compute_audio_duration(audio_data: &[u8]) -> Result<f64, JsValue> {
         .cloned()
         .ok_or_else(|| JsValue::from_str("No supported audio track found"))?;
 
-    // Fast path: get duration from metadata (no packet iteration needed)
+    // Fast path: Use n_frames from track metadata
+    // Works for: MP3 (Xing/VBRI headers or CBR estimate), WAV, FLAC, OGG, AAC, etc.
     if let Some(duration) = duration_from_track_metadata(&track) {
         return Ok(duration);
     }
 
-    // Slow path: iterate packets to calculate duration (NO DECODER NEEDED - just reads timestamps)
+    // Slow path: iterate packets (rare - only for formats without any duration metadata)
     let track_id = track.id;
     let mut stats = DurationAccumulator::default();
 
@@ -539,9 +480,9 @@ struct DecoderContext {
     total_frames: Option<u64>,
 }
 
-fn prepare_decoder(audio_data: &[u8]) -> Result<DecoderContext, JsValue> {
+fn prepare_decoder(audio_data: Vec<u8>) -> Result<DecoderContext, JsValue> {
     // Feed the raw bytes into Symphonia via an in-memory cursor.
-    let cursor = Cursor::new(audio_data.to_vec());
+    let cursor = Cursor::new(audio_data);
     let mss = MediaSourceStream::new(Box::new(cursor), Default::default());
 
     let hint = Hint::new();
