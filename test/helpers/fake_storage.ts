@@ -1,7 +1,7 @@
 import {
   SessionRecord,
-  type KeyPairType,
-  type SignedPreKeyType,
+  type KeyPair,
+  type SignedPreKey,
   generateIdentityKeyPair,
   generateRegistrationId,
 } from "../../dist/index.js";
@@ -9,11 +9,11 @@ import {
 export class FakeStorage {
   private sessions = new Map<string, Uint8Array>();
   private identities = new Map<string, Uint8Array>();
-  private preKeys = new Map<number, KeyPairType>();
+  private preKeys = new Map<number, KeyPair>();
   public senderKeys = new Map<string, Uint8Array>();
-  private signedPreKeys = new Map<number, SignedPreKeyType>();
+  private signedPreKeys = new Map<number, SignedPreKey>();
 
-  public ourIdentityKeyPair: KeyPairType;
+  public ourIdentityKeyPair: KeyPair;
   public ourRegistrationId: number;
 
   constructor() {
@@ -39,7 +39,7 @@ export class FakeStorage {
     this.senderKeys.set(keyId, new Uint8Array(record));
   }
 
-  async getOurIdentity(): Promise<KeyPairType> {
+  async getOurIdentity(): Promise<KeyPair> {
     return this.ourIdentityKeyPair;
   }
   async getOurRegistrationId(): Promise<number> {
@@ -61,22 +61,22 @@ export class FakeStorage {
     this.identities.set(identifier, identityKey);
   }
 
-  async loadPreKey(id: number): Promise<KeyPairType | undefined> {
+  async loadPreKey(id: number): Promise<KeyPair | undefined> {
     return this.preKeys.get(id);
   }
   async removePreKey(id: number): Promise<void> {
     this.preKeys.delete(id);
   }
-  storePreKey(id: number, keyPair: KeyPairType): void {
+  storePreKey(id: number, keyPair: KeyPair): void {
     this.preKeys.set(id, keyPair);
   }
 
-  storeSignedPreKey(id: number, signedPreKey: SignedPreKeyType): void {
+  storeSignedPreKey(id: number, signedPreKey: SignedPreKey): void {
     const withTimestamp = { ...signedPreKey, timestamp: Date.now() };
     this.signedPreKeys.set(id, withTimestamp);
   }
 
-  async loadSignedPreKey(id: number): Promise<SignedPreKeyType | undefined> {
+  async loadSignedPreKey(id: number): Promise<SignedPreKey | undefined> {
     return this.signedPreKeys.get(id);
   }
 

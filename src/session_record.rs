@@ -19,7 +19,7 @@ impl SessionRecord {
     #[wasm_bindgen(js_name = deserialize)]
     pub fn deserialize(val: JsValue) -> Result<SessionRecord, JsValue> {
         // 1. Try as Uint8Array (Standard Rust Bridge format / Protobuf)
-        if let Ok(uint8_array) = val.clone().dyn_into::<Uint8Array>() {
+        if let Some(uint8_array) = val.dyn_ref::<Uint8Array>() {
             return Ok(SessionRecord::new(uint8_array.to_vec()));
         }
 

@@ -36,20 +36,18 @@ use wacore_libsignal::store::sender_key_name::SenderKeyName as CoreSenderKeyName
 use crate::session_record::SessionRecord;
 
 #[wasm_bindgen(typescript_custom_section)]
-const SIGNAL_STORAGE_TS: &str = r#"
-export type MaybePromise<T> = T | Promise<T>;
-
+const TS_SIGNAL_STORAGE: &str = r#"
 export interface SignalStorage {
-    loadSession(address: string): MaybePromise<Uint8Array | null | undefined>;
-    storeSession(address: string, record: SessionRecord): MaybePromise<void>;
-    getOurIdentity(): MaybePromise<KeyPairType>;
-    getOurRegistrationId(): MaybePromise<number>;
-    isTrustedIdentity(name: string, identityKey: Uint8Array, direction: number): MaybePromise<boolean>;
-    loadPreKey(id: number): MaybePromise<KeyPairType | null | undefined>;
-    removePreKey(id: number): MaybePromise<void>;
-    loadSignedPreKey(id: number): MaybePromise<SignedPreKeyType | null | undefined>;
-    loadSenderKey(keyId: string): MaybePromise<Uint8Array | null | undefined>;
-    storeSenderKey(keyId: string, record: Uint8Array): MaybePromise<void>;
+    loadSession(address: string): Uint8Array | null | undefined | Promise<Uint8Array | null | undefined>;
+    storeSession(address: string, record: SessionRecord): void | Promise<void>;
+    getOurIdentity(): KeyPair | Promise<KeyPair>;
+    getOurRegistrationId(): number | Promise<number>;
+    isTrustedIdentity(name: string, identityKey: Uint8Array, direction: number): boolean | Promise<boolean>;
+    loadPreKey(id: number): KeyPair | null | undefined | Promise<KeyPair | null | undefined>;
+    removePreKey(id: number): void | Promise<void>;
+    loadSignedPreKey(id: number): SignedPreKey | null | undefined | Promise<SignedPreKey | null | undefined>;
+    loadSenderKey(keyId: string): Uint8Array | null | undefined | Promise<Uint8Array | null | undefined>;
+    storeSenderKey(keyId: string, record: Uint8Array): void | Promise<void>;
 }
 "#;
 
@@ -183,10 +181,9 @@ impl JsStorageAdapter {
             let sessions = get_object(&value, "_sessions")
                 .ok_or_else(|| invalid_js_data("migrate", "Missing _sessions"))?;
             let sessions_obj = sessions
-                .clone()
-                .dyn_into::<js_sys::Object>()
-                .map_err(|_| invalid_js_data("migrate", "Invalid _sessions object"))?;
-            let keys = js_sys::Object::keys(&sessions_obj);
+                .dyn_ref::<js_sys::Object>()
+                .ok_or_else(|| invalid_js_data("migrate", "Invalid _sessions object"))?;
+            let keys = js_sys::Object::keys(sessions_obj);
 
             if keys.length() == 0 {
                 return Ok(None);
@@ -242,10 +239,9 @@ impl JsStorageAdapter {
         let chains = get_object(&session_data, "_chains")
             .ok_or_else(|| invalid_js_data("migrate", "Missing _chains"))?;
         let chains_obj = chains
-            .clone()
-            .dyn_into::<js_sys::Object>()
-            .map_err(|_| invalid_js_data("migrate", "_chains expected to be an object"))?;
-        let chain_keys = js_sys::Object::keys(&chains_obj);
+            .dyn_ref::<js_sys::Object>()
+            .ok_or_else(|| invalid_js_data("migrate", "_chains expected to be an object"))?;
+        let chain_keys = js_sys::Object::keys(chains_obj);
 
         let mut sender_chain = None;
         let mut receiver_chains = Vec::new();
@@ -275,10 +271,9 @@ impl JsStorageAdapter {
                 invalid_js_data("migrate", "Missing messageKeys for legacy chain entry")
             })?;
             let message_keys_object = message_keys_obj
-                .clone()
-                .dyn_into::<js_sys::Object>()
-                .map_err(|_| invalid_js_data("migrate", "Invalid messageKeys object"))?;
-            let msg_keys_list = js_sys::Object::keys(&message_keys_object);
+                .dyn_ref::<js_sys::Object>()
+                .ok_or_else(|| invalid_js_data("migrate", "Invalid messageKeys object"))?;
+            let msg_keys_list = js_sys::Object::keys(message_keys_object);
             let mut message_keys = Vec::new();
 
             for j in 0..msg_keys_list.length() {
@@ -634,7 +629,7 @@ fn deserialize_js_value<T: DeserializeOwned>(
 
 #[inline]
 fn js_value_to_bytes(value: &JsValue) -> Option<Vec<u8>> {
-    if let Ok(arr) = value.clone().dyn_into::<Uint8Array>() {
+    if let Some(arr) = value.dyn_ref::<Uint8Array>() {
         return Some(arr.to_vec());
     }
 
@@ -715,7 +710,7 @@ fn get_bytes_from_buffer_json(obj: &JsValue, key: &str) -> Option<Vec<u8>> {
         return Some(bytes);
     }
 
-    if let Ok(arr) = val.clone().dyn_into::<Uint8Array>() {
+    if let Some(arr) = val.dyn_ref::<Uint8Array>() {
         return Some(arr.to_vec());
     }
 
@@ -769,7 +764,7 @@ impl SessionStore for JsStorageAdapter {
         } else if is_legacy_session_object(&value) {
             self.migrate_legacy_json(value).await?
         } else {
-            value.dyn_into::<Uint8Array>().ok().map(|arr| arr.to_vec())
+            None
         };
 
         match bytes {

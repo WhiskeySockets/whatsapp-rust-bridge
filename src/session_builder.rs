@@ -1,6 +1,7 @@
 use rand::TryRngCore;
 use rand::rngs::OsRng;
 use serde::Deserialize;
+use tsify_next::Tsify;
 use wasm_bindgen::JsValue;
 use wasm_bindgen::prelude::*;
 
@@ -23,29 +24,39 @@ impl SessionRecord {
     }
 }
 
-#[wasm_bindgen(typescript_custom_section)]
-const PREKEY_BUNDLE_TS: &str = r#"
-export interface PreKeyPublicKey {
-    keyId: number;
-    publicKey: Uint8Array;
+/// Public key for a pre-key
+#[derive(Deserialize, Tsify)]
+#[tsify(from_wasm_abi)]
+#[serde(rename_all = "camelCase")]
+pub struct PreKeyPublicKey {
+    pub key_id: u32,
+    #[tsify(type = "Uint8Array")]
+    pub public_key: Vec<u8>,
 }
 
-export interface SignedPreKeyPublicKey extends PreKeyPublicKey {
-    signature: Uint8Array;
+/// Signed pre-key with signature
+#[derive(Deserialize, Tsify)]
+#[tsify(from_wasm_abi)]
+#[serde(rename_all = "camelCase")]
+pub struct SignedPreKeyPublicKey {
+    pub key_id: u32,
+    #[tsify(type = "Uint8Array")]
+    pub public_key: Vec<u8>,
+    #[tsify(type = "Uint8Array")]
+    pub signature: Vec<u8>,
 }
 
-export interface PreKeyBundleInput {
-    registrationId: number;
-    identityKey: Uint8Array;
-    preKey?: PreKeyPublicKey;
-    signedPreKey: SignedPreKeyPublicKey;
-}
-"#;
-
-#[wasm_bindgen]
-extern "C" {
-    #[wasm_bindgen(typescript_type = "PreKeyBundleInput")]
-    pub type PreKeyBundleInput;
+/// Input bundle for establishing a session
+#[derive(Deserialize, Tsify)]
+#[tsify(from_wasm_abi)]
+#[serde(rename_all = "camelCase")]
+pub struct PreKeyBundleInput {
+    pub registration_id: u32,
+    #[tsify(type = "Uint8Array")]
+    pub identity_key: Vec<u8>,
+    #[serde(default)]
+    pub pre_key: Option<PreKeyPublicKey>,
+    pub signed_pre_key: SignedPreKeyPublicKey,
 }
 
 #[wasm_bindgen(js_name = SessionBuilder)]
@@ -67,12 +78,9 @@ impl SessionBuilder {
     #[wasm_bindgen(js_name = processPreKeyBundle)]
     pub async fn process_prekey_bundle(
         &mut self,
-        bundle_val: PreKeyBundleInput,
+        bundle_input: PreKeyBundleInput,
     ) -> Result<(), JsValue> {
-        let js_value = JsValue::from(bundle_val);
-        let js_bundle: JsPreKeyBundle = serde_wasm_bindgen::from_value(js_value)?;
-
-        let pre_key = match js_bundle.pre_key {
+        let pre_key = match bundle_input.pre_key {
             Some(pk) => {
                 let key = CorePublicKey::deserialize(&pk.public_key).map_err(|e| e.to_string())?;
                 Some((pk.key_id.into(), key))
@@ -80,18 +88,18 @@ impl SessionBuilder {
             None => None,
         };
         let signed_pre_key_public =
-            CorePublicKey::deserialize(&js_bundle.signed_pre_key.public_key)
+            CorePublicKey::deserialize(&bundle_input.signed_pre_key.public_key)
                 .map_err(|e| e.to_string())?;
-        let identity_key =
-            libsignal::IdentityKey::decode(&js_bundle.identity_key).map_err(|e| e.to_string())?;
+        let identity_key = libsignal::IdentityKey::decode(&bundle_input.identity_key)
+            .map_err(|e| e.to_string())?;
 
         let bundle = PreKeyBundle::new(
-            js_bundle.registration_id,
+            bundle_input.registration_id,
             self.remote_address.0.device_id(),
             pre_key,
-            js_bundle.signed_pre_key.key_id.into(),
+            bundle_input.signed_pre_key.key_id.into(),
             signed_pre_key_public,
-            js_bundle.signed_pre_key.signature,
+            bundle_input.signed_pre_key.signature,
             identity_key,
         )
         .map_err(|e| e.to_string())?;
@@ -114,29 +122,7 @@ impl SessionBuilder {
     }
 
     #[wasm_bindgen(js_name = initOutgoing)]
-    pub async fn init_outgoing(&mut self, bundle_val: PreKeyBundleInput) -> Result<(), JsValue> {
-        self.process_prekey_bundle(bundle_val).await
+    pub async fn init_outgoing(&mut self, bundle_input: PreKeyBundleInput) -> Result<(), JsValue> {
+        self.process_prekey_bundle(bundle_input).await
     }
-}
-
-#[derive(Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct JsPreKeyBundle {
-    identity_key: Vec<u8>,
-    registration_id: u32,
-    pre_key: Option<JsPreKey>,
-    signed_pre_key: JsSignedPreKey,
-}
-#[derive(Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct JsPreKey {
-    key_id: u32,
-    public_key: Vec<u8>,
-}
-#[derive(Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct JsSignedPreKey {
-    key_id: u32,
-    public_key: Vec<u8>,
-    signature: Vec<u8>,
 }
