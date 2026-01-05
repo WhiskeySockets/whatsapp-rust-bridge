@@ -157,11 +157,11 @@ impl LTHashState {
     }
 
     #[wasm_bindgen(setter)]
-    pub fn set_hash(&mut self, hash: &[u8]) {
+    pub fn set_hash(&mut self, hash: Vec<u8>) {
         if hash.len() != 128 {
             wasm_bindgen::throw_str(&format!("Hash must be 128 bytes, got {}", hash.len()));
         }
-        self.hash = hash.to_vec();
+        self.hash = hash;
     }
 
     #[wasm_bindgen(js_name = getValueMac)]
@@ -174,9 +174,9 @@ impl LTHashState {
     }
 
     #[wasm_bindgen(js_name = setValueMac)]
-    pub fn set_value_mac(&mut self, index_mac_base64: &str, value_mac: &[u8]) {
+    pub fn set_value_mac(&mut self, index_mac_base64: &str, value_mac: Vec<u8>) {
         self.index_value_map
-            .insert(index_mac_base64.to_string(), value_mac.to_vec());
+            .insert(index_mac_base64.to_string(), value_mac);
     }
 
     #[wasm_bindgen(js_name = deleteValueMac)]
