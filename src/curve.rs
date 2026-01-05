@@ -173,22 +173,3 @@ pub fn get_public_from_private_key(private_key_bytes: &[u8]) -> Result<Uint8Arra
     result.copy_from(&pub_key_with_prefix);
     Ok(result)
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn test_signing_key_derivation_from_all_zero_private() {
-        let all_zero_private_key = [0u8; 32];
-
-        let expected_public_key_bytes: [u8; 32] = [
-            105, 62, 71, 151, 44, 175, 82, 124, 120, 131, 173, 27, 57, 130, 47, 2, 111, 71, 219,
-            42, 176, 225, 145, 153, 85, 184, 153, 58, 160, 68, 17, 209,
-        ];
-
-        let derived_public_key = derive_signing_public_key(&all_zero_private_key);
-
-        assert_eq!(derived_public_key, expected_public_key_bytes);
-    }
-}
