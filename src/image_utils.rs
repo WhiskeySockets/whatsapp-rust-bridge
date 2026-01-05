@@ -1,7 +1,7 @@
 use image::codecs::jpeg::JpegEncoder;
 use image::imageops::FilterType;
 use image::{DynamicImage, GenericImageView};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use std::io::Cursor;
 use tsify_next::Tsify;
 use wasm_bindgen::prelude::*;
@@ -77,10 +77,119 @@ fn load_image(image_data: &[u8]) -> Result<DynamicImage, JsValue> {
 }
 
 fn encode_jpeg(image: &DynamicImage) -> Result<Vec<u8>, JsValue> {
+    encode_jpeg_quality(image, JPEG_QUALITY)
+}
+
+/// Output format for image processing
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Tsify)]
+#[tsify(from_wasm_abi)]
+#[serde(rename_all = "lowercase")]
+pub enum ImageFormat {
+    Jpeg,
+    Png,
+    WebP,
+}
+
+/// Options for image processing
+#[derive(Debug, Clone, Serialize, Deserialize, Tsify)]
+#[tsify(from_wasm_abi)]
+pub struct ProcessImageOptions {
+    /// Target width (optional, maintains aspect ratio if only width is set)
+    pub width: Option<u32>,
+    /// Target height (optional, maintains aspect ratio if only height is set)
+    pub height: Option<u32>,
+    /// Output format
+    pub format: ImageFormat,
+    /// Quality for lossy formats (JPEG, WebP). 1-100, default 80
+    pub quality: Option<u8>,
+}
+
+/// Result of image processing
+#[derive(Debug, Clone, Serialize, Tsify)]
+#[tsify(into_wasm_abi)]
+pub struct ProcessImageResult {
+    #[tsify(type = "Uint8Array")]
+    #[serde(with = "serde_bytes")]
+    pub buffer: Vec<u8>,
+    pub width: u32,
+    pub height: u32,
+}
+
+/// Get image dimensions without full decoding
+#[wasm_bindgen(js_name = getImageDimensions)]
+pub fn get_image_dimensions(image_data: &[u8]) -> Result<ImageDimensions, JsValue> {
+    let img = load_image(image_data)?;
+    let (width, height) = img.dimensions();
+    Ok(ImageDimensions { width, height })
+}
+
+/// Convert any image to WebP format
+#[wasm_bindgen(js_name = convertToWebP)]
+pub fn convert_to_webp(image_data: Vec<u8>) -> Result<js_sys::Uint8Array, JsValue> {
+    let img = load_image(&image_data)?;
+    let webp = encode_format(&img, image::ImageFormat::WebP)?;
+    let result = js_sys::Uint8Array::new_with_length(webp.len() as u32);
+    result.copy_from(&webp);
+    Ok(result)
+}
+
+/// Process image with resize and format conversion options
+#[wasm_bindgen(js_name = processImage)]
+pub fn process_image(
+    image_data: Vec<u8>,
+    options: ProcessImageOptions,
+) -> Result<ProcessImageResult, JsValue> {
+    let img = load_image(&image_data)?;
+
+    // Resize if dimensions are specified
+    let processed = match (options.width, options.height) {
+        (Some(w), Some(h)) => {
+            // Both dimensions specified - resize to exact size
+            img.resize_exact(w, h, FilterType::Triangle)
+        }
+        (Some(w), None) => {
+            // Only width specified - maintain aspect ratio
+            img.resize(w, u32::MAX, FilterType::Triangle)
+        }
+        (None, Some(h)) => {
+            // Only height specified - maintain aspect ratio
+            img.resize(u32::MAX, h, FilterType::Triangle)
+        }
+        (None, None) => {
+            // No resize, just format conversion
+            img
+        }
+    };
+
+    let (width, height) = processed.dimensions();
+    let quality = options.quality.unwrap_or(80).clamp(1, 100);
+
+    let buffer = match options.format {
+        ImageFormat::Jpeg => encode_jpeg_quality(&processed, quality)?,
+        ImageFormat::Png => encode_format(&processed, image::ImageFormat::Png)?,
+        ImageFormat::WebP => encode_format(&processed, image::ImageFormat::WebP)?,
+    };
+
+    Ok(ProcessImageResult {
+        buffer,
+        width,
+        height,
+    })
+}
+
+fn encode_jpeg_quality(image: &DynamicImage, quality: u8) -> Result<Vec<u8>, JsValue> {
     let mut buffer = Cursor::new(Vec::new());
-    let mut encoder = JpegEncoder::new_with_quality(&mut buffer, JPEG_QUALITY);
+    let mut encoder = JpegEncoder::new_with_quality(&mut buffer, quality);
     encoder
         .encode_image(image)
-        .map_err(|e| JsValue::from_str(&format!("Failed to encode image: {e}")))?;
+        .map_err(|e| JsValue::from_str(&format!("Failed to encode JPEG: {e}")))?;
     Ok(buffer.into_inner())
+}
+
+fn encode_format(image: &DynamicImage, format: image::ImageFormat) -> Result<Vec<u8>, JsValue> {
+    let mut buffer = Vec::new();
+    image
+        .write_to(&mut Cursor::new(&mut buffer), format)
+        .map_err(|e| JsValue::from_str(&format!("Failed to encode image: {e}")))?;
+    Ok(buffer)
 }
