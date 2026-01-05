@@ -1,3 +1,4 @@
+pub mod appstate;
 pub mod audio;
 pub mod binary;
 pub mod curve;

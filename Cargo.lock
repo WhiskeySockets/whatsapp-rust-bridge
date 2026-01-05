@@ -878,6 +878,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "serde-big-array"
+version = "0.5.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "11fc7cc2c76d73e0f27ee52abbd64eec84d46f370c88371120433196934e4b7f"
+dependencies = [
+ "serde",
+]
+
+[[package]]
 name = "serde-wasm-bindgen"
 version = "0.6.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1211,6 +1220,24 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "0b928f33d975fc6ad9f86c8f283853ad26bdd5b10b7f1542aa2fa15e2289105a"
 
 [[package]]
+name = "wacore-appstate"
+version = "0.2.0"
+source = "git+https://github.com/jlucaso1/whatsapp-rust.git?branch=main#b5b7134a899673d01c22bb678e2c65be49a43429"
+dependencies = [
+ "anyhow",
+ "hkdf",
+ "prost",
+ "serde",
+ "serde-big-array",
+ "serde_json",
+ "sha2",
+ "thiserror",
+ "wacore-binary",
+ "wacore-libsignal",
+ "waproto",
+]
+
+[[package]]
 name = "wacore-binary"
 version = "0.2.0"
 source = "git+https://github.com/jlucaso1/whatsapp-rust.git?branch=main#b5b7134a899673d01c22bb678e2c65be49a43429"
@@ -1365,6 +1392,7 @@ dependencies = [
  "symphonia",
  "tsify-next",
  "uuid",
+ "wacore-appstate",
  "wacore-binary",
  "wacore-libsignal",
  "waproto",
@@ -1454,9 +1482,9 @@ checksum = "40990edd51aae2c2b6907af74ffb635029d5788228222c4bb811e9351c0caad3"
 
 [[package]]
 name = "zmij"
-version = "1.0.10"
+version = "1.0.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "30e0d8dffbae3d840f64bda38e28391faef673a7b5a6017840f2a106c8145868"
+checksum = "dcb2c125bd7365735bebeb420ccb880265ed2d2bddcbcd49f597fdfe6bd5e577"
 
 [[package]]
 name = "zune-core"

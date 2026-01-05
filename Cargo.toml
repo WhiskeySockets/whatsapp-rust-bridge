@@ -67,6 +67,7 @@ symphonia = { version = "0.5.4", default-features = false, features = ["mp3", "a
 tsify-next = { version = "0.5", default-features = false, features = ["js"] }
 uuid = { version = "1.18.1", features = ["v4", "js"] }
 
+wacore-appstate = { git = "https://github.com/jlucaso1/whatsapp-rust.git", branch = "main", package = "wacore-appstate" }
 wacore-binary = { git = "https://github.com/jlucaso1/whatsapp-rust.git", branch = "main", features = [
   "serde",
 ] }
