@@ -434,6 +434,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "img-parts"
+version = "0.4.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "19734e3c43b2a850f5889c077056e47c874095f2d87e853c7c41214ae67375f0"
+dependencies = [
+ "bytes",
+ "crc32fast",
+ "miniz_oxide",
+]
+
+[[package]]
 name = "indexmap"
 version = "2.12.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -881,6 +892,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "serde_derive_internals"
+version = "0.29.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "18d26a20a969b9e3fdf2fc2d9f21eda6c40e2de84c9408bb5d3b05d499aae711"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn",
+]
+
+[[package]]
 name = "serde_json"
 version = "1.0.148"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -978,6 +1000,30 @@ dependencies = [
 ]
 
 [[package]]
+name = "tsify-next"
+version = "0.5.6"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "7d0f2208feeb5f7a6edb15a2389c14cd42480ef6417318316bb866da5806a61d"
+dependencies = [
+ "serde",
+ "serde-wasm-bindgen",
+ "tsify-next-macros",
+ "wasm-bindgen",
+]
+
+[[package]]
+name = "tsify-next-macros"
+version = "0.5.6"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "f81253930d0d388a3ab8fa4ae56da9973ab171ef833d1be2e9080fc3ce502bd6"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "serde_derive_internals",
+ "syn",
+]
+
+[[package]]
 name = "typenum"
 version = "1.19.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1004,6 +1050,11 @@ name = "uuid"
 version = "1.19.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "e2e054861b4bd027cd373e18e8d8d8e6548085000e41290d95ce0c373a654b4a"
+dependencies = [
+ "getrandom",
+ "js-sys",
+ "wasm-bindgen",
+]
 
 [[package]]
 name = "version_check"
@@ -1153,6 +1204,7 @@ dependencies = [
  "curve25519-dalek",
  "getrandom",
  "image",
+ "img-parts",
  "js-sys",
  "log",
  "prost",
@@ -1160,7 +1212,10 @@ dependencies = [
  "serde",
  "serde-wasm-bindgen",
  "serde_bytes",
+ "serde_json",
  "simd-adler32",
+ "tsify-next",
+ "uuid",
  "wacore-binary",
  "wacore-libsignal",
  "waproto",
