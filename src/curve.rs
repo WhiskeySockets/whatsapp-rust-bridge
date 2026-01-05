@@ -1,6 +1,8 @@
 use curve25519_dalek::{Scalar, constants::ED25519_BASEPOINT_TABLE};
 use js_sys::Uint8Array;
 use rand::{TryRngCore, rngs::OsRng};
+use serde::{Deserialize, Serialize};
+use tsify_next::Tsify;
 use wacore_libsignal::{
     core::curve::{
         KeyPair as CoreKeyPair, PrivateKey as CorePrivateKey, PublicKey as CorePublicKey,
@@ -9,38 +11,27 @@ use wacore_libsignal::{
 };
 use wasm_bindgen::prelude::*;
 
-#[wasm_bindgen(inline_js = r#"
-export function createKeyPair(pubKey, privKey) {
-    return { pubKey, privKey };
+/// A cryptographic key pair containing public and private keys
+#[derive(Debug, Clone, Serialize, Deserialize, Tsify)]
+#[tsify(into_wasm_abi, from_wasm_abi)]
+#[serde(rename_all = "camelCase")]
+pub struct KeyPair {
+    #[tsify(type = "Uint8Array")]
+    #[serde(with = "serde_bytes")]
+    pub pub_key: Vec<u8>,
+    #[tsify(type = "Uint8Array")]
+    #[serde(with = "serde_bytes")]
+    pub priv_key: Vec<u8>,
 }
-"#)]
-extern "C" {
-    #[wasm_bindgen(js_name = createKeyPair)]
-    fn create_key_pair_js(pub_key: Uint8Array, priv_key: Uint8Array) -> JsValue;
-}
-
-#[wasm_bindgen(typescript_custom_section)]
-const TS_KEY_PAIR: &'static str = r#"
-export interface KeyPair {
-    pubKey: Uint8Array;
-    privKey: Uint8Array;
-}
-"#;
 
 #[wasm_bindgen(js_name = generateKeyPair)]
-pub fn generate_key_pair() -> JsValue {
+pub fn generate_key_pair() -> KeyPair {
     let pair = CoreKeyPair::generate(&mut OsRng.unwrap_err());
 
-    let pub_key_bytes = pair.public_key.serialize();
-    let priv_key_bytes = pair.private_key.serialize();
-
-    let pub_key_array = Uint8Array::new_with_length(pub_key_bytes.len() as u32);
-    pub_key_array.copy_from(&pub_key_bytes);
-
-    let priv_key_array = Uint8Array::new_with_length(priv_key_bytes.len() as u32);
-    priv_key_array.copy_from(&priv_key_bytes);
-
-    create_key_pair_js(pub_key_array, priv_key_array)
+    KeyPair {
+        pub_key: pair.public_key.serialize().to_vec(),
+        priv_key: pair.private_key.serialize().to_vec(),
+    }
 }
 
 fn map_err(err: impl std::fmt::Display + 'static) -> JsValue {

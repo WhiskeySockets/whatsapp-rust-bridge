@@ -15,8 +15,9 @@ use web_sys::{ReadableStream, ReadableStreamDefaultReader};
 
 /// WhatsApp uses 64 buckets for visual waveforms.
 const WAVEFORM_SAMPLES: usize = 64;
-/// Aggregate raw samples into medium-sized chunks to keep memory bounded.
-const WAVEFORM_CHUNK_SIZE: usize = 2048;
+/// Aggregate raw samples into larger chunks for better performance.
+/// Larger chunks = fewer allocations and flush operations.
+const WAVEFORM_CHUNK_SIZE: usize = 8192;
 
 #[wasm_bindgen(js_name = generateAudioWaveform)]
 pub fn generate_audio_waveform(audio_data: &[u8]) -> Result<Uint8Array, JsValue> {
@@ -253,6 +254,7 @@ fn accumulate_waveform_samples(buffer: &AudioBufferRef<'_>, builder: &mut Wavefo
     }
 }
 
+#[inline]
 fn accumulate_from_buffer<S>(buffer: &AudioBuffer<S>, builder: &mut WaveformBuilder)
 where
     S: Sample + IntoSample<f32>,
@@ -267,27 +269,50 @@ where
         return;
     }
 
-    let mut channel_slices: Vec<&[S]> = Vec::with_capacity(channel_count);
-    for channel in 0..channel_count {
-        channel_slices.push(buffer.chan(channel));
-    }
+    let inv_channels = 1.0f32 / channel_count as f32;
 
-    for frame_idx in 0..frames {
-        let mut sum = 0.0f32;
-        for plane in &channel_slices {
-            sum += plane[frame_idx].into_sample();
+    // Optimize for common cases: mono and stereo
+    match channel_count {
+        1 => {
+            let chan0 = buffer.chan(0);
+            for sample in chan0 {
+                let s: f32 = (*sample).into_sample();
+                builder.ingest_f32(s.abs());
+            }
         }
+        2 => {
+            let chan0 = buffer.chan(0);
+            let chan1 = buffer.chan(1);
+            for (s0, s1) in chan0.iter().zip(chan1.iter()) {
+                let v0: f32 = (*s0).into_sample();
+                let v1: f32 = (*s1).into_sample();
+                let avg = (v0 + v1) * 0.5f32;
+                builder.ingest_f32(avg.abs());
+            }
+        }
+        _ => {
+            // General case for multi-channel
+            let mut channel_slices: Vec<&[S]> = Vec::with_capacity(channel_count);
+            for channel in 0..channel_count {
+                channel_slices.push(buffer.chan(channel));
+            }
 
-        let avg = sum / channel_count as f32;
-        builder.ingest(f64::from(avg.abs()));
+            for frame_idx in 0..frames {
+                let mut sum = 0.0f32;
+                for plane in &channel_slices {
+                    sum += plane[frame_idx].into_sample();
+                }
+                builder.ingest_f32((sum * inv_channels).abs());
+            }
+        }
     }
 }
 
 struct WaveformBuilder {
     chunks: Vec<WaveformChunk>,
-    chunk_sum: f64,
+    chunk_sum: f32,
     chunk_count: u32,
-    chunk_size: usize,
+    chunk_size: u32,
 }
 
 impl WaveformBuilder {
@@ -296,26 +321,28 @@ impl WaveformBuilder {
             chunks: Vec::new(),
             chunk_sum: 0.0,
             chunk_count: 0,
-            chunk_size,
+            chunk_size: chunk_size as u32,
         }
     }
 
-    fn ingest(&mut self, sample: f64) {
+    #[inline(always)]
+    fn ingest_f32(&mut self, sample: f32) {
         self.chunk_sum += sample;
         self.chunk_count += 1;
 
-        if self.chunk_count as usize == self.chunk_size {
+        if self.chunk_count == self.chunk_size {
             self.flush();
         }
     }
 
+    #[inline]
     fn flush(&mut self) {
         if self.chunk_count == 0 {
             return;
         }
 
         self.chunks.push(WaveformChunk {
-            sum_abs: self.chunk_sum,
+            sum_abs: self.chunk_sum as f64,
             count: self.chunk_count,
         });
 

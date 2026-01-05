@@ -1,33 +1,38 @@
 use image::codecs::jpeg::JpegEncoder;
 use image::imageops::FilterType;
 use image::{DynamicImage, GenericImageView};
-use js_sys::{Object, Reflect, Uint8Array};
+use serde::Serialize;
 use std::io::Cursor;
-use wasm_bindgen::{JsCast, prelude::*};
+use tsify_next::Tsify;
+use wasm_bindgen::prelude::*;
 
 const JPEG_QUALITY: u8 = 50;
 
-#[wasm_bindgen(typescript_custom_section)]
-const IMAGE_TYPES: &'static str = r#"
-export interface ImageThumbResult {
-    buffer: Uint8Array;
-    original: { width: number; height: number };
+/// Original image dimensions
+#[derive(Debug, Clone, Serialize, Tsify)]
+#[tsify(into_wasm_abi)]
+pub struct ImageDimensions {
+    pub width: u32,
+    pub height: u32,
 }
 
-export interface ProfilePictureResult {
-    img: Uint8Array;
+/// Result of extracting an image thumbnail
+#[derive(Debug, Clone, Serialize, Tsify)]
+#[tsify(into_wasm_abi)]
+pub struct ImageThumbResult {
+    #[tsify(type = "Uint8Array")]
+    #[serde(with = "serde_bytes")]
+    pub buffer: Vec<u8>,
+    pub original: ImageDimensions,
 }
-"#;
 
-#[wasm_bindgen]
-extern "C" {
-    #[wasm_bindgen(
-        typescript_type = "{ buffer: Uint8Array; original: { width: number; height: number } }"
-    )]
-    pub type ImageThumbResult;
-
-    #[wasm_bindgen(typescript_type = "{ img: Uint8Array }")]
-    pub type ProfilePictureResult;
+/// Result of generating a profile picture
+#[derive(Debug, Clone, Serialize, Tsify)]
+#[tsify(into_wasm_abi)]
+pub struct ProfilePictureResult {
+    #[tsify(type = "Uint8Array")]
+    #[serde(with = "serde_bytes")]
+    pub img: Vec<u8>,
 }
 
 #[wasm_bindgen(js_name = extractImageThumb)]
@@ -39,31 +44,15 @@ pub fn extract_image_thumb(image_data: &[u8], width: u32) -> Result<ImageThumbRe
     let img = load_image(image_data)?;
     let (orig_width, orig_height) = img.dimensions();
     let resized = img.resize(width, width, FilterType::Triangle);
-
     let jpeg = encode_jpeg(&resized)?;
 
-    let result = Object::new();
-    let original = Object::new();
-
-    Reflect::set(
-        &original,
-        &JsValue::from_str("width"),
-        &JsValue::from_f64(orig_width as f64),
-    )?;
-    Reflect::set(
-        &original,
-        &JsValue::from_str("height"),
-        &JsValue::from_f64(orig_height as f64),
-    )?;
-
-    Reflect::set(
-        &result,
-        &JsValue::from_str("buffer"),
-        &Uint8Array::from(jpeg.as_slice()).into(),
-    )?;
-    Reflect::set(&result, &JsValue::from_str("original"), &original.into())?;
-
-    Ok(result.unchecked_into())
+    Ok(ImageThumbResult {
+        buffer: jpeg,
+        original: ImageDimensions {
+            width: orig_width,
+            height: orig_height,
+        },
+    })
 }
 
 #[wasm_bindgen(js_name = generateProfilePicture)]
@@ -79,14 +68,7 @@ pub fn generate_profile_picture(
         load_image(image_data)?.resize_to_fill(target_width, target_width, FilterType::Triangle);
     let jpeg = encode_jpeg(&resized)?;
 
-    let result = Object::new();
-    Reflect::set(
-        &result,
-        &JsValue::from_str("img"),
-        &Uint8Array::from(jpeg.as_slice()).into(),
-    )?;
-
-    Ok(result.unchecked_into())
+    Ok(ProfilePictureResult { img: jpeg })
 }
 
 fn load_image(image_data: &[u8]) -> Result<DynamicImage, JsValue> {

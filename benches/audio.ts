@@ -15,7 +15,7 @@ boxplot(() => {
       do_not_optimize(waveform);
     });
 
-    bench("Waveform libsignal-node", async () => {
+    bench("Waveform Baileys", async () => {
       const waveform = await getAudioWaveformOld(fileBuffer);
       do_not_optimize(waveform);
     });
@@ -27,7 +27,7 @@ boxplot(() => {
       do_not_optimize(duration);
     });
 
-    bench("Duration libsignal-node", async () => {
+    bench("Duration Baileys", async () => {
       const duration = await getAudioDurationOld(fileBuffer);
       do_not_optimize(duration);
     });
