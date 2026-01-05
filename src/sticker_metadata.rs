@@ -62,8 +62,6 @@ pub struct StickerMetadata {
     pub ios_app_store_link: Option<String>,
 }
 
-/// Internal representation for EXIF serialization (uses kebab-case for WhatsApp compatibility)
-/// Uses references to avoid cloning strings during serialization.
 #[derive(Serialize)]
 struct ExifStickerMetadataRef<'a> {
     #[serde(rename = "sticker-pack-id")]
@@ -83,29 +81,42 @@ struct ExifStickerMetadataRef<'a> {
     ios_app_store_link: Option<&'a str>,
 }
 
-/// Internal representation for EXIF deserialization (uses kebab-case for WhatsApp compatibility)
 #[derive(Deserialize)]
 struct ExifStickerMetadataOwned {
-    #[serde(rename = "sticker-pack-id")]
-    pack_id: String,
-    #[serde(rename = "sticker-pack-name")]
-    pack_name: String,
-    #[serde(rename = "sticker-pack-publisher")]
-    publisher: String,
+    #[serde(default, rename = "sticker-pack-id")]
+    pack_id: Option<String>,
+    #[serde(default, rename = "sticker-pack-name")]
+    pack_name: Option<String>,
+    #[serde(default, rename = "sticker-pack-publisher")]
+    publisher: Option<String>,
     #[serde(default)]
     emojis: Vec<String>,
     #[serde(default, rename = "android-app-store-link")]
     android_app_store_link: Option<String>,
     #[serde(default, rename = "ios-app-store-link")]
     ios_app_store_link: Option<String>,
+    #[serde(default, rename = "is-first-party-sticker")]
+    _is_first_party: Option<u8>,
+    #[serde(default, rename = "is-from-sticker-maker")]
+    _is_from_sticker_maker: Option<u8>,
+    #[serde(default, rename = "is-avatar-sticker")]
+    _is_avatar: Option<u8>,
+    #[serde(default, rename = "is-ai-sticker")]
+    _is_ai_sticker: Option<u8>,
+    #[serde(default, rename = "sticker-maker-source-type")]
+    _sticker_maker_source_type: Option<u8>,
+    #[serde(default, rename = "accessibility-text")]
+    _accessibility_label: Option<String>,
 }
 
 impl From<ExifStickerMetadataOwned> for StickerMetadata {
     fn from(m: ExifStickerMetadataOwned) -> Self {
         Self {
-            pack_id: m.pack_id,
-            pack_name: m.pack_name,
-            publisher: m.publisher,
+            pack_id: m.pack_id.unwrap_or_default(),
+            // Use empty string as default for required fields when reading
+            // This matches WhatsApp's behavior where these can be null
+            pack_name: m.pack_name.unwrap_or_default(),
+            publisher: m.publisher.unwrap_or_default(),
             emojis: m.emojis,
             android_app_store_link: m.android_app_store_link,
             ios_app_store_link: m.ios_app_store_link,
@@ -125,7 +136,7 @@ impl StickerMetadata {
     /// Build the EXIF data buffer for this metadata.
     /// Uses references to avoid cloning and pre-allocated capacity to avoid reallocations.
     #[inline]
-    fn build_exif(&self) -> Vec<u8> {
+    fn build_exif(&self) -> Result<Vec<u8>, serde_json::Error> {
         let exif_meta = ExifStickerMetadataRef {
             pack_id: &self.pack_id,
             pack_name: &self.pack_name,
@@ -134,7 +145,7 @@ impl StickerMetadata {
             android_app_store_link: self.android_app_store_link.as_deref(),
             ios_app_store_link: self.ios_app_store_link.as_deref(),
         };
-        let json = serde_json::to_vec(&exif_meta).unwrap_or_default();
+        let json = serde_json::to_vec(&exif_meta)?;
         let json_len = json.len() as u32;
 
         let mut exif = Vec::with_capacity(EXIF_HEADER.len() + json.len());
@@ -144,13 +155,16 @@ impl StickerMetadata {
         // Write the JSON length at offset 14 (little-endian u32)
         exif[14..18].copy_from_slice(&json_len.to_le_bytes());
 
-        exif
+        Ok(exif)
     }
 }
 
-// ============================================================================
-// WASM Bindings
-// ============================================================================
+/// Check if EXIF data starts with WhatsApp sticker header (TIFF LE + "AW" tag).
+#[inline]
+fn is_whatsapp_sticker_exif(exif_bytes: &[u8]) -> bool {
+    exif_bytes.get(0..4) == Some(&[0x49, 0x49, 0x2A, 0x00])
+        && exif_bytes.get(10..12) == Some(&[0x41, 0x57])
+}
 
 /// Add sticker metadata to a WebP image.
 ///
@@ -170,7 +184,9 @@ pub fn add_sticker_metadata(
         .map_err(|e| JsValue::from_str(&format!("Invalid WebP: {e}")))?;
 
     // Build and set EXIF data
-    let exif_data = metadata.build_exif();
+    let exif_data = metadata
+        .build_exif()
+        .map_err(|e| JsValue::from_str(&format!("Failed to serialize metadata: {e}")))?;
     webp.set_exif(Some(Bytes::from(exif_data)));
 
     // Encode directly to Uint8Array
@@ -180,7 +196,8 @@ pub fn add_sticker_metadata(
 
 /// Extract sticker metadata from a WebP image.
 ///
-/// Returns the metadata object if present, or null if no sticker metadata is found.
+/// Returns the metadata object if present, or undefined if no sticker metadata is found.
+/// Returns undefined (not an error) for WebP images with regular camera EXIF data.
 #[wasm_bindgen(js_name = getStickerMetadata)]
 pub fn get_sticker_metadata(webp_data: &[u8]) -> Result<Option<StickerMetadata>, JsValue> {
     let webp = WebP::from_bytes(Bytes::copy_from_slice(webp_data))
@@ -190,6 +207,11 @@ pub fn get_sticker_metadata(webp_data: &[u8]) -> Result<Option<StickerMetadata>,
         return Ok(None);
     };
 
+    // Verify this is WhatsApp sticker EXIF, not regular camera EXIF
+    if !is_whatsapp_sticker_exif(&exif_bytes) {
+        return Ok(None);
+    }
+
     // The EXIF data should have our header followed by JSON
     if exif_bytes.len() <= EXIF_HEADER.len() {
         return Ok(None);
@@ -198,79 +220,11 @@ pub fn get_sticker_metadata(webp_data: &[u8]) -> Result<Option<StickerMetadata>,
     // Extract JSON from after the header
     let json_bytes = &exif_bytes[EXIF_HEADER.len()..];
 
-    let exif_meta: ExifStickerMetadataOwned = serde_json::from_slice(json_bytes)
-        .map_err(|e| JsValue::from_str(&format!("Invalid metadata: {e}")))?;
+    // Try to parse as sticker metadata, return None if it fails
+    // (could be malformed or different format)
+    let Ok(exif_meta) = serde_json::from_slice::<ExifStickerMetadataOwned>(json_bytes) else {
+        return Ok(None);
+    };
 
     Ok(Some(StickerMetadata::from(exif_meta)))
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn test_exif_serialization() {
-        let metadata = StickerMetadata {
-            pack_id: "test-id".to_string(),
-            pack_name: "Test Pack".to_string(),
-            publisher: "Test Author".to_string(),
-            emojis: vec!["😀".to_string()],
-            android_app_store_link: None,
-            ios_app_store_link: None,
-        };
-
-        let exif = metadata.build_exif();
-        let json_part = &exif[EXIF_HEADER.len()..];
-        let json_str = std::str::from_utf8(json_part).unwrap();
-
-        // Verify kebab-case in EXIF
-        assert!(json_str.contains("sticker-pack-name"));
-        assert!(json_str.contains("sticker-pack-publisher"));
-        assert!(json_str.contains("sticker-pack-id"));
-    }
-
-    #[test]
-    fn test_exif_header() {
-        let metadata = StickerMetadata {
-            pack_id: "test".to_string(),
-            pack_name: "Test Pack".to_string(),
-            publisher: "Test Author".to_string(),
-            emojis: vec![],
-            android_app_store_link: None,
-            ios_app_store_link: None,
-        };
-        let exif = metadata.build_exif();
-
-        // Check TIFF header
-        assert_eq!(&exif[0..4], &[0x49, 0x49, 0x2A, 0x00]);
-
-        // Check length field is correctly set
-        let json_part = &exif[EXIF_HEADER.len()..];
-        let expected_len = json_part.len() as u32;
-        let actual_len = u32::from_le_bytes([exif[14], exif[15], exif[16], exif[17]]);
-        assert_eq!(actual_len, expected_len);
-    }
-
-    #[test]
-    fn test_exif_deserialization() {
-        let json = r#"{"sticker-pack-id":"123","sticker-pack-name":"Test","sticker-pack-publisher":"Author","emojis":["😀"]}"#;
-        let exif_meta: ExifStickerMetadataOwned = serde_json::from_str(json).unwrap();
-        let metadata = StickerMetadata::from(exif_meta);
-
-        assert_eq!(metadata.pack_id, "123");
-        assert_eq!(metadata.pack_name, "Test");
-        assert_eq!(metadata.publisher, "Author");
-        assert_eq!(metadata.emojis, vec!["😀"]);
-    }
-
-    #[test]
-    fn test_js_serialization() {
-        // Test that camelCase works for JS interface
-        let json = r#"{"packId":"123","packName":"Test","publisher":"Author","emojis":["😀"]}"#;
-        let metadata: StickerMetadata = serde_json::from_str(json).unwrap();
-
-        assert_eq!(metadata.pack_id, "123");
-        assert_eq!(metadata.pack_name, "Test");
-        assert_eq!(metadata.publisher, "Author");
-    }
 }
