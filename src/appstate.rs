@@ -35,8 +35,22 @@ impl LTHashAntiTampering {
             )));
         }
 
-        let subtract_vecs: Vec<Vec<u8>> = subtract.iter().map(|arr| arr.to_vec()).collect();
-        let add_vecs: Vec<Vec<u8>> = add.iter().map(|arr| arr.to_vec()).collect();
+        // Pre-allocate with known capacity to avoid reallocations
+        let mut subtract_vecs: Vec<Vec<u8>> = Vec::with_capacity(subtract.len());
+        for arr in &subtract {
+            let len = arr.length() as usize;
+            let mut vec = vec![0u8; len];
+            arr.copy_to(&mut vec);
+            subtract_vecs.push(vec);
+        }
+
+        let mut add_vecs: Vec<Vec<u8>> = Vec::with_capacity(add.len());
+        for arr in &add {
+            let len = arr.length() as usize;
+            let mut vec = vec![0u8; len];
+            arr.copy_to(&mut vec);
+            add_vecs.push(vec);
+        }
 
         let result = self
             .inner
@@ -144,6 +158,9 @@ impl LTHashState {
 
     #[wasm_bindgen(setter)]
     pub fn set_hash(&mut self, hash: &[u8]) {
+        if hash.len() != 128 {
+            wasm_bindgen::throw_str(&format!("Hash must be 128 bytes, got {}", hash.len()));
+        }
         self.hash = hash.to_vec();
     }
 
@@ -275,9 +292,22 @@ pub fn generate_patch_mac(
     let mut mac = CryptographicMac::new("HmacSha256", key)
         .map_err(|e| JsValue::from_str(&format!("Failed to create MAC: {}", e)))?;
     mac.update(snapshot_mac);
+
+    // Use stack buffer for value MACs (typically 32 bytes) to avoid heap allocations
+    let mut value_mac_buf = [0u8; 64]; // Support up to 64 byte MACs
     for value_mac in &value_macs {
-        mac.update(&value_mac.to_vec());
+        let len = value_mac.length() as usize;
+        if len <= 64 {
+            value_mac.copy_to(&mut value_mac_buf[..len]);
+            mac.update(&value_mac_buf[..len]);
+        } else {
+            // Fallback for larger MACs (unlikely)
+            let mut vec = vec![0u8; len];
+            value_mac.copy_to(&mut vec);
+            mac.update(&vec);
+        }
     }
+
     mac.update(&version_be);
     mac.update(name.as_bytes());
     let mac_result = mac.finalize();
