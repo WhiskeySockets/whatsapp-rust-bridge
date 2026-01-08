@@ -233,17 +233,15 @@ test("should allow attrs mutation and reassignment", () => {
   expect(roundtrip.attrs.hello).toBe("world");
 });
 
-// Add to the describe("Binary Marshalling") block
 test("should allow content mutation and reassignment", () => {
   const original: BinaryNode = {
     tag: "patch",
     attrs: {},
-    content: [{ tag: "item", attrs: {}, content: "old" }], // Array of children
+    content: [{ tag: "item", attrs: {}, content: "old" }],
   };
   const binary = encodeNode(original);
   const node = decodeNode(binary);
 
-  // Mutation: Push to array
   (node.content as BinaryNode[]).push({
     tag: "new-item",
     attrs: {},
@@ -252,18 +250,15 @@ test("should allow content mutation and reassignment", () => {
   expect((node.content as BinaryNode[]).length).toBe(2);
   expect((node.content as BinaryNode[])[1].content).toBe("added");
 
-  // Reassignment: Replace with string
   node.content = "replaced with string";
   expect(typeof node.content).toBe("string");
   expect(node.content).toBe("replaced with string");
 
-  // Reassignment: Back to array
   node.content = [
     { tag: "final", attrs: {}, content: new Uint8Array([1, 2, 3]) },
   ];
   expect((node.content as BinaryNode[])[0].content).toBeInstanceOf(Uint8Array);
 
-  // Round-trip re-encode (mutations persist)
   const reencoded = encodeNode(node);
   const roundtrip = decodeNode(reencoded);
   expect(Array.isArray(roundtrip.content)).toBe(true);
@@ -273,39 +268,35 @@ test("should allow content mutation and reassignment", () => {
   );
 });
 
-// Edge: Binary content mutation (e.g., Uint8Array slicing, but rare in Baileys)
 test("should handle binary content reassignment", () => {
   const binContent = new Uint8Array([10, 20, 30]);
   const node: BinaryNode = { tag: "enc", attrs: {}, content: binContent };
   const binary = encodeNode(node);
   const decoded = decodeNode(binary);
 
-  // Reassign to new bytes
   decoded.content = new Uint8Array([40, 50, 60]);
   expect(decoded.content).toEqual(new Uint8Array([40, 50, 60]));
 
-  // Re-encode
   const reencoded = encodeNode(decoded);
   const roundtrip = decodeNode(reencoded);
   expect(roundtrip.content).toEqual(new Uint8Array([40, 50, 60]));
 });
+
 test("should handle non-string attribute values during encoding (lenient conversion)", () => {
-  // Test node with mixed attr types
   const original: BinaryNode = {
     tag: "test-node",
     attrs: {
       // @ts-ignore
-      id: 123, // Number -> "123"
+      id: 123,
       // @ts-ignore
-      active: true, // Boolean -> "true"
+      active: true,
       // @ts-ignore
-      inactive: false, // Boolean -> "false"
-      version: "1.0", // String (unchanged)
+      inactive: false,
+      version: "1.0",
       // @ts-ignore
-      foo: null, // Null -> skipped (not present)
+      foo: null,
       // @ts-ignore
-      bar: undefined, // Undefined -> skipped (not present)
-      // Note: Objects in attrs will be coerced via toString(), but test simple cases
+      bar: undefined,
     },
     content: "test content",
   };
@@ -313,7 +304,6 @@ test("should handle non-string attribute values during encoding (lenient convers
   const binary = encodeNode(original);
   const decoded = decodeNode(binary);
 
-  // Verify encoded attrs are all strings, with correct conversions
   const attrs = decoded.attrs;
   expect(attrs).toBeDefined();
   expect(typeof attrs.id).toBe("string");
@@ -323,15 +313,13 @@ test("should handle non-string attribute values during encoding (lenient convers
   expect(attrs.inactive).toBe("false");
   expect(attrs.version).toBe("1.0");
 
-  // Skipped values should be absent
   expect(attrs.foo).toBeUndefined();
   expect(attrs.bar).toBeUndefined();
 
-  // Round-trip: Re-encode and check persistence (non-strings become strings)
   const reencoded = encodeNode(decoded);
   const roundtrip = decodeNode(reencoded);
   const roundtripAttrs = roundtrip.attrs;
-  expect(roundtripAttrs.id).toBe("123"); // Persists as string
+  expect(roundtripAttrs.id).toBe("123");
   expect(roundtripAttrs.active).toBe("true");
 });
 
@@ -350,7 +338,7 @@ test("should skip empty string values in attrs during encoding", () => {
   const decoded = decodeNode(binary);
 
   const attrs = decoded.attrs;
-  expect(attrs.emptyStr).toBeUndefined(); // Skipped (empty)
-  expect(attrs.whitespace).toBeUndefined(); // Skipped (after trim? Wait, code uses unwrap_or_default(), so "" -> skipped if empty)
-  expect(attrs.valid).toBe("ok"); // Preserved
+  expect(attrs.emptyStr).toBeUndefined();
+  expect(attrs.whitespace).toBeUndefined();
+  expect(attrs.valid).toBe("ok");
 });

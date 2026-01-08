@@ -1,6 +1,6 @@
 use js_sys::{Array, Object, Uint8Array};
 use std::borrow::Cow;
-use std::cell::RefCell;
+use std::cell::UnsafeCell;
 use std::mem;
 use std::rc::Rc;
 use wacore_binary::{
@@ -120,15 +120,28 @@ pub struct InternalBinaryNode {
     _owned_data: Rc<[u8]>,
     node_ref: NodeRef<'static>,
     #[wasm_bindgen(skip)]
-    cached_attrs: RefCell<Option<Attrs>>,
+    cached_attrs: UnsafeCell<Option<Attrs>>,
     #[wasm_bindgen(skip)]
-    cached_content: RefCell<Option<Content>>,
+    cached_content: UnsafeCell<Option<Content>>,
 }
 
 impl InternalBinaryNode {
     #[inline(always)]
     fn node_ref(&self) -> &NodeRef<'static> {
         &self.node_ref
+    }
+
+    #[inline]
+    fn convert_attrs(attrs: &[(Cow<'_, str>, ValueRef<'_>)]) -> Attrs {
+        let obj = Object::new();
+        for (k, v) in attrs.iter() {
+            let js_value = match v.as_str() {
+                Some(s) => JsValue::from_str(s),
+                None => JsValue::from_str(&v.to_string()),
+            };
+            let _ = js_sys::Reflect::set(&obj, &JsValue::from_str(k), &js_value);
+        }
+        obj.unchecked_into()
     }
 }
 
@@ -183,72 +196,63 @@ impl InternalBinaryNode {
 
     #[wasm_bindgen(getter)]
     pub fn attrs(&self) -> Attrs {
-        let mut cached = self.cached_attrs.borrow_mut();
-        if cached.is_none() {
-            let attrs = &self.node_ref().attrs;
-
-            let obj = Object::new();
-            for (k, v) in attrs.iter() {
-                let js_value = match v.as_str() {
-                    Some(s) => JsValue::from_str(s),
-                    None => JsValue::from_str(&v.to_string()),
-                };
-                let _ = js_sys::Reflect::set(&obj, &JsValue::from_str(k), &js_value);
-            }
-
-            *cached = Some(obj.unchecked_into());
+        // SAFETY: WASM is single-threaded
+        let cached = unsafe { &mut *self.cached_attrs.get() };
+        if let Some(attrs) = cached.as_ref() {
+            return attrs.clone();
         }
 
-        cached
-            .as_ref()
-            .expect("Cached attributes should be populated before access")
-            .clone()
-            .unchecked_into()
+        let attrs = Self::convert_attrs(&self.node_ref().attrs);
+        *cached = Some(attrs.clone());
+        attrs
     }
 
     #[wasm_bindgen(setter)]
     pub fn set_attrs(&self, new_attrs: Attrs) {
-        *self.cached_attrs.borrow_mut() = Some(new_attrs);
+        // SAFETY: WASM is single-threaded
+        unsafe { *self.cached_attrs.get() = Some(new_attrs) };
     }
 
     #[wasm_bindgen(getter)]
     pub fn content(&self) -> Option<Content> {
-        let mut cached = self.cached_content.borrow_mut();
-        if cached.is_none() {
-            match self.node_ref().content.as_deref() {
-                Some(NodeContentRef::Bytes(bytes)) => {
-                    let bytes_ref = bytes.as_ref();
-                    let u8arr = Uint8Array::new_with_length(bytes_ref.len() as u32);
-                    u8arr.copy_from(bytes_ref);
-                    *cached = Some(u8arr.unchecked_into());
-                }
-                Some(NodeContentRef::String(s)) => {
-                    *cached = Some(JsValue::from_str(s).unchecked_into());
-                }
-                Some(NodeContentRef::Nodes(nodes)) => {
-                    let arr = Array::new_with_length(nodes.len() as u32);
-                    for (i, node_ref) in nodes.iter().enumerate() {
-                        let child = InternalBinaryNode {
-                            _owned_data: Rc::clone(&self._owned_data),
-                            node_ref: node_ref.clone(),
-                            cached_attrs: RefCell::new(None),
-                            cached_content: RefCell::new(None),
-                        };
-                        arr.set(i as u32, child.into());
-                    }
-                    *cached = Some(arr.unchecked_into());
-                }
-                None => *cached = Some(JsValue::undefined().unchecked_into()),
-            }
+        // SAFETY: WASM is single-threaded
+        let cached = unsafe { &mut *self.cached_content.get() };
+        if let Some(content) = cached.as_ref() {
+            return Some(content.clone());
         }
-        cached
-            .as_ref()
-            .map(|v| v.clone().unchecked_into::<Content>())
+
+        let result: Option<Content> = match self.node_ref().content.as_deref() {
+            Some(NodeContentRef::Bytes(bytes)) => {
+                let bytes_ref = bytes.as_ref();
+                let u8arr = Uint8Array::new_with_length(bytes_ref.len() as u32);
+                u8arr.copy_from(bytes_ref);
+                Some(u8arr.unchecked_into())
+            }
+            Some(NodeContentRef::String(s)) => Some(JsValue::from_str(s).unchecked_into()),
+            Some(NodeContentRef::Nodes(nodes)) => {
+                let arr = Array::new_with_length(nodes.len() as u32);
+                for (i, node_ref) in nodes.iter().enumerate() {
+                    let child = InternalBinaryNode {
+                        _owned_data: Rc::clone(&self._owned_data),
+                        node_ref: node_ref.clone(),
+                        cached_attrs: UnsafeCell::new(None),
+                        cached_content: UnsafeCell::new(None),
+                    };
+                    arr.set(i as u32, child.into());
+                }
+                Some(arr.unchecked_into())
+            }
+            None => None,
+        };
+
+        *cached = result.clone();
+        result
     }
 
     #[wasm_bindgen(setter)]
     pub fn set_content(&self, new_content: Content) {
-        *self.cached_content.borrow_mut() = Some(new_content);
+        // SAFETY: WASM is single-threaded
+        unsafe { *self.cached_content.get() = Some(new_content) };
     }
 }
 
@@ -281,7 +285,7 @@ pub fn decode_node(data: Vec<u8>) -> Result<InternalBinaryNode, JsValue> {
     Ok(InternalBinaryNode {
         _owned_data: owned_data,
         node_ref,
-        cached_attrs: RefCell::new(None),
-        cached_content: RefCell::new(None),
+        cached_attrs: UnsafeCell::new(None),
+        cached_content: UnsafeCell::new(None),
     })
 }
