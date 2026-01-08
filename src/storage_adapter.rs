@@ -318,9 +318,9 @@ impl JsStorageAdapter {
             for (idx, key) in msg_keys {
                 message_keys_vec.push(MessageKey {
                     index: Some(idx),
-                    cipher_key: Some(key),
-                    mac_key: Some(vec![0u8; 32]),
-                    iv: Some(vec![0u8; 16]),
+                    cipher_key: Some(key.into()),
+                    mac_key: Some(vec![0u8; 32].into()),
+                    iv: Some(vec![0u8; 16].into()),
                 });
             }
 
@@ -329,7 +329,7 @@ impl JsStorageAdapter {
                 sender_ratchet_key_private: Some(priv_key),
                 chain_key: Some(ChainKey {
                     index: Some(counter),
-                    key: Some(chain_key),
+                    key: Some(chain_key.into()),
                 }),
                 message_keys: message_keys_vec,
             });
@@ -341,9 +341,9 @@ impl JsStorageAdapter {
             for (idx, key) in msg_keys {
                 message_keys_vec.push(MessageKey {
                     index: Some(idx),
-                    cipher_key: Some(key),
-                    mac_key: Some(vec![0u8; 32]),
-                    iv: Some(vec![0u8; 16]),
+                    cipher_key: Some(key.into()),
+                    mac_key: Some(vec![0u8; 32].into()),
+                    iv: Some(vec![0u8; 16].into()),
                 });
             }
 
@@ -352,7 +352,7 @@ impl JsStorageAdapter {
                 sender_ratchet_key_private: None,
                 chain_key: Some(ChainKey {
                     index: Some(counter),
-                    key: Some(chain_key),
+                    key: Some(chain_key.into()),
                 }),
                 message_keys: message_keys_vec,
             });
@@ -432,18 +432,18 @@ impl JsStorageAdapter {
 
                 sender_message_keys.push(SenderMessageKey {
                     iteration: Some(msg_iteration),
-                    seed: Some(msg_seed),
+                    seed: Some(msg_seed.into()),
                 });
             }
 
             let signing_key = SenderSigningKey {
-                public: Some(public_key),
-                private: private_key,
+                public: Some(public_key.into()),
+                private: private_key.map(Into::into),
             };
 
             let chain_key = SenderChainKey {
                 iteration: Some(iteration),
-                seed: Some(seed),
+                seed: Some(seed.into()),
             };
 
             sender_key_states.push(SenderKeyStateStructure {
@@ -875,7 +875,7 @@ impl IdentityKeyStore for JsStorageAdapter {
         let identity_bytes = identity.serialize();
 
         if let Some(cached_key) = self.cached_identities.borrow().get(&address_name)
-            && cached_key.as_slice() == &*identity_bytes
+            && cached_key.as_slice() == identity_bytes.as_slice()
         {
             return Ok(true);
         }
@@ -885,7 +885,7 @@ impl IdentityKeyStore for JsStorageAdapter {
             StoreDirection::Receiving => 1,
         };
 
-        let uint8 = Uint8Array::from(&*identity_bytes);
+        let uint8 = Uint8Array::from(identity_bytes.as_slice());
         let result = self
             .js_storage
             .js_is_trusted_identity(&address_name, &uint8, direction_val)
@@ -915,7 +915,7 @@ impl IdentityKeyStore for JsStorageAdapter {
         let identity_bytes = identity.serialize();
 
         let changed = if let Some(cached_key) = self.cached_identities.borrow().get(&address_name) {
-            cached_key.as_slice() != &*identity_bytes
+            cached_key.as_slice() != identity_bytes.as_slice()
         } else {
             false
         };
