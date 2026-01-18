@@ -5,28 +5,28 @@ edition = "2024"
 
 [package.metadata.wasm-pack.profile.release]
 wasm-opt = [
-  "-O4",
-  "--gufa-optimizing",
-  "--inlining-optimizing",
-  "--ignore-implicit-traps",
-  "--traps-never-happen",
-  "--coalesce-locals-learning",
-  "--converge",
-  # Enable modern WASM features for better optimization
-  "--enable-simd",
-  "--enable-bulk-memory",
-  "--enable-nontrapping-float-to-int",
-  "--enable-sign-ext",
-  "--enable-mutable-globals",
-  "--enable-multivalue",
-  # Additional optimization passes
-  "--fast-math",
-  "--zero-filled-memory",
-  "--dce",
-  "--vacuum",
-  "--directize",
-  "--optimize-stack-ir",
-  "--strip-debug",
+    "-O4",
+    "--gufa-optimizing",
+    "--inlining-optimizing",
+    "--ignore-implicit-traps",
+    "--traps-never-happen",
+    "--coalesce-locals-learning",
+    "--converge",
+    # Enable modern WASM features for better optimization
+    "--enable-simd",
+    "--enable-bulk-memory",
+    "--enable-nontrapping-float-to-int",
+    "--enable-sign-ext",
+    "--enable-mutable-globals",
+    "--enable-multivalue",
+    # Additional optimization passes
+    "--fast-math",
+    "--zero-filled-memory",
+    "--dce",
+    "--vacuum",
+    "--directize",
+    "--optimize-stack-ir",
+    "--strip-debug",
 ]
 
 [lib]
@@ -78,6 +78,7 @@ wacore-binary = { git = "https://github.com/jlucaso1/whatsapp-rust.git", branch 
   "serde",
 ] }
 wacore-libsignal = { git = "https://github.com/jlucaso1/whatsapp-rust.git", branch = "main", package = "wacore-libsignal" }
+wacore-noise = { git = "https://github.com/jlucaso1/whatsapp-rust.git", branch = "main", package = "wacore-noise" }
 waproto = { git = "https://github.com/jlucaso1/whatsapp-rust.git", branch = "main", package = "waproto" }
 wasm-bindgen = "0.2.100"
 wasm-bindgen-futures = "0.4.55"
