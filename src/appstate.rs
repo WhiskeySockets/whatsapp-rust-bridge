@@ -7,6 +7,13 @@ use wacore_appstate::{
     expand_app_state_keys,
 };
 
+#[inline]
+fn bytes_to_uint8array(bytes: &[u8]) -> Uint8Array {
+    let arr = Uint8Array::new_with_length(bytes.len() as u32);
+    arr.copy_from(bytes);
+    arr
+}
+
 #[wasm_bindgen]
 pub struct LTHashAntiTampering {
     inner: &'static LTHash,
@@ -56,9 +63,7 @@ impl LTHashAntiTampering {
             .inner
             .subtract_then_add(base, &subtract_vecs, &add_vecs);
 
-        let output = Uint8Array::new_with_length(result.len() as u32);
-        output.copy_from(&result);
-        Ok(output)
+        Ok(bytes_to_uint8array(&result))
     }
 }
 
@@ -78,37 +83,27 @@ pub struct ExpandedAppStateKeys {
 impl ExpandedAppStateKeys {
     #[wasm_bindgen(getter, js_name = indexKey)]
     pub fn index_key(&self) -> Uint8Array {
-        let arr = Uint8Array::new_with_length(32);
-        arr.copy_from(&self.inner.index);
-        arr
+        bytes_to_uint8array(&self.inner.index)
     }
 
     #[wasm_bindgen(getter, js_name = valueEncryptionKey)]
     pub fn value_encryption_key(&self) -> Uint8Array {
-        let arr = Uint8Array::new_with_length(32);
-        arr.copy_from(&self.inner.value_encryption);
-        arr
+        bytes_to_uint8array(&self.inner.value_encryption)
     }
 
     #[wasm_bindgen(getter, js_name = valueMacKey)]
     pub fn value_mac_key(&self) -> Uint8Array {
-        let arr = Uint8Array::new_with_length(32);
-        arr.copy_from(&self.inner.value_mac);
-        arr
+        bytes_to_uint8array(&self.inner.value_mac)
     }
 
     #[wasm_bindgen(getter, js_name = snapshotMacKey)]
     pub fn snapshot_mac_key(&self) -> Uint8Array {
-        let arr = Uint8Array::new_with_length(32);
-        arr.copy_from(&self.inner.snapshot_mac);
-        arr
+        bytes_to_uint8array(&self.inner.snapshot_mac)
     }
 
     #[wasm_bindgen(getter, js_name = patchMacKey)]
     pub fn patch_mac_key(&self) -> Uint8Array {
-        let arr = Uint8Array::new_with_length(32);
-        arr.copy_from(&self.inner.patch_mac);
-        arr
+        bytes_to_uint8array(&self.inner.patch_mac)
     }
 }
 
@@ -151,9 +146,7 @@ impl LTHashState {
 
     #[wasm_bindgen(getter)]
     pub fn hash(&self) -> Uint8Array {
-        let arr = Uint8Array::new_with_length(self.hash.len() as u32);
-        arr.copy_from(&self.hash);
-        arr
+        bytes_to_uint8array(&self.hash)
     }
 
     #[wasm_bindgen(setter)]
@@ -166,11 +159,9 @@ impl LTHashState {
 
     #[wasm_bindgen(js_name = getValueMac)]
     pub fn get_value_mac(&self, index_mac_base64: &str) -> Option<Uint8Array> {
-        self.index_value_map.get(index_mac_base64).map(|v| {
-            let arr = Uint8Array::new_with_length(v.len() as u32);
-            arr.copy_from(v);
-            arr
-        })
+        self.index_value_map
+            .get(index_mac_base64)
+            .map(|v| bytes_to_uint8array(v))
     }
 
     #[wasm_bindgen(js_name = setValueMac)]
@@ -201,6 +192,26 @@ impl Default for LTHashState {
     }
 }
 
+fn validate_key_length(key: &[u8], expected: usize, name: &str) -> Result<(), JsValue> {
+    if key.len() != expected {
+        return Err(JsValue::from_str(&format!(
+            "{} must be {} bytes, got {}",
+            name,
+            expected,
+            key.len()
+        )));
+    }
+    Ok(())
+}
+
+fn create_mac(
+    algo: &str,
+    key: &[u8],
+) -> Result<wacore_libsignal::crypto::CryptographicMac, JsValue> {
+    wacore_libsignal::crypto::CryptographicMac::new(algo, key)
+        .map_err(|e| JsValue::from_str(&format!("Failed to create MAC: {}", e)))
+}
+
 #[wasm_bindgen(js_name = generateContentMac)]
 pub fn generate_content_mac(
     operation: u8,
@@ -208,29 +219,19 @@ pub fn generate_content_mac(
     key_id: &[u8],
     key: &[u8],
 ) -> Result<Uint8Array, JsValue> {
-    use wacore_libsignal::crypto::CryptographicMac;
-
-    if key.len() != 32 {
-        return Err(JsValue::from_str(&format!(
-            "Value MAC key must be 32 bytes, got {}",
-            key.len()
-        )));
-    }
+    validate_key_length(key, 32, "Value MAC key")?;
 
     let op_byte = [operation];
     let key_data_length = ((key_id.len() + 1) as u64).to_be_bytes();
 
-    let mut mac = CryptographicMac::new("HmacSha512", key)
-        .map_err(|e| JsValue::from_str(&format!("Failed to create MAC: {}", e)))?;
+    let mut mac = create_mac("HmacSha512", key)?;
     mac.update(&op_byte);
     mac.update(key_id);
     mac.update(data);
     mac.update(&key_data_length);
     let mac_full = mac.finalize();
 
-    let result = Uint8Array::new_with_length(32);
-    result.copy_from(&mac_full[..32]);
-    Ok(result)
+    Ok(bytes_to_uint8array(&mac_full[..32]))
 }
 
 #[wasm_bindgen(js_name = generateSnapshotMac)]
@@ -240,34 +241,15 @@ pub fn generate_snapshot_mac(
     name: &str,
     key: &[u8],
 ) -> Result<Uint8Array, JsValue> {
-    use wacore_libsignal::crypto::CryptographicMac;
+    validate_key_length(lt_hash, 128, "LT-Hash")?;
+    validate_key_length(key, 32, "Snapshot MAC key")?;
 
-    if lt_hash.len() != 128 {
-        return Err(JsValue::from_str(&format!(
-            "LT-Hash must be 128 bytes, got {}",
-            lt_hash.len()
-        )));
-    }
-
-    if key.len() != 32 {
-        return Err(JsValue::from_str(&format!(
-            "Snapshot MAC key must be 32 bytes, got {}",
-            key.len()
-        )));
-    }
-
-    let version_be = version.to_be_bytes();
-
-    let mut mac = CryptographicMac::new("HmacSha256", key)
-        .map_err(|e| JsValue::from_str(&format!("Failed to create MAC: {}", e)))?;
+    let mut mac = create_mac("HmacSha256", key)?;
     mac.update(lt_hash);
-    mac.update(&version_be);
+    mac.update(&version.to_be_bytes());
     mac.update(name.as_bytes());
-    let mac_result = mac.finalize();
 
-    let result = Uint8Array::new_with_length(mac_result.len() as u32);
-    result.copy_from(&mac_result);
-    Ok(result)
+    Ok(bytes_to_uint8array(&mac.finalize()))
 }
 
 #[wasm_bindgen(js_name = generatePatchMac)]
@@ -278,64 +260,39 @@ pub fn generate_patch_mac(
     name: &str,
     key: &[u8],
 ) -> Result<Uint8Array, JsValue> {
-    use wacore_libsignal::crypto::CryptographicMac;
+    validate_key_length(key, 32, "Patch MAC key")?;
 
-    if key.len() != 32 {
-        return Err(JsValue::from_str(&format!(
-            "Patch MAC key must be 32 bytes, got {}",
-            key.len()
-        )));
-    }
-
-    let version_be = version.to_be_bytes();
-
-    let mut mac = CryptographicMac::new("HmacSha256", key)
-        .map_err(|e| JsValue::from_str(&format!("Failed to create MAC: {}", e)))?;
+    let mut mac = create_mac("HmacSha256", key)?;
     mac.update(snapshot_mac);
 
     // Use stack buffer for value MACs (typically 32 bytes) to avoid heap allocations
-    let mut value_mac_buf = [0u8; 64]; // Support up to 64 byte MACs
+    let mut value_mac_buf = [0u8; 64];
     for value_mac in &value_macs {
         let len = value_mac.length() as usize;
         if len <= 64 {
             value_mac.copy_to(&mut value_mac_buf[..len]);
             mac.update(&value_mac_buf[..len]);
         } else {
-            // Fallback for larger MACs (unlikely)
             let mut vec = vec![0u8; len];
             value_mac.copy_to(&mut vec);
             mac.update(&vec);
         }
     }
 
-    mac.update(&version_be);
+    mac.update(&version.to_be_bytes());
     mac.update(name.as_bytes());
-    let mac_result = mac.finalize();
 
-    let result = Uint8Array::new_with_length(mac_result.len() as u32);
-    result.copy_from(&mac_result);
-    Ok(result)
+    Ok(bytes_to_uint8array(&mac.finalize()))
 }
 
 #[wasm_bindgen(js_name = generateIndexMac)]
 pub fn generate_index_mac(index_bytes: &[u8], key: &[u8]) -> Result<Uint8Array, JsValue> {
-    use wacore_libsignal::crypto::CryptographicMac;
+    validate_key_length(key, 32, "Index key")?;
 
-    if key.len() != 32 {
-        return Err(JsValue::from_str(&format!(
-            "Index key must be 32 bytes, got {}",
-            key.len()
-        )));
-    }
-
-    let mut mac = CryptographicMac::new("HmacSha256", key)
-        .map_err(|e| JsValue::from_str(&format!("Failed to create MAC: {}", e)))?;
+    let mut mac = create_mac("HmacSha256", key)?;
     mac.update(index_bytes);
-    let mac_result = mac.finalize();
 
-    let result = Uint8Array::new_with_length(mac_result.len() as u32);
-    result.copy_from(&mac_result);
-    Ok(result)
+    Ok(bytes_to_uint8array(&mac.finalize()))
 }
 
 #[cfg(test)]

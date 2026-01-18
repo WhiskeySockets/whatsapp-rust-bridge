@@ -1,18 +1,20 @@
-use rand::TryRngCore;
-use rand::rngs::OsRng;
+use rand::{TryRngCore, rngs::OsRng};
 use serde::Deserialize;
 use tsify_next::Tsify;
-use wasm_bindgen::JsValue;
-use wasm_bindgen::prelude::*;
+use wasm_bindgen::{JsValue, prelude::*};
 
 use crate::protocol_address::ProtocolAddress;
 use crate::session_record::SessionRecord;
 use crate::storage_adapter::{JsStorageAdapter, SignalStorage};
 use wacore_libsignal::core::curve::PublicKey as CorePublicKey;
-use wacore_libsignal::protocol::{self as libsignal, PreKeyBundle, UsePQRatchet};
+use wacore_libsignal::protocol::{
+    self as libsignal, PreKeyBundle, SessionRecord as CoreSessionRecord, SignalProtocolError,
+    UsePQRatchet,
+};
 
-use wacore_libsignal::protocol::SessionRecord as CoreSessionRecord;
-use wacore_libsignal::protocol::SignalProtocolError;
+fn map_err(e: impl std::fmt::Display) -> JsValue {
+    JsValue::from_str(&e.to_string())
+}
 
 impl SessionRecord {
     pub fn from_core(core_record: &CoreSessionRecord) -> Result<Self, SignalProtocolError> {
@@ -24,7 +26,6 @@ impl SessionRecord {
     }
 }
 
-/// Public key for a pre-key
 #[derive(Deserialize, Tsify)]
 #[tsify(from_wasm_abi)]
 #[serde(rename_all = "camelCase")]
@@ -34,7 +35,6 @@ pub struct PreKeyPublicKey {
     pub public_key: Vec<u8>,
 }
 
-/// Signed pre-key with signature
 #[derive(Deserialize, Tsify)]
 #[tsify(from_wasm_abi)]
 #[serde(rename_all = "camelCase")]
@@ -46,7 +46,6 @@ pub struct SignedPreKeyPublicKey {
     pub signature: Vec<u8>,
 }
 
-/// Input bundle for establishing a session
 #[derive(Deserialize, Tsify)]
 #[tsify(from_wasm_abi)]
 #[serde(rename_all = "camelCase")]
@@ -80,18 +79,20 @@ impl SessionBuilder {
         &mut self,
         bundle_input: PreKeyBundleInput,
     ) -> Result<(), JsValue> {
-        let pre_key = match bundle_input.pre_key {
-            Some(pk) => {
-                let key = CorePublicKey::deserialize(&pk.public_key).map_err(|e| e.to_string())?;
-                Some((pk.key_id.into(), key))
-            }
-            None => None,
-        };
+        let pre_key = bundle_input
+            .pre_key
+            .map(|pk| {
+                CorePublicKey::deserialize(&pk.public_key)
+                    .map(|key| (pk.key_id.into(), key))
+                    .map_err(map_err)
+            })
+            .transpose()?;
+
         let signed_pre_key_public =
-            CorePublicKey::deserialize(&bundle_input.signed_pre_key.public_key)
-                .map_err(|e| e.to_string())?;
-        let identity_key = libsignal::IdentityKey::decode(&bundle_input.identity_key)
-            .map_err(|e| e.to_string())?;
+            CorePublicKey::deserialize(&bundle_input.signed_pre_key.public_key).map_err(map_err)?;
+
+        let identity_key =
+            libsignal::IdentityKey::decode(&bundle_input.identity_key).map_err(map_err)?;
 
         let bundle = PreKeyBundle::new(
             bundle_input.registration_id,
@@ -102,10 +103,10 @@ impl SessionBuilder {
             bundle_input.signed_pre_key.signature,
             identity_key,
         )
-        .map_err(|e| e.to_string())?;
+        .map_err(map_err)?;
 
         let mut session_store = self.storage_adapter.clone();
-        let mut identity_store = session_store.clone();
+        let mut identity_store = self.storage_adapter.clone();
 
         libsignal::process_prekey_bundle(
             &self.remote_address.0,
@@ -116,7 +117,7 @@ impl SessionBuilder {
             UsePQRatchet::No,
         )
         .await
-        .map_err(|e| e.to_string())?;
+        .map_err(map_err)?;
 
         Ok(())
     }

@@ -5,9 +5,21 @@ use wacore_libsignal::protocol::{
 };
 use wasm_bindgen::{JsValue, prelude::wasm_bindgen};
 
+fn map_err(e: impl std::fmt::Display) -> JsValue {
+    JsValue::from_str(&e.to_string())
+}
+
 #[wasm_bindgen(js_name = SenderKeyRecord)]
 pub struct SenderKeyRecord {
     pub(crate) core: CoreSenderKeyRecord,
+}
+
+impl Default for SenderKeyRecord {
+    fn default() -> Self {
+        Self {
+            core: CoreSenderKeyRecord::new_empty(),
+        }
+    }
 }
 
 #[wasm_bindgen(js_class = SenderKeyRecord)]
@@ -19,31 +31,18 @@ impl SenderKeyRecord {
 
     #[wasm_bindgen(js_name = deserialize)]
     pub fn deserialize(serialized: &[u8]) -> Result<SenderKeyRecord, JsValue> {
-        let core = CoreSenderKeyRecord::deserialize(serialized)
-            .map_err(|e| JsValue::from_str(&e.to_string()))?;
+        let core = CoreSenderKeyRecord::deserialize(serialized).map_err(map_err)?;
         Ok(Self { core })
     }
 
     pub fn serialize(&self) -> Result<Uint8Array, JsValue> {
-        let bytes = self
-            .core
-            .serialize()
-            .map_err(|e| JsValue::from_str(&e.to_string()))?;
+        let bytes = self.core.serialize().map_err(map_err)?;
         Ok(Uint8Array::from(bytes.as_slice()))
     }
 
     #[wasm_bindgen(js_name = isEmpty)]
     pub fn is_empty(&self) -> bool {
-        // This logic is based on Baileys' SenderKeyRecord
         self.core.sender_key_state().is_err()
-    }
-}
-
-impl Default for SenderKeyRecord {
-    fn default() -> Self {
-        Self {
-            core: CoreSenderKeyRecord::new_empty(),
-        }
     }
 }
 
@@ -54,8 +53,7 @@ pub struct SenderKeyDistributionMessage(pub(crate) CoreSenderKeyDistributionMess
 impl SenderKeyDistributionMessage {
     #[wasm_bindgen(js_name = deserialize)]
     pub fn deserialize(serialized: &[u8]) -> Result<SenderKeyDistributionMessage, JsValue> {
-        let core = CoreSenderKeyDistributionMessage::try_from(serialized)
-            .map_err(|e| JsValue::from_str(&e.to_string()))?;
+        let core = CoreSenderKeyDistributionMessage::try_from(serialized).map_err(map_err)?;
         Ok(Self(core))
     }
 

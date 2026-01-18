@@ -162,8 +162,10 @@ impl StickerMetadata {
 /// Check if EXIF data starts with WhatsApp sticker header (TIFF LE + "AW" tag).
 #[inline]
 fn is_whatsapp_sticker_exif(exif_bytes: &[u8]) -> bool {
-    exif_bytes.get(0..4) == Some(&[0x49, 0x49, 0x2A, 0x00])
-        && exif_bytes.get(10..12) == Some(&[0x41, 0x57])
+    matches!(
+        (exif_bytes.get(0..4), exif_bytes.get(10..12)),
+        (Some(&[0x49, 0x49, 0x2A, 0x00]), Some(&[0x41, 0x57]))
+    )
 }
 
 /// Add sticker metadata to a WebP image.

@@ -9,6 +9,13 @@ use crate::{
 };
 use wacore_libsignal::protocol::{self as libsignal, SessionStore, UsePQRatchet};
 
+#[inline]
+fn bytes_to_uint8array(bytes: &[u8]) -> Uint8Array {
+    let result = Uint8Array::new_with_length(bytes.len() as u32);
+    result.copy_from(bytes);
+    result
+}
+
 #[wasm_bindgen]
 extern "C" {
     #[wasm_bindgen(extends = Object, typescript_type = "{ type: number; body: Uint8Array }")]
@@ -52,11 +59,8 @@ impl SessionCipher {
             JsValue::from_str(&msg)
         })?;
 
-        let body = ciphertext_message.serialize();
+        let body_array = bytes_to_uint8array(ciphertext_message.serialize());
         let type_id = ciphertext_message.message_type() as u8;
-
-        let body_array = Uint8Array::new_with_length(body.len() as u32);
-        body_array.copy_from(body);
 
         let result = Object::new();
         TYPE_KEY.with(|k| Reflect::set(&result, &k.borrow(), &(type_id as u32).into()))?;
@@ -97,9 +101,7 @@ impl SessionCipher {
             JsValue::from_str(&msg)
         })?;
 
-        let result = Uint8Array::new_with_length(plaintext.len() as u32);
-        result.copy_from(&plaintext);
-        Ok(result)
+        Ok(bytes_to_uint8array(&plaintext))
     }
 
     #[wasm_bindgen(js_name = decryptWhisperMessage)]
@@ -131,9 +133,7 @@ impl SessionCipher {
             JsValue::from_str(&msg)
         })?;
 
-        let result = Uint8Array::new_with_length(plaintext.len() as u32);
-        result.copy_from(&plaintext);
-        Ok(result)
+        Ok(bytes_to_uint8array(&plaintext))
     }
 
     #[wasm_bindgen(js_name = hasOpenSession)]

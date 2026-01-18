@@ -1,15 +1,14 @@
 use js_sys::{TypeError, Uint8Array};
-use rand::TryRngCore as _;
-use rand::rngs::OsRng;
+use rand::{TryRngCore as _, rngs::OsRng};
 use serde::Serialize;
 use tsify_next::Tsify;
 use wacore_libsignal::core::curve::{KeyPair as CoreKeyPair, PrivateKey as CorePrivateKey};
 use wasm_bindgen::prelude::*;
 
-// Re-export KeyPair from curve module for consistency
 pub use crate::curve::KeyPair;
 
-/// A signed pre-key with its signature
+const PRIVATE_KEY_LENGTH: usize = 32;
+
 #[derive(Debug, Clone, Serialize, Tsify)]
 #[tsify(into_wasm_abi)]
 #[serde(rename_all = "camelCase")]
@@ -21,7 +20,6 @@ pub struct SignedPreKey {
     pub signature: Vec<u8>,
 }
 
-/// A pre-key for key exchange
 #[derive(Debug, Clone, Serialize, Tsify)]
 #[tsify(into_wasm_abi)]
 #[serde(rename_all = "camelCase")]
@@ -34,6 +32,17 @@ fn map_err(err: impl std::fmt::Display) -> JsValue {
     TypeError::new(&err.to_string()).into()
 }
 
+fn rng() -> impl rand::CryptoRng + rand::TryRngCore {
+    OsRng.unwrap_err()
+}
+
+fn core_key_pair_to_key_pair(pair: CoreKeyPair) -> KeyPair {
+    KeyPair {
+        pub_key: pair.public_key.serialize().to_vec(),
+        priv_key: pair.private_key.serialize().to_vec(),
+    }
+}
+
 #[wasm_bindgen(js_name = generateIdentityKeyPair)]
 pub fn generate_identity_key_pair() -> KeyPair {
     crate::curve::generate_key_pair()
@@ -42,7 +51,7 @@ pub fn generate_identity_key_pair() -> KeyPair {
 #[wasm_bindgen(js_name = generateRegistrationId)]
 pub fn generate_registration_id() -> u32 {
     let mut bytes = [0u8; 2];
-    OsRng.unwrap_err().try_fill_bytes(&mut bytes).unwrap();
+    rng().try_fill_bytes(&mut bytes).unwrap();
     (u16::from_le_bytes(bytes) & 0x3FFF) as u32
 }
 
@@ -51,41 +60,32 @@ pub fn generate_signed_pre_key(
     identity_key_pair: KeyPair,
     signed_key_id: u32,
 ) -> Result<SignedPreKey, JsValue> {
-    // Validate private key length
-    if identity_key_pair.priv_key.len() != 32 {
+    if identity_key_pair.priv_key.len() != PRIVATE_KEY_LENGTH {
         return Err(TypeError::new("identityKeyPair.privKey must be 32 bytes").into());
     }
 
     let identity_private_key =
         CorePrivateKey::deserialize(&identity_key_pair.priv_key).map_err(map_err)?;
 
-    let pre_key_pair = CoreKeyPair::generate(&mut OsRng.unwrap_err());
+    let pre_key_pair = CoreKeyPair::generate(&mut rng());
     let pre_key_public_bytes = pre_key_pair.public_key.serialize();
 
     let signature = identity_private_key
-        .calculate_signature(&pre_key_public_bytes, &mut OsRng.unwrap_err())
+        .calculate_signature(&pre_key_public_bytes, &mut rng())
         .map_err(map_err)?;
 
     Ok(SignedPreKey {
         key_id: signed_key_id,
-        key_pair: KeyPair {
-            pub_key: pre_key_public_bytes.to_vec(),
-            priv_key: pre_key_pair.private_key.serialize().to_vec(),
-        },
+        key_pair: core_key_pair_to_key_pair(pre_key_pair),
         signature: signature.to_vec(),
     })
 }
 
 #[wasm_bindgen(js_name = generatePreKey)]
 pub fn generate_pre_key(key_id: u32) -> PreKey {
-    let key_pair = CoreKeyPair::generate(&mut OsRng.unwrap_err());
-
     PreKey {
         key_id,
-        key_pair: KeyPair {
-            pub_key: key_pair.public_key.serialize().to_vec(),
-            priv_key: key_pair.private_key.serialize().to_vec(),
-        },
+        key_pair: core_key_pair_to_key_pair(CoreKeyPair::generate(&mut rng())),
     }
 }
 

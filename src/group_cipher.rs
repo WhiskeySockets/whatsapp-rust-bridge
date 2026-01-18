@@ -1,15 +1,19 @@
 use js_sys::Uint8Array;
-use rand::TryRngCore;
-use rand::rngs::OsRng;
+use rand::{TryRngCore, rngs::OsRng};
 use wasm_bindgen::prelude::*;
 
+use crate::group_types::SenderKeyDistributionMessage;
+use crate::protocol_address::ProtocolAddress;
 use crate::sender_key_name::SenderKeyName;
 use crate::storage_adapter::{JsStorageAdapter, SignalStorage};
-use crate::{group_types::SenderKeyDistributionMessage, protocol_address::ProtocolAddress};
 use wacore_libsignal::protocol::{
     create_sender_key_distribution_message, group_decrypt, group_encrypt,
     process_sender_key_distribution_message,
 };
+
+fn map_err(e: impl std::fmt::Display) -> JsValue {
+    JsValue::from_str(&e.to_string())
+}
 
 #[wasm_bindgen(js_name = GroupCipher)]
 pub struct GroupCipher {
@@ -35,7 +39,7 @@ impl GroupCipher {
             &mut OsRng.unwrap_err(),
         )
         .await
-        .map_err(|e| e.to_string())?;
+        .map_err(map_err)?;
 
         Ok(Uint8Array::from(sender_key_message.serialized()))
     }
@@ -47,7 +51,7 @@ impl GroupCipher {
             &self.sender_key_name.0,
         )
         .await
-        .map_err(|e| e.to_string())?;
+        .map_err(map_err)?;
 
         Ok(Uint8Array::from(plaintext.as_slice()))
     }
@@ -79,8 +83,7 @@ impl GroupSessionBuilder {
             &mut self.storage_adapter,
         )
         .await
-        .map_err(|e| e.to_string())?;
-        Ok(())
+        .map_err(map_err)
     }
 
     pub async fn create(
@@ -93,7 +96,7 @@ impl GroupSessionBuilder {
             &mut OsRng.unwrap_err(),
         )
         .await
-        .map_err(|e| e.to_string())?;
+        .map_err(map_err)?;
 
         Ok(SenderKeyDistributionMessage(core_skdm))
     }

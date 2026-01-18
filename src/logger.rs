@@ -47,43 +47,35 @@ thread_local! {
 
 static LOGGER_INITIALIZED: AtomicBool = AtomicBool::new(false);
 
+fn parse_level_filter(level_str: &str) -> LevelFilter {
+    match level_str.to_lowercase().as_str() {
+        "trace" | "10" => LevelFilter::Trace,
+        "debug" | "20" => LevelFilter::Debug,
+        "info" | "30" => LevelFilter::Info,
+        "warn" | "warning" | "40" => LevelFilter::Warn,
+        "error" | "50" | "60" => LevelFilter::Error,
+        "silent" | "off" => LevelFilter::Off,
+        _ => LevelFilter::Info,
+    }
+}
+
 struct BridgeLogger;
 
 impl BridgeLogger {
     fn get_level_filter_from_js() -> LevelFilter {
         JS_LOGGER.with(|logger| {
-            if let Some(ref js_logger) = *logger.borrow() {
-                let level_str = js_logger.js_level();
-                match level_str.to_lowercase().as_str() {
-                    "trace" => LevelFilter::Trace,
-                    "debug" => LevelFilter::Debug,
-                    "info" => LevelFilter::Info,
-                    "warn" | "warning" => LevelFilter::Warn,
-                    "error" => LevelFilter::Error,
-                    "silent" | "off" => LevelFilter::Off,
-                    "10" => LevelFilter::Trace,
-                    "20" => LevelFilter::Debug,
-                    "30" => LevelFilter::Info,
-                    "40" => LevelFilter::Warn,
-                    "50" | "60" => LevelFilter::Error,
-                    _ => LevelFilter::Info,
-                }
-            } else {
-                LevelFilter::Off
-            }
+            logger
+                .borrow()
+                .as_ref()
+                .map(|js_logger| parse_level_filter(&js_logger.js_level()))
+                .unwrap_or(LevelFilter::Off)
         })
     }
 }
 
 impl Log for BridgeLogger {
     fn enabled(&self, metadata: &Metadata) -> bool {
-        JS_LOGGER.with(|logger| {
-            if logger.borrow().is_none() {
-                return false;
-            }
-            let max_level = Self::get_level_filter_from_js();
-            metadata.level() <= max_level
-        })
+        metadata.level() <= Self::get_level_filter_from_js()
     }
 
     fn log(&self, record: &Record) {
@@ -147,14 +139,17 @@ pub fn has_logger() -> bool {
     JS_LOGGER.with(|logger| logger.borrow().is_some())
 }
 
+fn parse_level(level_str: &str) -> Level {
+    match level_str.to_lowercase().as_str() {
+        "trace" => Level::Trace,
+        "debug" => Level::Debug,
+        "warn" | "warning" => Level::Warn,
+        "error" => Level::Error,
+        _ => Level::Info,
+    }
+}
+
 #[wasm_bindgen(js_name = logMessage)]
 pub fn log_message(level: &str, message: &str) {
-    match level.to_lowercase().as_str() {
-        "trace" => log::trace!("{}", message),
-        "debug" => log::debug!("{}", message),
-        "info" => log::info!("{}", message),
-        "warn" | "warning" => log::warn!("{}", message),
-        "error" => log::error!("{}", message),
-        _ => log::info!("{}", message),
-    }
+    log::log!(parse_level(level), "{}", message);
 }

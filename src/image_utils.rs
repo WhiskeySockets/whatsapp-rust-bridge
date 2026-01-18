@@ -128,9 +128,7 @@ pub fn get_image_dimensions(image_data: &[u8]) -> Result<ImageDimensions, JsValu
 pub fn convert_to_webp(image_data: Vec<u8>) -> Result<js_sys::Uint8Array, JsValue> {
     let img = load_image(&image_data)?;
     let webp = encode_format(&img, image::ImageFormat::WebP)?;
-    let result = js_sys::Uint8Array::new_with_length(webp.len() as u32);
-    result.copy_from(&webp);
-    Ok(result)
+    Ok(js_sys::Uint8Array::from(webp.as_slice()))
 }
 
 /// Process image with resize and format conversion options

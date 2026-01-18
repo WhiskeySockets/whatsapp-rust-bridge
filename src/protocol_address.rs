@@ -1,9 +1,9 @@
-use js_sys::JsString;
-use js_sys::Number;
+use js_sys::{JsString, Number};
 use std::fmt;
-use wacore_libsignal::core::DeviceId;
-use wacore_libsignal::core::ProtocolAddress as CoreProtocolAddress;
+use wacore_libsignal::core::{DeviceId, ProtocolAddress as CoreProtocolAddress};
 use wasm_bindgen::prelude::*;
+
+const INVALID_ENCODING: &str = "Invalid address encoding";
 
 #[wasm_bindgen(js_name = ProtocolAddress)]
 pub struct ProtocolAddress(pub(crate) CoreProtocolAddress);
@@ -41,19 +41,22 @@ impl ProtocolAddress {
     pub fn from_string(encoded: JsString) -> Result<ProtocolAddress, JsValue> {
         let encoded_str = encoded
             .as_string()
-            .ok_or_else(|| JsValue::from_str("Invalid address encoding"))?;
+            .ok_or_else(|| JsValue::from_str(INVALID_ENCODING))?;
 
-        let parts: Vec<&str> = encoded_str.split('.').collect();
-        if parts.len() < 2 {
-            return Err(JsValue::from_str("Invalid address encoding"));
-        }
-        let id_str = parts[0].to_string();
-        let device_id_num = parts[1]
+        let mut parts = encoded_str.split('.');
+        let id_str = parts
+            .next()
+            .ok_or_else(|| JsValue::from_str(INVALID_ENCODING))?;
+        let device_str = parts
+            .next()
+            .ok_or_else(|| JsValue::from_str(INVALID_ENCODING))?;
+
+        let device_id_num = device_str
             .parse::<u32>()
-            .map_err(|_| JsValue::from_str("Invalid address encoding"))?;
+            .map_err(|_| JsValue::from_str(INVALID_ENCODING))?;
 
         Ok(ProtocolAddress(CoreProtocolAddress::new(
-            id_str,
+            id_str.to_string(),
             DeviceId::from(device_id_num),
         )))
     }
@@ -63,7 +66,7 @@ impl ProtocolAddress {
         self.0.name().to_string()
     }
 
-    #[wasm_bindgen(getter, js_name=deviceId)]
+    #[wasm_bindgen(getter, js_name = deviceId)]
     pub fn device_id(&self) -> u32 {
         self.0.device_id().into()
     }
@@ -74,6 +77,6 @@ impl ProtocolAddress {
     }
 
     pub fn is(&self, other: &ProtocolAddress) -> bool {
-        self.0.name() == other.0.name() && self.device_id() == other.device_id()
+        self.0 == other.0
     }
 }

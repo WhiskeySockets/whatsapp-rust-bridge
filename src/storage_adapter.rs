@@ -628,33 +628,30 @@ fn deserialize_js_value<T: DeserializeOwned>(
 }
 
 #[inline]
+fn js_array_to_bytes(array: &js_sys::Array) -> Vec<u8> {
+    let mut bytes = Vec::with_capacity(array.length() as usize);
+    for i in 0..array.length() {
+        if let Some(val) = array.get(i).as_f64() {
+            bytes.push(val as u8);
+        }
+    }
+    bytes
+}
+
+#[inline]
 fn js_value_to_bytes(value: &JsValue) -> Option<Vec<u8>> {
     if let Some(arr) = value.dyn_ref::<Uint8Array>() {
         return Some(arr.to_vec());
     }
 
     if js_sys::Array::is_array(value) {
-        let array = js_sys::Array::from(value);
-        let mut bytes = Vec::with_capacity(array.length() as usize);
-        for i in 0..array.length() {
-            if let Some(val) = array.get(i).as_f64() {
-                bytes.push(val as u8);
-            }
-        }
-        return Some(bytes);
+        return Some(js_array_to_bytes(&js_sys::Array::from(value)));
     }
 
     if let Ok(data) = js_sys::Reflect::get(value, &JsValue::from_str("data"))
         && js_sys::Array::is_array(&data)
     {
-        let array = js_sys::Array::from(&data);
-        let mut bytes = Vec::with_capacity(array.length() as usize);
-        for i in 0..array.length() {
-            if let Some(val) = array.get(i).as_f64() {
-                bytes.push(val as u8);
-            }
-        }
-        return Some(bytes);
+        return Some(js_array_to_bytes(&js_sys::Array::from(&data)));
     }
 
     None
@@ -693,46 +690,29 @@ fn get_bytes_from_buffer_json(obj: &JsValue, key: &str) -> Option<Vec<u8>> {
         return None;
     }
 
+    // Check for Buffer-like object { type: "Buffer", data: [...] }
     let type_prop = js_sys::Reflect::get(&val, &JsValue::from_str("type")).ok();
     let data_prop = js_sys::Reflect::get(&val, &JsValue::from_str("data")).ok();
-
     if let (Some(t), Some(d)) = (type_prop, data_prop)
         && t.as_string().as_deref() == Some("Buffer")
         && js_sys::Array::is_array(&d)
     {
-        let array = js_sys::Array::from(&d);
-        let mut bytes = Vec::with_capacity(array.length() as usize);
-        for i in 0..array.length() {
-            if let Some(v) = array.get(i).as_f64() {
-                bytes.push(v as u8);
-            }
-        }
-        return Some(bytes);
+        return Some(js_array_to_bytes(&js_sys::Array::from(&d)));
     }
 
+    // Try Uint8Array
     if let Some(arr) = val.dyn_ref::<Uint8Array>() {
         return Some(arr.to_vec());
     }
 
+    // Try plain JS array
     if js_sys::Array::is_array(&val) {
-        let array = js_sys::Array::from(&val);
-        let mut bytes = Vec::with_capacity(array.length() as usize);
-        for i in 0..array.length() {
-            if let Some(v) = array.get(i).as_f64() {
-                bytes.push(v as u8);
-            }
-        }
-        return Some(bytes);
+        return Some(js_array_to_bytes(&js_sys::Array::from(&val)));
     }
 
-    if let Some(b) = val
-        .as_string()
+    // Try base64 string
+    val.as_string()
         .and_then(|s| BASE64_STANDARD.decode(&s).ok())
-    {
-        return Some(b);
-    }
-
-    None
 }
 
 #[async_trait(?Send)]
@@ -1028,31 +1008,29 @@ impl SenderKeyStore for JsStorageAdapter {
 
         let bytes = js_value_to_bytes(&value);
 
-        match bytes {
-            Some(data) => {
-                if let Ok(record) = CoreSenderKeyRecord::deserialize(&data) {
-                    self.cached_sender_keys
-                        .borrow_mut()
-                        .insert(key_id, record.clone());
-                    return Ok(Some(record));
-                }
+        let Some(data) = bytes else {
+            return Ok(None);
+        };
 
-                if let Ok(Some(migrated_bytes)) = self.migrate_legacy_sender_key(&data) {
-                    let record = CoreSenderKeyRecord::deserialize(&migrated_bytes)?;
-                    self.cached_sender_keys
-                        .borrow_mut()
-                        .insert(key_id, record.clone());
-                    return Ok(Some(record));
-                }
-
-                let record = CoreSenderKeyRecord::deserialize(&data)?;
-                self.cached_sender_keys
-                    .borrow_mut()
-                    .insert(key_id, record.clone());
-                Ok(Some(record))
+        // Try direct deserialization first (standard protobuf format)
+        let record = match CoreSenderKeyRecord::deserialize(&data) {
+            Ok(record) => record,
+            Err(_) => {
+                // Fall back to legacy JSON format migration
+                let migrated_bytes = self.migrate_legacy_sender_key(&data)?.ok_or_else(|| {
+                    SignalProtocolError::InvalidState(
+                        "load_sender_key",
+                        "Failed to deserialize sender key record".into(),
+                    )
+                })?;
+                CoreSenderKeyRecord::deserialize(&migrated_bytes)?
             }
-            None => Ok(None),
-        }
+        };
+
+        self.cached_sender_keys
+            .borrow_mut()
+            .insert(key_id, record.clone());
+        Ok(Some(record))
     }
 
     async fn store_sender_key(

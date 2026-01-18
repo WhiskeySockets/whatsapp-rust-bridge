@@ -190,69 +190,54 @@ fn accumulate_s16(
     let bin_count = WAVEFORM_SAMPLES as u64;
     let est_max = estimated_total.max(1);
 
-    // Mono - most common case
-    if channel_count == 1 {
-        let chan0 = buffer.chan(0);
-        let mut i = 0;
-        while i < frames {
-            let sample = (chan0[i] as f32 * SCALE).abs();
-            let bin_idx = ((packet_start + i as u64) * bin_count / est_max) as usize;
-            let bin_idx = bin_idx.min(WAVEFORM_SAMPLES - 1);
-            bins[bin_idx].0 += sample;
-            bins[bin_idx].1 += 1;
-            i += 1;
-        }
-        *total_processed += frames as u64;
-        return;
-    }
-
-    // Stereo - second most common
-    if channel_count == 2 {
-        let (chan0, chan1) = (buffer.chan(0), buffer.chan(1));
-        let mut i = 0;
-        while i < frames {
-            let sample = ((chan0[i] as f32 + chan1[i] as f32) * 0.5 * SCALE).abs();
-            let bin_idx = ((packet_start + i as u64) * bin_count / est_max) as usize;
-            let bin_idx = bin_idx.min(WAVEFORM_SAMPLES - 1);
-            bins[bin_idx].0 += sample;
-            bins[bin_idx].1 += 1;
-            i += 1;
-        }
-        *total_processed += frames as u64;
-        return;
-    }
-
-    // Multi-channel fallback
-    let inv_channels = 1.0 / channel_count as f32;
-    let mut i = 0;
-    while i < frames {
-        let sum: i32 = (0..channel_count).map(|c| buffer.chan(c)[i] as i32).sum();
-        let sample = (sum as f32 * inv_channels * SCALE).abs();
+    // Helper to update bin at frame index
+    let mut update_bin = |i: usize, sample: f32| {
         let bin_idx = ((packet_start + i as u64) * bin_count / est_max) as usize;
         let bin_idx = bin_idx.min(WAVEFORM_SAMPLES - 1);
         bins[bin_idx].0 += sample;
         bins[bin_idx].1 += 1;
-        i += 1;
+    };
+
+    match channel_count {
+        1 => {
+            for (i, &sample) in buffer.chan(0).iter().enumerate().take(frames) {
+                update_bin(i, (sample as f32 * SCALE).abs());
+            }
+        }
+        2 => {
+            let (chan0, chan1) = (buffer.chan(0), buffer.chan(1));
+            for i in 0..frames {
+                let sample = ((chan0[i] as f32 + chan1[i] as f32) * 0.5 * SCALE).abs();
+                update_bin(i, sample);
+            }
+        }
+        _ => {
+            let inv_channels = 1.0 / channel_count as f32;
+            for i in 0..frames {
+                let sum: i32 = (0..channel_count).map(|c| buffer.chan(c)[i] as i32).sum();
+                let sample = (sum as f32 * inv_channels * SCALE).abs();
+                update_bin(i, sample);
+            }
+        }
     }
+
     *total_processed += frames as u64;
 }
 
 /// Convert accumulated bins to final waveform (0-100 range)
 #[inline]
 fn finalize_waveform(bins: &[(f32, u32); WAVEFORM_SAMPLES]) -> Vec<u8> {
-    // Find max in single pass
-    let mut max_avg = 0.0f32;
-    let mut averages = [0.0f32; WAVEFORM_SAMPLES];
+    // Calculate averages and find max in single pass
+    let averages: Vec<f32> = bins
+        .iter()
+        .map(
+            |(sum, count)| {
+                if *count > 0 { sum / *count as f32 } else { 0.0 }
+            },
+        )
+        .collect();
 
-    for i in 0..WAVEFORM_SAMPLES {
-        if bins[i].1 > 0 {
-            let avg = bins[i].0 / bins[i].1 as f32;
-            averages[i] = avg;
-            if avg > max_avg {
-                max_avg = avg;
-            }
-        }
-    }
+    let max_avg = averages.iter().copied().fold(0.0f32, f32::max);
 
     if max_avg == 0.0 {
         return vec![0; WAVEFORM_SAMPLES];
@@ -260,12 +245,10 @@ fn finalize_waveform(bins: &[(f32, u32); WAVEFORM_SAMPLES]) -> Vec<u8> {
 
     // Normalize to 0-100 range
     let scale = 100.0 / max_avg;
-    let mut result = Vec::with_capacity(WAVEFORM_SAMPLES);
-    for avg in averages {
-        result.push((avg * scale).min(100.0) as u8);
-    }
-
-    result
+    averages
+        .iter()
+        .map(|avg| (avg * scale).min(100.0) as u8)
+        .collect()
 }
 
 #[wasm_bindgen(js_name = getAudioDuration, skip_typescript)]
@@ -409,19 +392,13 @@ impl DurationAccumulator {
 }
 
 async fn normalize_audio_input(input: JsValue) -> Result<Vec<u8>, JsValue> {
-    if input.is_instance_of::<Uint8Array>() {
-        let arr = Uint8Array::new(&input);
-        return Ok(copy_uint8_array(&arr));
-    }
-
-    if input.is_instance_of::<ArrayBuffer>() {
-        let arr = Uint8Array::new(&input);
-        return Ok(copy_uint8_array(&arr));
+    // Handle Uint8Array and ArrayBuffer (both can be wrapped with Uint8Array)
+    if input.is_instance_of::<Uint8Array>() || input.is_instance_of::<ArrayBuffer>() {
+        return Ok(copy_uint8_array(&Uint8Array::new(&input)));
     }
 
     if input.is_instance_of::<ReadableStream>() {
-        let stream = input.unchecked_ref::<ReadableStream>();
-        return read_stream(stream).await;
+        return read_stream(input.unchecked_ref::<ReadableStream>()).await;
     }
 
     Err(JsValue::from_str(

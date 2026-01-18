@@ -69,38 +69,28 @@ fn js_to_node_ref(val: &EncodingNode) -> Result<NodeRef<'static>, JsValue> {
 
     let content_js = val.content();
 
-    let content = match () {
-        _ if content_js.is_undefined() => Ok(None),
-
-        _ if content_js.is_string() => {
-            let string_value = content_js.as_string().ok_or_else(|| {
-                JsValue::from_str("Content marked as string could not be extracted")
-            })?;
-            Ok(Some(NodeContentRef::String(Cow::Owned(string_value))))
-        }
-
-        _ if content_js.is_instance_of::<Uint8Array>() => {
-            let byte_array: Uint8Array = content_js.unchecked_into();
-            let len = byte_array.length() as usize;
-            let mut bytes = vec![0; len];
-            byte_array.copy_to(&mut bytes);
-            Ok(Some(NodeContentRef::Bytes(Cow::Owned(bytes))))
-        }
-
-        _ if Array::is_array(&content_js) => {
-            let arr = Array::from(&content_js);
-            let nodes = (0..arr.length())
-                .map(|i| {
-                    let child_val = arr.get(i);
-                    let child_node = child_val.unchecked_into::<EncodingNode>();
-                    js_to_node_ref(&child_node)
-                })
-                .collect::<Result<Vec<NodeRef<'static>>, _>>()?;
-
-            Ok(Some(NodeContentRef::Nodes(Box::new(nodes))))
-        }
-
-        _ => Err(JsValue::from_str("Invalid content type")),
+    let content = if content_js.is_undefined() {
+        Ok(None)
+    } else if let Some(string_value) = content_js.as_string() {
+        Ok(Some(NodeContentRef::String(Cow::Owned(string_value))))
+    } else if content_js.is_instance_of::<Uint8Array>() {
+        let byte_array: Uint8Array = content_js.unchecked_into();
+        let len = byte_array.length() as usize;
+        let mut bytes = vec![0; len];
+        byte_array.copy_to(&mut bytes);
+        Ok(Some(NodeContentRef::Bytes(Cow::Owned(bytes))))
+    } else if Array::is_array(&content_js) {
+        let arr = Array::from(&content_js);
+        let nodes = (0..arr.length())
+            .map(|i| {
+                let child_val = arr.get(i);
+                let child_node = child_val.unchecked_into::<EncodingNode>();
+                js_to_node_ref(&child_node)
+            })
+            .collect::<Result<Vec<NodeRef<'static>>, _>>()?;
+        Ok(Some(NodeContentRef::Nodes(Box::new(nodes))))
+    } else {
+        Err(JsValue::from_str("Invalid content type"))
     };
 
     Ok(NodeRef::new(Cow::Owned(val.tag()), attrs, content?))
@@ -156,42 +146,42 @@ impl InternalBinaryNode {
     pub fn to_json(&self) -> JsValue {
         let obj = Object::new();
 
-        let tag_key = JsValue::from_str("tag");
-        let tag_value = JsValue::from_str(&self.node_ref().tag);
-        js_sys::Reflect::set(&obj, &tag_key, &tag_value).expect("Failed to set tag");
+        let _ = js_sys::Reflect::set(
+            &obj,
+            &JsValue::from_str("tag"),
+            &JsValue::from_str(&self.node_ref().tag),
+        );
+        let _ = js_sys::Reflect::set(&obj, &JsValue::from_str("attrs"), &self.attrs().into());
 
-        let attrs_key = JsValue::from_str("attrs");
-        let attrs_value: JsValue = self.attrs().into();
-        js_sys::Reflect::set(&obj, &attrs_key, &attrs_value).expect("Failed to set attrs");
-
-        let content_key = JsValue::from_str("content");
         if let Some(content) = self.content() {
             let content_js: JsValue = content.into();
-            if Array::is_array(&content_js) {
-                let arr = Array::from(&content_js);
-                let json_arr = Array::new_with_length(arr.length());
-                for i in 0..arr.length() {
-                    let item = arr.get(i);
-                    if let Ok(to_json_fn) =
-                        js_sys::Reflect::get(&item, &JsValue::from_str("toJSON"))
-                        && to_json_fn.is_function()
-                    {
-                        let func = to_json_fn.unchecked_into::<js_sys::Function>();
-                        if let Ok(json_item) = func.call0(&item) {
-                            json_arr.set(i, json_item);
-                            continue;
-                        }
-                    }
-                    json_arr.set(i, item);
-                }
-                js_sys::Reflect::set(&obj, &content_key, &json_arr).expect("Failed to set content");
+            let content_value = if Array::is_array(&content_js) {
+                self.serialize_child_nodes(&content_js)
             } else {
-                js_sys::Reflect::set(&obj, &content_key, &content_js)
-                    .expect("Failed to set content");
-            }
+                content_js
+            };
+            let _ = js_sys::Reflect::set(&obj, &JsValue::from_str("content"), &content_value);
         }
 
         obj.into()
+    }
+
+    fn serialize_child_nodes(&self, content_js: &JsValue) -> JsValue {
+        let arr = Array::from(content_js);
+        let json_arr = Array::new_with_length(arr.length());
+        let to_json_key = JsValue::from_str("toJSON");
+
+        for i in 0..arr.length() {
+            let item = arr.get(i);
+            let serialized = js_sys::Reflect::get(&item, &to_json_key)
+                .ok()
+                .filter(|f| f.is_function())
+                .and_then(|f| f.unchecked_into::<js_sys::Function>().call0(&item).ok())
+                .unwrap_or(item);
+            json_arr.set(i, serialized);
+        }
+
+        json_arr.into()
     }
 
     #[wasm_bindgen(getter)]

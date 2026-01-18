@@ -34,17 +34,14 @@ pub fn generate_key_pair() -> KeyPair {
     }
 }
 
-fn map_err(err: impl std::fmt::Display + 'static) -> JsValue {
-    if let Some(curve_err) = (&err as &dyn std::any::Any).downcast_ref::<CurveError>() {
-        match curve_err {
-            CurveError::BadKeyLength(_, 0) => return JsValue::from_str("Invalid private key type"),
-            CurveError::BadKeyLength(_, len) if *len != 32 => {
-                return JsValue::from_str("Incorrect private key length");
-            }
-            _ => (),
+fn map_err(err: CurveError) -> JsValue {
+    match &err {
+        CurveError::BadKeyLength(_, 0) => JsValue::from_str("Invalid private key type"),
+        CurveError::BadKeyLength(_, len) if *len != 32 => {
+            JsValue::from_str("Incorrect private key length")
         }
+        _ => JsValue::from_str(&err.to_string()),
     }
-    JsValue::from_str(&err.to_string())
 }
 
 #[inline(always)]

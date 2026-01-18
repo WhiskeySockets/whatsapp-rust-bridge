@@ -5,6 +5,7 @@ use wasm_bindgen::prelude::*;
 
 #[wasm_bindgen(js_name = SenderKeyName)]
 pub struct SenderKeyName(pub(crate) CoreSenderKeyName);
+
 impl fmt::Display for SenderKeyName {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "{}::{}", self.0.group_id(), self.0.sender_id())
@@ -21,6 +22,6 @@ impl SenderKeyName {
 
     #[wasm_bindgen(js_name = toString)]
     pub fn to_string_js(&self) -> String {
-        format!("{}", self)
+        self.to_string()
     }
 }
