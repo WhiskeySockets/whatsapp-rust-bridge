@@ -34,7 +34,7 @@ extern "C" {
 }
 
 #[inline]
-fn js_to_node_ref(val: &EncodingNode) -> Result<NodeRef<'static>, JsValue> {
+pub(crate) fn js_to_node_ref(val: &EncodingNode) -> Result<NodeRef<'static>, JsValue> {
     let attrs_obj = val.attrs().unchecked_into::<Object>();
     let entries = Object::entries(&attrs_obj);
     let len = entries.length();
