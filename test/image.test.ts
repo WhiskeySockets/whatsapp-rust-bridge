@@ -1,20 +1,51 @@
 import { describe, it, expect } from "bun:test";
-import {
-  extractImageThumb,
-  generateProfilePicture,
-  getImageDimensions,
-  convertToWebP,
-  processImage,
-} from "../dist";
+import { getEnabledFeatures } from "../dist";
 import fs from "node:fs";
+
+const features = getEnabledFeatures();
 
 // 1x1 red PNG pixel (base64)
 const SAMPLE_IMAGE =
   "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAIAAACQd1PeAAAACXBIWXMAAAABAAAAAQBPJcTWAAAADElEQVR4nGP8x8AAAAMCAQBFsWYPAAAAAElFTkSuQmCC";
 
-// Use real asset files for testing
-const PNG_BUFFER = fs.readFileSync("assets/image.png");
-const WEBP_BUFFER = fs.readFileSync("assets/static.webp");
+// Only load image assets if the feature is enabled
+const PNG_BUFFER = features.image
+  ? fs.readFileSync("assets/image.png")
+  : new Uint8Array();
+const WEBP_BUFFER = features.image
+  ? fs.readFileSync("assets/static.webp")
+  : new Uint8Array();
+
+// Conditionally import image functions (they won't exist if feature is disabled)
+const imageFns = features.image
+  ? await import("../dist").then((m) => ({
+      extractImageThumb: m.extractImageThumb,
+      generateProfilePicture: m.generateProfilePicture,
+      getImageDimensions: m.getImageDimensions,
+      convertToWebP: m.convertToWebP,
+      processImage: m.processImage,
+    }))
+  : {
+      extractImageThumb: null,
+      generateProfilePicture: null,
+      getImageDimensions: null,
+      convertToWebP: null,
+      processImage: null,
+    };
+
+const {
+  extractImageThumb,
+  generateProfilePicture,
+  getImageDimensions,
+  convertToWebP,
+  processImage,
+} = imageFns as {
+  extractImageThumb: typeof import("../dist").extractImageThumb;
+  generateProfilePicture: typeof import("../dist").generateProfilePicture;
+  getImageDimensions: typeof import("../dist").getImageDimensions;
+  convertToWebP: typeof import("../dist").convertToWebP;
+  processImage: typeof import("../dist").processImage;
+};
 
 // Magic bytes for format detection
 const MAGIC = {
@@ -42,7 +73,7 @@ function isValidFormat(
   return hasPrefix(buffer, MAGIC[format]);
 }
 
-describe("Image Utils", () => {
+describe.if(features.image)("Image Utils", () => {
   const imageBuffer = Buffer.from(SAMPLE_IMAGE, "base64");
 
   it("extracts an image thumbnail", () => {
@@ -72,7 +103,7 @@ describe("Image Utils", () => {
   });
 });
 
-describe("getImageDimensions", () => {
+describe.if(features.image)("getImageDimensions", () => {
   it("returns correct dimensions for PNG", () => {
     const dims = getImageDimensions(PNG_BUFFER);
     expect(dims.width).toBe(1000);
@@ -90,7 +121,7 @@ describe("getImageDimensions", () => {
   });
 });
 
-describe("convertToWebP", () => {
+describe.if(features.image)("convertToWebP", () => {
   it("converts PNG to valid WebP", () => {
     const result = convertToWebP(PNG_BUFFER);
     expect(isValidFormat(result, "webp")).toBe(true);
@@ -102,7 +133,7 @@ describe("convertToWebP", () => {
   });
 });
 
-describe("processImage", () => {
+describe.if(features.image)("processImage", () => {
   it("resizes to exact dimensions", () => {
     const result = processImage(PNG_BUFFER, {
       width: 100,

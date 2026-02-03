@@ -1,13 +1,32 @@
 import { describe, it, expect } from "bun:test";
-import { addStickerMetadata, getStickerMetadata } from "../dist";
+import { getEnabledFeatures } from "../dist";
 import { readFileSync } from "fs";
 import { join } from "path";
 
-// Load test assets
-const STATIC_WEBP = readFileSync(join(__dirname, "../assets/static.webp"));
-const ANIMATED_WEBP = readFileSync(join(__dirname, "../assets/animated.webp"));
+const features = getEnabledFeatures();
 
-describe("Sticker Metadata", () => {
+// Only load assets if the feature is enabled
+const STATIC_WEBP = features.sticker
+  ? readFileSync(join(__dirname, "../assets/static.webp"))
+  : new Uint8Array();
+const ANIMATED_WEBP = features.sticker
+  ? readFileSync(join(__dirname, "../assets/animated.webp"))
+  : new Uint8Array();
+
+// Conditionally import sticker functions (they won't exist if feature is disabled)
+const stickerFns = features.sticker
+  ? await import("../dist").then((m) => ({
+      addStickerMetadata: m.addStickerMetadata,
+      getStickerMetadata: m.getStickerMetadata,
+    }))
+  : { addStickerMetadata: null, getStickerMetadata: null };
+
+const { addStickerMetadata, getStickerMetadata } = stickerFns as {
+  addStickerMetadata: typeof import("../dist").addStickerMetadata;
+  getStickerMetadata: typeof import("../dist").getStickerMetadata;
+};
+
+describe.if(features.sticker)("Sticker Metadata", () => {
   describe("addStickerMetadata", () => {
     it("adds metadata to a static WebP image", () => {
       const result = addStickerMetadata(STATIC_WEBP, {

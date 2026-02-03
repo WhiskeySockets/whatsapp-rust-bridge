@@ -32,21 +32,28 @@ wasm-opt = [
 [lib]
 crate-type = ["cdylib", "rlib"]
 
+[features]
+default = []
+audio = ["dep:symphonia"]
+image = ["dep:image"]
+sticker = ["dep:img-parts"]
+
 [dependencies]
 async-trait = "0.1.89"
 base64 = { version = "0.22.1", default-features = false, features = ["alloc"] }
 curve25519-dalek = { version = "4.1.3", default-features = false, features = [
   "alloc",
   "digest",
+  "precomputed-tables",
 ] }
 getrandom = { version = "0.3.4", features = ["wasm_js"] }
 image = { version = "0.25.5", default-features = false, features = [
   "jpeg",
   "png",
   "webp",
-] }
+], optional = true }
 
-img-parts = { version = "0.4", default-features = false }
+img-parts = { version = "0.4", default-features = false, optional = true }
 js-sys = "0.3"
 log = "0.4"
 prost = { version = "0.14.1", default-features = false }
@@ -69,7 +76,7 @@ symphonia = { version = "0.5.4", default-features = false, features = [
   "aac",
   "isomp4",
   "ogg",
-] }
+], optional = true }
 tsify-next = { version = "0.5", default-features = false, features = ["js"] }
 uuid = { version = "1.18.1", default-features = false, features = ["v4", "js"] }
 

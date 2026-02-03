@@ -1,12 +1,30 @@
 import { describe, it, expect } from "bun:test";
-import { generateAudioWaveform, getAudioDuration } from "../dist";
+import { getEnabledFeatures } from "../dist";
 import fs from "node:fs";
+
+const features = getEnabledFeatures();
+
+// Only load audio assets and functions if the feature is enabled
+const audioBuffer = features.audio
+  ? fs.readFileSync("./assets/sonata.mp3")
+  : new Uint8Array();
+
+// Conditionally import audio functions (they won't exist if feature is disabled)
+const audioFns = features.audio
+  ? await import("../dist").then((m) => ({
+      generateAudioWaveform: m.generateAudioWaveform,
+      getAudioDuration: m.getAudioDuration,
+    }))
+  : { generateAudioWaveform: null, getAudioDuration: null };
+
+const { generateAudioWaveform, getAudioDuration } = audioFns as {
+  generateAudioWaveform: typeof import("../dist").generateAudioWaveform;
+  getAudioDuration: typeof import("../dist").getAudioDuration;
+};
 
 const EXPECTED_DURATION_SECONDS = 42.736326530612246;
 
-const audioBuffer = fs.readFileSync("./assets/sonata.mp3");
-
-describe("Audio Waveform Generation", () => {
+describe.if(features.audio)("Audio Waveform Generation", () => {
   it("creates a 64-sample waveform from MP3 audio", () => {
     const waveform = generateAudioWaveform(audioBuffer);
 
@@ -25,7 +43,7 @@ describe("Audio Waveform Generation", () => {
   });
 });
 
-describe("Audio Duration", () => {
+describe.if(features.audio)("Audio Duration", () => {
   it("returns duration for Uint8Array input", async () => {
     const duration = await getAudioDuration(audioBuffer);
 

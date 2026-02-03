@@ -118,6 +118,7 @@ pub struct JsStorageAdapter {
     cached_identities: Rc<RefCell<HashMap<String, Vec<u8>>>>,
     has_store_session_raw: Rc<RefCell<Option<bool>>>,
     last_address_cache: Rc<RefCell<Option<(String, String)>>>,
+    last_sender_key_cache: Rc<RefCell<Option<(String, String, String)>>>,
 }
 
 impl JsStorageAdapter {
@@ -131,6 +132,7 @@ impl JsStorageAdapter {
             cached_identities: Rc::new(RefCell::new(HashMap::new())),
             has_store_session_raw: Rc::new(RefCell::new(None)),
             last_address_cache: Rc::new(RefCell::new(None)),
+            last_sender_key_cache: Rc::new(RefCell::new(None)),
         }
     }
 
@@ -161,6 +163,29 @@ impl JsStorageAdapter {
             .borrow_mut()
             .replace((name.to_string(), addr_str.clone()));
         addr_str
+    }
+
+    #[inline]
+    fn get_sender_key_id(&self, sender_key_name: &CoreSenderKeyName) -> String {
+        let group_id = sender_key_name.group_id();
+        let sender_id = sender_key_name.sender_id();
+
+        let cache = self.last_sender_key_cache.borrow();
+        if let Some((cached_group, cached_sender, cached_key_id)) = cache.as_ref()
+            && cached_group == group_id
+            && cached_sender == sender_id
+        {
+            return cached_key_id.clone();
+        }
+        drop(cache);
+
+        let key_id = format!("{}::{}", group_id, sender_id);
+        self.last_sender_key_cache.borrow_mut().replace((
+            group_id.to_string(),
+            sender_id.to_string(),
+            key_id.clone(),
+        ));
+        key_id
     }
 
     async fn migrate_legacy_json(&self, value: JsValue) -> SignalResult<Option<Vec<u8>>> {
@@ -795,7 +820,7 @@ impl SessionStore for JsStorageAdapter {
 #[async_trait(?Send)]
 impl IdentityKeyStore for JsStorageAdapter {
     async fn get_identity_key_pair(&self) -> SignalResult<IdentityKeyPair> {
-        if let Some(pair) = *self.cached_identity_key_pair.borrow() {
+        if let Some(pair) = self.cached_identity_key_pair.borrow().as_ref().cloned() {
             return Ok(pair);
         }
 
@@ -813,7 +838,9 @@ impl IdentityKeyStore for JsStorageAdapter {
             deserialize_js_value(js_value, "get_identity_key_pair")?;
         let key_pair = payload.into_pair()?;
 
-        self.cached_identity_key_pair.borrow_mut().replace(key_pair);
+        self.cached_identity_key_pair
+            .borrow_mut()
+            .replace(key_pair.clone());
 
         Ok(key_pair)
     }
@@ -984,11 +1011,7 @@ impl SenderKeyStore for JsStorageAdapter {
         &mut self,
         sender_key_name: &CoreSenderKeyName,
     ) -> SignalResult<Option<CoreSenderKeyRecord>> {
-        let key_id = format!(
-            "{}::{}",
-            sender_key_name.group_id(),
-            sender_key_name.sender_id()
-        );
+        let key_id = self.get_sender_key_id(sender_key_name);
 
         if let Some(record) = self.cached_sender_keys.borrow().get(&key_id) {
             return Ok(Some(record.clone()));
@@ -1038,11 +1061,7 @@ impl SenderKeyStore for JsStorageAdapter {
         sender_key_name: &CoreSenderKeyName,
         record: &CoreSenderKeyRecord,
     ) -> SignalResult<()> {
-        let key_id = format!(
-            "{}::{}",
-            sender_key_name.group_id(),
-            sender_key_name.sender_id()
-        );
+        let key_id = self.get_sender_key_id(sender_key_name);
 
         self.cached_sender_keys
             .borrow_mut()
