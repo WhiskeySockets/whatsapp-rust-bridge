@@ -1,3 +1,10 @@
+// Use Talc allocator for better WASM performance
+// WasmHandler integrates with WebAssembly's memory.grow for dynamic allocation
+#[cfg(target_arch = "wasm32")]
+#[global_allocator]
+static ALLOCATOR: talc::Talck<talc::locking::AssumeUnlockable, talc::WasmHandler> =
+    unsafe { talc::Talc::new(talc::WasmHandler::new()).lock() };
+
 pub mod appstate;
 #[cfg(feature = "audio")]
 pub mod audio;

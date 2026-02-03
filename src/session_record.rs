@@ -33,12 +33,12 @@ impl SessionRecord {
 
         // 3. Legacy libsignal-node JSON format (has "_sessions" key)
         // Returns empty record to trigger safe re-negotiation
-        if Reflect::has(&val, &JsValue::from_str(SESSIONS_KEY)).unwrap_or(false) {
+        if Reflect::has(&val, &wasm_bindgen::intern(SESSIONS_KEY).into()).unwrap_or(false) {
             return create_empty_session_record();
         }
 
         // 4. Buffer-like objects { type: 'Buffer', data: [...] }
-        if let Ok(data) = Reflect::get(&val, &JsValue::from_str(DATA_KEY))
+        if let Ok(data) = Reflect::get(&val, &wasm_bindgen::intern(DATA_KEY).into())
             && Array::is_array(&data)
         {
             return Ok(SessionRecord::new(js_array_to_vec(&Array::from(&data))));

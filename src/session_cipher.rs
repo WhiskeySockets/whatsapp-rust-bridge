@@ -1,6 +1,5 @@
 use js_sys::{Object, Reflect, Uint8Array};
 use rand::{TryRngCore, rngs::OsRng};
-use std::cell::RefCell;
 use wasm_bindgen::prelude::*;
 
 use crate::{
@@ -11,20 +10,26 @@ use wacore_libsignal::protocol::{self as libsignal, SessionStore, UsePQRatchet};
 
 #[inline]
 fn bytes_to_uint8array(bytes: &[u8]) -> Uint8Array {
-    let result = Uint8Array::new_with_length(bytes.len() as u32);
-    result.copy_from(bytes);
-    result
+    Uint8Array::from(bytes)
+}
+
+// Interned keys for encrypt result - avoids repeated string allocation
+#[inline]
+fn create_encrypt_result(type_id: u8, body: Uint8Array) -> Result<EncryptResult, JsValue> {
+    let obj = Object::new();
+    let _ = Reflect::set(
+        &obj,
+        &wasm_bindgen::intern("type").into(),
+        &(type_id as u32).into(),
+    );
+    let _ = Reflect::set(&obj, &wasm_bindgen::intern("body").into(), &body.into());
+    Ok(obj.unchecked_into())
 }
 
 #[wasm_bindgen]
 extern "C" {
     #[wasm_bindgen(extends = Object, typescript_type = "{ type: number; body: Uint8Array }")]
     pub type EncryptResult;
-}
-
-thread_local! {
-    static TYPE_KEY: RefCell<JsValue> = RefCell::new(JsValue::from_str("type"));
-    static BODY_KEY: RefCell<JsValue> = RefCell::new(JsValue::from_str("body"));
 }
 
 #[wasm_bindgen(js_name = SessionCipher)]
@@ -62,11 +67,7 @@ impl SessionCipher {
         let body_array = bytes_to_uint8array(ciphertext_message.serialize());
         let type_id = ciphertext_message.message_type() as u8;
 
-        let result = Object::new();
-        TYPE_KEY.with(|k| Reflect::set(&result, &k.borrow(), &(type_id as u32).into()))?;
-        BODY_KEY.with(|k| Reflect::set(&result, &k.borrow(), &body_array.into()))?;
-
-        Ok(result.unchecked_into())
+        create_encrypt_result(type_id, body_array)
     }
 
     #[wasm_bindgen(js_name = decryptPreKeyWhisperMessage)]
