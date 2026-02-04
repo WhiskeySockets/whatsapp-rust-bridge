@@ -46,7 +46,7 @@ impl NoiseSession {
             is_finished: false,
             intro_header: Some(intro_header),
             frame_decoder: FrameDecoder::new(),
-            encode_scratch: Vec::with_capacity(4096),
+            encode_scratch: Vec::new(), // Lazy allocation - grows on demand
         })
     }
 
@@ -221,7 +221,7 @@ impl NoiseSession {
     pub fn get_hash(&self) -> Uint8Array {
         if let Some(ref handshake) = self.handshake {
             let hash = handshake.hash();
-            let result = Uint8Array::new_with_length(hash.len() as u32);
+            let result = Uint8Array::new_with_length(32);
             result.copy_from(hash);
             result
         } else {

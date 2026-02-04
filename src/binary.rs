@@ -123,15 +123,23 @@ impl InternalBinaryNode {
 
     #[inline]
     fn convert_attrs(attrs: &[(Cow<'_, str>, ValueRef<'_>)]) -> Attrs {
-        let obj = Object::new();
-        for (k, v) in attrs.iter() {
-            let js_value = match v.as_str() {
-                Some(s) => JsValue::from_str(s),
-                None => JsValue::from_str(&v.to_string()),
-            };
-            let _ = js_sys::Reflect::set(&obj, &JsValue::from_str(k), &js_value);
+        // Use Object.from_entries() which is faster than multiple Reflect.set() calls
+        let entries = Array::new_with_length(attrs.len() as u32);
+        for (i, (k, v)) in attrs.iter().enumerate() {
+            let pair = Array::new_with_length(2);
+            pair.set(0, JsValue::from_str(k));
+            pair.set(
+                1,
+                match v.as_str() {
+                    Some(s) => JsValue::from_str(s),
+                    None => JsValue::from_str(&v.to_string()),
+                },
+            );
+            entries.set(i as u32, pair.into());
         }
-        obj.unchecked_into()
+        Object::from_entries(&entries)
+            .unwrap_or_else(|_| Object::new())
+            .unchecked_into()
     }
 }
 
@@ -146,12 +154,17 @@ impl InternalBinaryNode {
     pub fn to_json(&self) -> JsValue {
         let obj = Object::new();
 
+        // Use interned strings for frequently used keys
         let _ = js_sys::Reflect::set(
             &obj,
-            &JsValue::from_str("tag"),
+            &wasm_bindgen::intern("tag").into(),
             &JsValue::from_str(&self.node_ref().tag),
         );
-        let _ = js_sys::Reflect::set(&obj, &JsValue::from_str("attrs"), &self.attrs().into());
+        let _ = js_sys::Reflect::set(
+            &obj,
+            &wasm_bindgen::intern("attrs").into(),
+            &self.attrs().into(),
+        );
 
         if let Some(content) = self.content() {
             let content_js: JsValue = content.into();
@@ -160,7 +173,11 @@ impl InternalBinaryNode {
             } else {
                 content_js
             };
-            let _ = js_sys::Reflect::set(&obj, &JsValue::from_str("content"), &content_value);
+            let _ = js_sys::Reflect::set(
+                &obj,
+                &wasm_bindgen::intern("content").into(),
+                &content_value,
+            );
         }
 
         obj.into()
@@ -169,7 +186,8 @@ impl InternalBinaryNode {
     fn serialize_child_nodes(&self, content_js: &JsValue) -> JsValue {
         let arr = Array::from(content_js);
         let json_arr = Array::new_with_length(arr.length());
-        let to_json_key = JsValue::from_str("toJSON");
+        // Use interned string for toJSON key - called repeatedly
+        let to_json_key: JsValue = wasm_bindgen::intern("toJSON").into();
 
         for i in 0..arr.length() {
             let item = arr.get(i);

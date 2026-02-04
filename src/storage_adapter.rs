@@ -141,8 +141,11 @@ impl JsStorageAdapter {
             return has_raw;
         }
 
-        let has_raw = js_sys::Reflect::has(&self.js_storage, &JsValue::from_str("storeSessionRaw"))
-            .unwrap_or(false);
+        let has_raw = js_sys::Reflect::has(
+            &self.js_storage,
+            &wasm_bindgen::intern("storeSessionRaw").into(),
+        )
+        .unwrap_or(false);
         self.has_store_session_raw.borrow_mut().replace(has_raw);
         has_raw
     }
@@ -190,15 +193,18 @@ impl JsStorageAdapter {
 
     async fn migrate_legacy_json(&self, value: JsValue) -> SignalResult<Option<Vec<u8>>> {
         let has_reg_id =
-            js_sys::Reflect::has(&value, &JsValue::from_str("registrationId")).unwrap_or(false);
+            js_sys::Reflect::has(&value, &wasm_bindgen::intern("registrationId").into())
+                .unwrap_or(false);
         let has_ratchet =
-            js_sys::Reflect::has(&value, &JsValue::from_str("currentRatchet")).unwrap_or(false);
+            js_sys::Reflect::has(&value, &wasm_bindgen::intern("currentRatchet").into())
+                .unwrap_or(false);
 
         let session_data = if has_reg_id && has_ratchet {
             value
         } else {
             let has_sessions =
-                js_sys::Reflect::has(&value, &JsValue::from_str("_sessions")).unwrap_or(false);
+                js_sys::Reflect::has(&value, &wasm_bindgen::intern("_sessions").into())
+                    .unwrap_or(false);
             if !has_sessions {
                 return Ok(None);
             }
@@ -218,9 +224,11 @@ impl JsStorageAdapter {
             js_sys::Reflect::get(&sessions, &key).map_err(js_to_signal_error)?
         };
 
-        let has_reg_id_inner =
-            js_sys::Reflect::has(&session_data, &JsValue::from_str("registrationId"))
-                .unwrap_or(false);
+        let has_reg_id_inner = js_sys::Reflect::has(
+            &session_data,
+            &wasm_bindgen::intern("registrationId").into(),
+        )
+        .unwrap_or(false);
         if !has_reg_id_inner {
             return Ok(None);
         }
@@ -673,7 +681,7 @@ fn js_value_to_bytes(value: &JsValue) -> Option<Vec<u8>> {
         return Some(js_array_to_bytes(&js_sys::Array::from(value)));
     }
 
-    if let Ok(data) = js_sys::Reflect::get(value, &JsValue::from_str("data"))
+    if let Ok(data) = js_sys::Reflect::get(value, &wasm_bindgen::intern("data").into())
         && js_sys::Array::is_array(&data)
     {
         return Some(js_array_to_bytes(&js_sys::Array::from(&data)));
@@ -684,40 +692,41 @@ fn js_value_to_bytes(value: &JsValue) -> Option<Vec<u8>> {
 
 fn is_legacy_session_object(value: &JsValue) -> bool {
     let has_sessions =
-        js_sys::Reflect::has(value, &JsValue::from_str("_sessions")).unwrap_or(false);
-    let has_reg_id =
-        js_sys::Reflect::has(value, &JsValue::from_str("registrationId")).unwrap_or(false);
-    let has_ratchet =
-        js_sys::Reflect::has(value, &JsValue::from_str("currentRatchet")).unwrap_or(false);
+        js_sys::Reflect::has(value, &wasm_bindgen::intern("_sessions").into()).unwrap_or(false);
+    let has_reg_id = js_sys::Reflect::has(value, &wasm_bindgen::intern("registrationId").into())
+        .unwrap_or(false);
+    let has_ratchet = js_sys::Reflect::has(value, &wasm_bindgen::intern("currentRatchet").into())
+        .unwrap_or(false);
 
     has_sessions || (has_reg_id && has_ratchet)
 }
 
 fn get_string(obj: &JsValue, key: &str) -> Option<String> {
-    js_sys::Reflect::get(obj, &JsValue::from_str(key))
+    // Use intern() for frequently accessed keys to avoid repeated string allocation
+    js_sys::Reflect::get(obj, &wasm_bindgen::intern(key).into())
         .ok()
         .and_then(|v| v.as_string())
 }
 
 fn get_object(obj: &JsValue, key: &str) -> Option<JsValue> {
-    js_sys::Reflect::get(obj, &JsValue::from_str(key)).ok()
+    js_sys::Reflect::get(obj, &wasm_bindgen::intern(key).into()).ok()
 }
 
 fn get_number(obj: &JsValue, key: &str) -> Option<f64> {
-    js_sys::Reflect::get(obj, &JsValue::from_str(key))
+    js_sys::Reflect::get(obj, &wasm_bindgen::intern(key).into())
         .ok()
         .and_then(|v| v.as_f64())
 }
 
 fn get_bytes_from_buffer_json(obj: &JsValue, key: &str) -> Option<Vec<u8>> {
-    let val = js_sys::Reflect::get(obj, &JsValue::from_str(key)).ok()?;
+    let val = js_sys::Reflect::get(obj, &wasm_bindgen::intern(key).into()).ok()?;
     if val.is_undefined() || val.is_null() {
         return None;
     }
 
     // Check for Buffer-like object { type: "Buffer", data: [...] }
-    let type_prop = js_sys::Reflect::get(&val, &JsValue::from_str("type")).ok();
-    let data_prop = js_sys::Reflect::get(&val, &JsValue::from_str("data")).ok();
+    let type_prop = js_sys::Reflect::get(&val, &wasm_bindgen::intern("type").into()).ok();
+    let data_prop = js_sys::Reflect::get(&val, &wasm_bindgen::intern("data").into()).ok();
     if let (Some(t), Some(d)) = (type_prop, data_prop)
         && t.as_string().as_deref() == Some("Buffer")
         && js_sys::Array::is_array(&d)

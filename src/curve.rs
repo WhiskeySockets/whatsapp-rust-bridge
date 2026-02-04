@@ -83,7 +83,7 @@ pub fn calculate_agreement(
     let pub_key = parse_public_key(public_key_bytes)?;
     let secret = priv_key.calculate_agreement(&pub_key).map_err(map_err)?;
 
-    let result = Uint8Array::new_with_length(secret.len() as u32);
+    let result = Uint8Array::new_with_length(32);
     result.copy_from(secret.as_ref());
     Ok(result)
 }
@@ -106,7 +106,7 @@ pub fn calculate_signature(
         .calculate_signature(message, &mut OsRng.unwrap_err())
         .map_err(map_err)?;
 
-    let result = Uint8Array::new_with_length(signature.len() as u32);
+    let result = Uint8Array::new_with_length(64);
     result.copy_from(signature.as_ref());
     Ok(result)
 }
