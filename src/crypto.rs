@@ -16,11 +16,11 @@ pub fn md5_hash(buffer: &[u8]) -> Uint8Array {
     arr
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, Tsify)]
+#[derive(Debug, Clone, Serialize, Deserialize, Tsify, Default)]
 #[tsify(from_wasm_abi)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "camelCase", default)]
 pub struct HkdfInfo {
-    #[tsify(type = "Uint8Array | null")]
+    #[tsify(type = "Uint8Array | undefined")]
     #[serde(with = "serde_bytes")]
     pub salt: Option<Vec<u8>>,
     pub info: Option<String>,
