@@ -3,6 +3,8 @@ import {
   inputBufGrow,
   encodeFromInputBuf,
   encodeResultPtr,
+  decodeNodeToPacked,
+  shrinkBuffers,
   type BinaryNode,
 } from "../pkg/whatsapp_rust_bridge.js";
 
@@ -193,4 +195,112 @@ export function encodeNode(node: BinaryNode): Uint8Array {
 
   // Single JS-native slice: one alloc + one memcpy, no FFI crossings
   return new Uint8Array(wasmMemory.buffer, ptr, len).slice();
+}
+
+// ── Fast decodeNode via packed binary protocol ──────────────────────────
+//
+// Rust decodes WA binary → NodeRef → packed LNP buffer in WASM memory.
+// JS reads the buffer and constructs plain { tag, attrs, content } objects.
+// One FFI call, zero wrappers, zero FinalizationRegistry.
+
+const textDecoder = new TextDecoder();
+
+/** Read a u16-LE-prefixed UTF-8 string. ASCII fast path for short strings. */
+function readStr16(mem: Uint8Array, p: number[]): string {
+  const len = mem[p[0]] | (mem[p[0] + 1] << 8);
+  p[0] += 2;
+  if (len < 64) {
+    const start = p[0];
+    for (let i = 0; i < len; i++) {
+      if (mem[start + i] > 0x7f) {
+        // Non-ASCII: fall back to TextDecoder
+        const str = textDecoder.decode(
+          new Uint8Array(mem.buffer, mem.byteOffset + start, len),
+        );
+        p[0] += len;
+        return str;
+      }
+    }
+    // All ASCII: build string from char codes
+    let s = "";
+    for (let i = 0; i < len; i++) {
+      s += String.fromCharCode(mem[start + i]);
+    }
+    p[0] += len;
+    return s;
+  }
+  const str = textDecoder.decode(
+    new Uint8Array(mem.buffer, mem.byteOffset + p[0], len),
+  );
+  p[0] += len;
+  return str;
+}
+
+/** Unpack a single BinaryNode from packed LNP buffer. */
+function unpackNode(mem: Uint8Array, p: number[]): BinaryNode {
+  const tag = readStr16(mem, p);
+
+  const attrCount = mem[p[0]] | (mem[p[0] + 1] << 8);
+  p[0] += 2;
+  const attrs: Record<string, string> = {};
+  for (let i = 0; i < attrCount; i++) {
+    const k = readStr16(mem, p);
+    attrs[k] = readStr16(mem, p);
+  }
+
+  const contentType = mem[p[0]++];
+  let content: BinaryNode["content"] = undefined;
+
+  if (contentType === 1) {
+    // String
+    const len =
+      mem[p[0]] |
+      (mem[p[0] + 1] << 8) |
+      (mem[p[0] + 2] << 16) |
+      (mem[p[0] + 3] << 24);
+    p[0] += 4;
+    content = textDecoder.decode(
+      new Uint8Array(mem.buffer, mem.byteOffset + p[0], len),
+    );
+    p[0] += len;
+  } else if (contentType === 2) {
+    // Bytes — .slice() to avoid retaining WASM memory
+    const len =
+      (mem[p[0]] |
+        (mem[p[0] + 1] << 8) |
+        (mem[p[0] + 2] << 16) |
+        (mem[p[0] + 3] << 24)) >>>
+      0;
+    p[0] += 4;
+    content = mem.slice(p[0], p[0] + len);
+    p[0] += len;
+  } else if (contentType === 3) {
+    // Child nodes
+    const count = mem[p[0]] | (mem[p[0] + 1] << 8);
+    p[0] += 2;
+    const children: BinaryNode[] = new Array(count);
+    for (let i = 0; i < count; i++) {
+      children[i] = unpackNode(mem, p);
+    }
+    content = children;
+  }
+
+  return { tag, attrs, content };
+}
+
+/**
+ * Decode WhatsApp binary format to a plain BinaryNode object.
+ * Rust decodes + serializes to packed LNP → JS reads from WASM memory.
+ * One FFI call, zero wrappers, zero FinalizationRegistry.
+ */
+export function decodeNode(data: Uint8Array): BinaryNode {
+  decodeNodeToPacked(data);
+
+  const mem = new Uint8Array(wasmMemory.buffer);
+  const a = encResultAddr;
+  const ptr =
+    (mem[a] | (mem[a + 1] << 8) | (mem[a + 2] << 16) | (mem[a + 3] << 24)) >>>
+    0;
+
+  return unpackNode(mem, [ptr]);
 }

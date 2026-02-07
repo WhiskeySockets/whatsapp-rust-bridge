@@ -341,6 +341,7 @@ impl InternalBinaryNode {
 thread_local! {
     static ENCODE_BUF: UnsafeCell<Vec<u8>> = const { UnsafeCell::new(Vec::new()) };
     static INPUT_BUF: UnsafeCell<Vec<u8>> = const { UnsafeCell::new(Vec::new()) };
+    static DECODE_BUF: UnsafeCell<Vec<u8>> = const { UnsafeCell::new(Vec::new()) };
 }
 
 // ── Zero-alloc result passing ───────────────────────────────────────────
@@ -485,4 +486,90 @@ pub fn decode_node(data: Vec<u8>) -> Result<InternalBinaryNode, JsValue> {
         cached_attrs: UnsafeCell::new(None),
         cached_content: UnsafeCell::new(None),
     })
+}
+
+// ── Packed decode: NodeRef → LNP buffer ─────────────────────────────────
+//
+// Reverse of parse_packed_node: serializes a NodeRef into the same packed
+// binary format that JS uses for encode input. JS reads this from WASM memory
+// and constructs plain { tag, attrs, content } objects — zero FFI wrappers.
+
+#[inline]
+fn write_packed_str(buf: &mut Vec<u8>, s: &str) {
+    buf.extend_from_slice(&(s.len() as u16).to_le_bytes());
+    buf.extend_from_slice(s.as_bytes());
+}
+
+fn write_packed_node(node: &NodeRef, buf: &mut Vec<u8>) {
+    // Tag
+    write_packed_str(buf, &node.tag);
+
+    // Attrs
+    buf.extend_from_slice(&(node.attrs.len() as u16).to_le_bytes());
+    for (k, v) in &node.attrs {
+        write_packed_str(buf, k);
+        match v.as_str() {
+            Some(s) => write_packed_str(buf, s),
+            None => {
+                let s = v.to_string();
+                write_packed_str(buf, &s);
+            }
+        }
+    }
+
+    // Content
+    match node.content.as_deref() {
+        None => buf.push(0),
+        Some(NodeContentRef::String(s)) => {
+            buf.push(1);
+            buf.extend_from_slice(&(s.len() as u32).to_le_bytes());
+            buf.extend_from_slice(s.as_bytes());
+        }
+        Some(NodeContentRef::Bytes(b)) => {
+            buf.push(2);
+            buf.extend_from_slice(&(b.len() as u32).to_le_bytes());
+            buf.extend_from_slice(b);
+        }
+        Some(NodeContentRef::Nodes(nodes)) => {
+            buf.push(3);
+            buf.extend_from_slice(&(nodes.len() as u16).to_le_bytes());
+            for child in nodes.iter() {
+                write_packed_node(child, buf);
+            }
+        }
+    }
+}
+
+/// Release memory held by internal buffers (after processing large messages).
+#[wasm_bindgen(js_name = shrinkBuffers)]
+pub fn shrink_buffers() {
+    ENCODE_BUF.with(|c| unsafe { (&mut *c.get()).shrink_to_fit() });
+    INPUT_BUF.with(|c| unsafe { (&mut *c.get()).shrink_to_fit() });
+    DECODE_BUF.with(|c| unsafe { (&mut *c.get()).shrink_to_fit() });
+}
+
+/// Decode WhatsApp binary format → packed LNP buffer in WASM memory.
+/// JS reads ptr+len from ENCODE_RESULT and constructs plain JS objects.
+#[wasm_bindgen(js_name = decodeNodeToPacked)]
+pub fn decode_node_to_packed(data: &[u8]) -> Result<(), JsValue> {
+    if data.is_empty() {
+        return Err(JsValue::from_str("Input data cannot be empty"));
+    }
+
+    let unpacked_cow = unpack(data).map_err(|e| JsValue::from_str(&e.to_string()))?;
+    let node_ref = unmarshal_ref(&unpacked_cow).map_err(|e| JsValue::from_str(&e.to_string()))?;
+
+    DECODE_BUF.with(|cell| {
+        // SAFETY: WASM is single-threaded
+        let buf = unsafe { &mut *cell.get() };
+        buf.clear();
+        write_packed_node(&node_ref, buf);
+        unsafe {
+            let result = &mut *ENCODE_RESULT.0.get();
+            result[0] = buf.as_ptr() as u32;
+            result[1] = buf.len() as u32;
+        }
+    });
+
+    Ok(())
 }
