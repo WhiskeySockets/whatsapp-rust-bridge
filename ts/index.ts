@@ -45,7 +45,7 @@ function growInput(minCap: number): void {
 //
 // JS packs the BinaryNode directly into WASM memory (zero intermediate buffer),
 // then one WASM call parses + marshals. Result ptr+len read via raw byte access.
-// No DataView, no .subarray(), no intermediate copies.
+// No DataView, no intermediate copies (TextEncoder writes into a subarray view).
 
 const textEncoder = new TextEncoder();
 
@@ -85,14 +85,18 @@ function writeUtf8(s: string, pos: number): number {
 /** Write a UTF-8 string prefixed by u16 LE length. Returns new position. */
 function writeStr16(s: string, pos: number): number {
   const w = writeUtf8(s, pos + 2);
+  if (w > 0xffff) {
+    throw new RangeError(`String too long for u16 length prefix: ${w} bytes`);
+  }
   inputU8[pos] = w & 0xff;
   inputU8[pos + 1] = (w >> 8) & 0xff;
   return pos + 2 + w;
 }
 
 function packNode(node: BinaryNode, pos: number): number {
-  // Ensure at least 512 bytes headroom for this node's fixed-size fields
-  if (pos + 512 > inputCap) growInput(pos + 512);
+  // Ensure enough capacity for the tag (worst case 3 bytes per char) + fixed fields
+  const tagNeed = pos + 2 + node.tag.length * 3 + 512;
+  if (tagNeed > inputCap) growInput(tagNeed);
 
   // Tag
   pos = writeStr16(node.tag, pos);
@@ -155,6 +159,9 @@ function packNode(node: BinaryNode, pos: number): number {
     inputU8[pos] = 3; // Nodes
     pos += 1;
     const cLen = content.length;
+    if (cLen > 0xffff) {
+      throw new RangeError(`Too many child nodes: ${cLen} (max 65535)`);
+    }
     inputU8[pos] = cLen & 0xff;
     inputU8[pos + 1] = (cLen >> 8) & 0xff;
     pos += 2;

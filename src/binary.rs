@@ -353,6 +353,8 @@ thread_local! {
 //
 // SAFETY: WASM is single-threaded — no data races on static.
 struct SyncCell<T>(UnsafeCell<T>);
+// SAFETY: only sound on single-threaded wasm32 without atomics/threads.
+#[cfg(all(target_arch = "wasm32", not(target_feature = "atomics")))]
 unsafe impl<T> Sync for SyncCell<T> {}
 
 static ENCODE_RESULT: SyncCell<[u32; 2]> = SyncCell(UnsafeCell::new([0, 0]));
@@ -387,24 +389,33 @@ pub fn input_buf_grow(min_cap: u32) -> u32 {
 /// Encode from shared input buffer. JS packs directly into WASM memory,
 /// then calls this with the packed length. Zero input copies.
 #[wasm_bindgen(js_name = encodeFromInputBuf)]
-pub fn encode_from_input_buf(len: u32) {
+pub fn encode_from_input_buf(len: u32) -> Result<(), JsValue> {
     INPUT_BUF.with(|input_cell| {
         let input = unsafe { &*input_cell.get() };
-        let packed = &input[..len as usize];
+        let len = len as usize;
+        if len > input.len() {
+            return Err(JsValue::from_str(
+                "encodeFromInputBuf: length exceeds input buffer",
+            ));
+        }
+        let packed = &input[..len];
         let mut pos = 0;
         let node_ref = parse_packed_node(packed, &mut pos);
 
         ENCODE_BUF.with(|encode_cell| {
             let buf = unsafe { &mut *encode_cell.get() };
             buf.clear();
-            marshal_ref_to(&node_ref, buf).expect("marshal failed");
+            marshal_ref_to(&node_ref, buf).map_err(|e| {
+                JsValue::from_str(&format!("encodeFromInputBuf: marshal failed: {e}"))
+            })?;
             unsafe {
                 let result = &mut *ENCODE_RESULT.0.get();
                 result[0] = buf.as_ptr() as u32;
                 result[1] = buf.len() as u32;
             }
-        });
-    });
+            Ok(())
+        })
+    })
 }
 
 /// Fallback: encode from JS object (used when packed path is unavailable).
@@ -446,7 +457,7 @@ pub fn encode_node_packed(packed: &[u8]) -> Result<Uint8Array, JsValue> {
 /// Fastest path: encode packed node, write result descriptor to static.
 /// JS reads ptr+len directly from WASM memory — zero Uint8Array alloc on Rust side.
 #[wasm_bindgen(js_name = encodeNodePackedInto)]
-pub fn encode_node_packed_into(packed: &[u8]) {
+pub fn encode_node_packed_into(packed: &[u8]) -> Result<(), JsValue> {
     let mut pos = 0;
     let node_ref = parse_packed_node(packed, &mut pos);
 
@@ -454,14 +465,17 @@ pub fn encode_node_packed_into(packed: &[u8]) {
         // SAFETY: WASM is single-threaded, no reentrant calls
         let buf = unsafe { &mut *cell.get() };
         buf.clear();
-        marshal_ref_to(&node_ref, buf).expect("marshal failed");
+        marshal_ref_to(&node_ref, buf).map_err(|e| {
+            JsValue::from_str(&format!("encodeNodePackedInto: marshal failed: {e}"))
+        })?;
         // SAFETY: WASM is single-threaded
         unsafe {
             let result = &mut *ENCODE_RESULT.0.get();
             result[0] = buf.as_ptr() as u32;
             result[1] = buf.len() as u32;
         }
-    });
+        Ok(())
+    })
 }
 
 #[wasm_bindgen(js_name = decodeNode)]
@@ -496,6 +510,10 @@ pub fn decode_node(data: Vec<u8>) -> Result<InternalBinaryNode, JsValue> {
 
 #[inline]
 fn write_packed_str(buf: &mut Vec<u8>, s: &str) {
+    debug_assert!(
+        s.len() <= u16::MAX as usize,
+        "write_packed_str: string length exceeds u16::MAX"
+    );
     buf.extend_from_slice(&(s.len() as u16).to_le_bytes());
     buf.extend_from_slice(s.as_bytes());
 }

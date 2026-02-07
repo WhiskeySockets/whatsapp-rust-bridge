@@ -6,7 +6,7 @@ use wacore_noise::framing::{FrameDecoder, encode_frame_into};
 use wacore_noise::{NoiseCipher, NoiseHandshake, build_handshake_header};
 use wasm_bindgen::prelude::*;
 
-use crate::binary::{set_result_descriptor, EncodingNode, decode_node, js_to_node_ref};
+use crate::binary::{EncodingNode, decode_node, js_to_node_ref, set_result_descriptor};
 
 /// NoiseSession implements the Noise_XX_25519_AESGCM_SHA256 protocol pattern
 /// with combined binary encoding/decoding operations for reduced WASM boundary crossings.
@@ -238,8 +238,7 @@ impl NoiseSession {
                 if decrypted.is_empty() {
                     continue;
                 }
-                let unpacked =
-                    unpack(&decrypted).map_err(|e| JsValue::from_str(&e.to_string()))?;
+                let unpacked = unpack(&decrypted).map_err(|e| JsValue::from_str(&e.to_string()))?;
                 let node_ref =
                     unmarshal_ref(&unpacked).map_err(|e| JsValue::from_str(&e.to_string()))?;
                 crate::binary::write_packed_node(&node_ref, buf);
