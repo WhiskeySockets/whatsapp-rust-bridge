@@ -4,7 +4,7 @@ import {
   encodeFromInputBuf,
   encodeResultPtr,
   decodeNodeToPacked,
-  shrinkBuffers,
+  NoiseSession,
   type BinaryNode,
 } from "../pkg/whatsapp_rust_bridge.js";
 
@@ -303,4 +303,45 @@ export function decodeNode(data: Uint8Array): BinaryNode {
     0;
 
   return unpackNode(mem, [ptr]);
+}
+
+/**
+ * Decode noise frames using the packed LNP path.
+ * During handshake: returns raw Uint8Array frames.
+ * Post-handshake: returns plain BinaryNode objects (zero WASM wrappers).
+ */
+export function decodeFrames(
+  session: NoiseSession,
+  data: Uint8Array,
+): (Uint8Array | BinaryNode)[] {
+  const rv = session.decodeFramePacked(data);
+
+  // Read result descriptor from WASM memory
+  const mem = new Uint8Array(wasmMemory.buffer);
+  const a = encResultAddr;
+  const bufLen =
+    (mem[a + 4] |
+      (mem[a + 5] << 8) |
+      (mem[a + 6] << 16) |
+      (mem[a + 7] << 24)) >>>
+    0;
+
+  if (bufLen === 0) {
+    // Handshake mode: rv is the JS Array of raw Uint8Array frames
+    return rv as unknown as Uint8Array[];
+  }
+
+  // Post-handshake: unpack nodes from WASM memory
+  const ptr =
+    (mem[a] | (mem[a + 1] << 8) | (mem[a + 2] << 16) | (mem[a + 3] << 24)) >>>
+    0;
+  const p = [ptr];
+  const count = mem[p[0]] | (mem[p[0] + 1] << 8);
+  p[0] += 2;
+
+  const result: BinaryNode[] = new Array(count);
+  for (let i = 0; i < count; i++) {
+    result[i] = unpackNode(mem, p);
+  }
+  return result;
 }

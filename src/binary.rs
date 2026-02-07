@@ -500,7 +500,7 @@ fn write_packed_str(buf: &mut Vec<u8>, s: &str) {
     buf.extend_from_slice(s.as_bytes());
 }
 
-fn write_packed_node(node: &NodeRef, buf: &mut Vec<u8>) {
+pub(crate) fn write_packed_node(node: &NodeRef, buf: &mut Vec<u8>) {
     // Tag
     write_packed_str(buf, &node.tag);
 
@@ -546,6 +546,26 @@ pub fn shrink_buffers() {
     ENCODE_BUF.with(|c| unsafe { (&mut *c.get()).shrink_to_fit() });
     INPUT_BUF.with(|c| unsafe { (&mut *c.get()).shrink_to_fit() });
     DECODE_BUF.with(|c| unsafe { (&mut *c.get()).shrink_to_fit() });
+}
+
+/// Write (ptr, len) into the shared ENCODE_RESULT descriptor.
+pub(crate) fn set_result_descriptor(ptr: u32, len: u32) {
+    unsafe {
+        let result = &mut *ENCODE_RESULT.0.get();
+        result[0] = ptr;
+        result[1] = len;
+    }
+}
+
+/// Access DECODE_BUF from outside binary.rs (e.g. noise_session).
+pub(crate) fn with_decode_buf<F, R>(f: F) -> R
+where
+    F: FnOnce(&mut Vec<u8>) -> R,
+{
+    DECODE_BUF.with(|cell| {
+        let buf = unsafe { &mut *cell.get() };
+        f(buf)
+    })
 }
 
 /// Decode WhatsApp binary format → packed LNP buffer in WASM memory.

@@ -1,11 +1,12 @@
 use js_sys::Uint8Array;
 use wacore_binary::consts::NOISE_START_PATTERN as NOISE_MODE;
-use wacore_binary::marshal::marshal_ref;
+use wacore_binary::marshal::{marshal_ref, unmarshal_ref};
+use wacore_binary::util::unpack;
 use wacore_noise::framing::{FrameDecoder, encode_frame_into};
 use wacore_noise::{NoiseCipher, NoiseHandshake, build_handshake_header};
 use wasm_bindgen::prelude::*;
 
-use crate::binary::{EncodingNode, decode_node, js_to_node_ref};
+use crate::binary::{set_result_descriptor, EncodingNode, decode_node, js_to_node_ref};
 
 /// NoiseSession implements the Noise_XX_25519_AESGCM_SHA256 protocol pattern
 /// with combined binary encoding/decoding operations for reduced WASM boundary crossings.
@@ -205,6 +206,50 @@ impl NoiseSession {
         }
 
         Ok(decoded_frames)
+    }
+
+    /// Packed decode path: writes decoded nodes as LNP to DECODE_BUF.
+    /// Handshake: returns JS Array of raw Uint8Array frames.
+    /// Post-handshake: returns node count (u32); packed nodes in WASM memory.
+    #[wasm_bindgen(js_name = decodeFramePacked)]
+    pub fn decode_frame_packed(&mut self, new_data: &[u8]) -> Result<JsValue, JsValue> {
+        self.frame_decoder.feed(new_data);
+
+        if !self.is_finished {
+            let result_array = js_sys::Array::new();
+            while let Some(frame_data) = self.frame_decoder.decode_frame() {
+                let result = Uint8Array::new_with_length(frame_data.len() as u32);
+                result.copy_from(&frame_data);
+                result_array.push(&result.into());
+            }
+            set_result_descriptor(0, 0);
+            return Ok(result_array.into());
+        }
+
+        // Post-handshake: decrypt + pack each frame directly into DECODE_BUF.
+        // Process one frame at a time — no intermediate Vec<Vec<u8>>.
+        crate::binary::with_decode_buf(|buf| {
+            buf.clear();
+            buf.extend_from_slice(&0u16.to_le_bytes()); // count placeholder
+            let mut count: u16 = 0;
+
+            while let Some(frame_data) = self.frame_decoder.decode_frame() {
+                let decrypted = self.decrypt_vec(&frame_data)?;
+                if decrypted.is_empty() {
+                    continue;
+                }
+                let unpacked =
+                    unpack(&decrypted).map_err(|e| JsValue::from_str(&e.to_string()))?;
+                let node_ref =
+                    unmarshal_ref(&unpacked).map_err(|e| JsValue::from_str(&e.to_string()))?;
+                crate::binary::write_packed_node(&node_ref, buf);
+                count += 1;
+            }
+
+            buf[0..2].copy_from_slice(&count.to_le_bytes());
+            set_result_descriptor(buf.as_ptr() as u32, buf.len() as u32);
+            Ok(JsValue::UNDEFINED)
+        })
     }
 
     #[wasm_bindgen(getter, js_name = bufferedBytes)]
