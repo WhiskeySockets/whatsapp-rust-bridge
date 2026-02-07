@@ -8,6 +8,10 @@ import {
   type BinaryNode,
 } from "../pkg/whatsapp_rust_bridge.js";
 
+// These will be available after wasm-pack generates bindings for new methods:
+// NoiseSession.prototype.encodeFrameFromInputBuf(packed_len)
+// NoiseSession.prototype.decodeFramePackedFromInputBuf(len)
+
 import { base64Wasm } from "./macro.js" with { type: "macro" };
 
 function base64ToUint8Array(base64: string): Uint8Array {
@@ -382,8 +386,15 @@ NoiseSession.prototype.encodeFrameRaw = function (
 };
 
 NoiseSession.prototype.encodeFrame = function (node: BinaryNode): Uint8Array {
-  const encoded = encodeNode(node as BinaryNode);
-  return this.encodeFrameRaw(encoded);
+  // Fused path: pack node directly into INPUT_BUF → one WASM call does
+  // parse → marshal → encrypt → frame. Eliminates the encodeNode slice-out
+  // + encodeFrameRaw copy-back round-trip.
+  if (inputU8.buffer !== wasmMemory.buffer) {
+    inputU8 = new Uint8Array(wasmMemory.buffer, inputPtr, inputCap);
+  }
+  const written = packNode(node, 0);
+  (this as any).encodeFrameFromInputBuf(written);
+  return readResultSlice();
 };
 
 NoiseSession.prototype.encrypt = function (plaintext: Uint8Array): Uint8Array {
@@ -430,8 +441,15 @@ NoiseSession.prototype.decodeFrame = function (
     return result;
   }
 
-  // Post-handshake: use decodeFramePacked → read packed nodes from WASM memory
-  (this as any).decodeFramePacked(data);
+  // Post-handshake: write to shared input buffer → one WASM call does
+  // feed + frame parse + decrypt + unmarshal + pack LNP
+  const dlen2 = data.length;
+  if (dlen2 > inputCap) growInput(dlen2);
+  if (inputU8.buffer !== wasmMemory.buffer) {
+    inputU8 = new Uint8Array(wasmMemory.buffer, inputPtr, inputCap);
+  }
+  inputU8.set(data);
+  (this as any).decodeFramePackedFromInputBuf(dlen2);
   const m = refreshMem();
   const a = encResultAddr;
   const ptr =

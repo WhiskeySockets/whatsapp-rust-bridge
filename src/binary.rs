@@ -132,7 +132,7 @@ unsafe fn read_str<'a>(data: &'a [u8], pos: &mut usize) -> &'a str {
     s
 }
 
-fn parse_packed_node<'a>(data: &'a [u8], pos: &mut usize) -> NodeRef<'a> {
+pub(crate) fn parse_packed_node<'a>(data: &'a [u8], pos: &mut usize) -> NodeRef<'a> {
     // SAFETY: all strings written by JS TextEncoder — guaranteed valid UTF-8.
     unsafe {
         // Tag
@@ -573,6 +573,17 @@ pub(crate) fn set_result_descriptor(ptr: u32, len: u32) {
         result[0] = ptr;
         result[1] = len;
     }
+}
+
+/// Access ENCODE_BUF from outside binary.rs (e.g. noise_session fused encode).
+pub(crate) fn with_encode_buf<F, R>(f: F) -> R
+where
+    F: FnOnce(&mut Vec<u8>) -> R,
+{
+    ENCODE_BUF.with(|cell| {
+        let buf = unsafe { &mut *cell.get() };
+        f(buf)
+    })
 }
 
 /// Access DECODE_BUF from outside binary.rs (e.g. noise_session).
