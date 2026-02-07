@@ -586,6 +586,17 @@ where
     })
 }
 
+/// Read-only access to INPUT_BUF from outside binary.rs.
+pub(crate) fn with_input_buf<F, R>(f: F) -> R
+where
+    F: FnOnce(&[u8]) -> R,
+{
+    INPUT_BUF.with(|cell| {
+        let buf = unsafe { &*cell.get() };
+        f(buf)
+    })
+}
+
 /// Decode WhatsApp binary format → packed LNP buffer in WASM memory.
 /// JS reads ptr+len from ENCODE_RESULT and constructs plain JS objects.
 #[wasm_bindgen(js_name = decodeNodeToPacked)]

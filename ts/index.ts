@@ -29,6 +29,18 @@ export * from "../pkg/whatsapp_rust_bridge.js";
 // ── Result descriptor (one-time init) ───────────────────────────────────
 const encResultAddr = encodeResultPtr();
 
+// ── Cached WASM memory view ─────────────────────────────────────────────
+// Avoids creating `new Uint8Array(wasmMemory.buffer)` on every hot call.
+// Refreshed only when WASM memory grows (buffer identity changes).
+let wasmMem = new Uint8Array(wasmMemory.buffer);
+
+function refreshMem(): Uint8Array {
+  if (wasmMem.buffer !== wasmMemory.buffer) {
+    wasmMem = new Uint8Array(wasmMemory.buffer);
+  }
+  return wasmMem;
+}
+
 // ── Shared input buffer: JS writes directly into WASM memory ────────────
 let inputPtr = inputBufGrow(16384);
 let inputCap = 16384;
@@ -187,21 +199,15 @@ export function encodeNode(node: BinaryNode): Uint8Array {
   const written = packNode(node, 0);
   encodeFromInputBuf(written);
 
-  // Read result ptr+len from WASM memory (raw byte access, no DataView)
-  const mem = new Uint8Array(wasmMemory.buffer);
+  // Read result ptr+len from cached WASM view (no new Uint8Array creation)
+  const m = refreshMem();
   const a = encResultAddr;
   const ptr =
-    (mem[a] | (mem[a + 1] << 8) | (mem[a + 2] << 16) | (mem[a + 3] << 24)) >>>
-    0;
+    (m[a] | (m[a + 1] << 8) | (m[a + 2] << 16) | (m[a + 3] << 24)) >>> 0;
   const len =
-    (mem[a + 4] |
-      (mem[a + 5] << 8) |
-      (mem[a + 6] << 16) |
-      (mem[a + 7] << 24)) >>>
-    0;
+    (m[a + 4] | (m[a + 5] << 8) | (m[a + 6] << 16) | (m[a + 7] << 24)) >>> 0;
 
-  // Single JS-native slice: one alloc + one memcpy, no FFI crossings
-  return new Uint8Array(wasmMemory.buffer, ptr, len).slice();
+  return m.slice(ptr, ptr + len);
 }
 
 // ── Fast decodeNode via packed binary protocol ──────────────────────────
@@ -303,13 +309,12 @@ function unpackNode(mem: Uint8Array, p: number[]): BinaryNode {
 export function decodeNode(data: Uint8Array): BinaryNode {
   decodeNodeToPacked(data);
 
-  const mem = new Uint8Array(wasmMemory.buffer);
+  const m = refreshMem();
   const a = encResultAddr;
   const ptr =
-    (mem[a] | (mem[a + 1] << 8) | (mem[a + 2] << 16) | (mem[a + 3] << 24)) >>>
-    0;
+    (m[a] | (m[a + 1] << 8) | (m[a + 2] << 16) | (m[a + 3] << 24)) >>> 0;
 
-  return unpackNode(mem, [ptr]);
+  return unpackNode(m, [ptr]);
 }
 
 /**
@@ -323,15 +328,10 @@ export function decodeFrames(
 ): (Uint8Array | BinaryNode)[] {
   const rv = session.decodeFramePacked(data);
 
-  // Read result descriptor from WASM memory
-  const mem = new Uint8Array(wasmMemory.buffer);
+  const m = refreshMem();
   const a = encResultAddr;
   const bufLen =
-    (mem[a + 4] |
-      (mem[a + 5] << 8) |
-      (mem[a + 6] << 16) |
-      (mem[a + 7] << 24)) >>>
-    0;
+    (m[a + 4] | (m[a + 5] << 8) | (m[a + 6] << 16) | (m[a + 7] << 24)) >>> 0;
 
   if (bufLen === 0) {
     // Handshake mode: rv is the JS Array of raw Uint8Array frames
@@ -340,15 +340,113 @@ export function decodeFrames(
 
   // Post-handshake: unpack nodes from WASM memory
   const ptr =
-    (mem[a] | (mem[a + 1] << 8) | (mem[a + 2] << 16) | (mem[a + 3] << 24)) >>>
-    0;
+    (m[a] | (m[a + 1] << 8) | (m[a + 2] << 16) | (m[a + 3] << 24)) >>> 0;
   const p = [ptr];
-  const count = mem[p[0]] | (mem[p[0] + 1] << 8);
+  const count = m[p[0]] | (m[p[0] + 1] << 8);
   p[0] += 2;
 
   const result: BinaryNode[] = new Array(count);
   for (let i = 0; i < count; i++) {
-    result[i] = unpackNode(mem, p);
+    result[i] = unpackNode(m, p);
   }
   return result;
 }
+
+// ── Override NoiseSession encode methods to use result descriptor ────────
+//
+// encodeFrameRaw: avoids Uint8Array FFI alloc on Rust side.
+// encodeFrame: uses fast packed encodeNode + encodeFrameRaw instead of slow FFI path.
+
+function readResultSlice(): Uint8Array {
+  const m = refreshMem();
+  const a = encResultAddr;
+  const ptr =
+    (m[a] | (m[a + 1] << 8) | (m[a + 2] << 16) | (m[a + 3] << 24)) >>> 0;
+  const len =
+    (m[a + 4] | (m[a + 5] << 8) | (m[a + 6] << 16) | (m[a + 7] << 24)) >>> 0;
+  return m.slice(ptr, ptr + len);
+}
+
+NoiseSession.prototype.encodeFrameRaw = function (
+  data: Uint8Array,
+): Uint8Array {
+  // Write data into shared input buffer — avoids passArray8ToWasm0 malloc+copy
+  const len = data.length;
+  if (len > inputCap) growInput(len);
+  if (inputU8.buffer !== wasmMemory.buffer) {
+    inputU8 = new Uint8Array(wasmMemory.buffer, inputPtr, inputCap);
+  }
+  inputU8.set(data);
+  (this as any).encodeFrameRawFromInputBuf(len);
+  return readResultSlice();
+};
+
+NoiseSession.prototype.encodeFrame = function (node: BinaryNode): Uint8Array {
+  const encoded = encodeNode(node as BinaryNode);
+  return this.encodeFrameRaw(encoded);
+};
+
+NoiseSession.prototype.encrypt = function (plaintext: Uint8Array): Uint8Array {
+  (this as any).encryptPacked(plaintext);
+  return readResultSlice();
+};
+
+NoiseSession.prototype.decrypt = function (ciphertext: Uint8Array): Uint8Array {
+  (this as any).decryptPacked(ciphertext);
+  return readResultSlice();
+};
+
+NoiseSession.prototype.decodeFrame = function (
+  data: Uint8Array,
+): (Uint8Array | BinaryNode)[] {
+  if (!(this as any).isFinished) {
+    // Handshake: write to shared input buffer to avoid passArray8ToWasm0 malloc
+    const dlen = data.length;
+    if (dlen > inputCap) growInput(dlen);
+    if (inputU8.buffer !== wasmMemory.buffer) {
+      inputU8 = new Uint8Array(wasmMemory.buffer, inputPtr, inputCap);
+    }
+    inputU8.set(data);
+    (this as any).decodeFrameHandshakeFromInputBuf(dlen);
+    const m = refreshMem();
+    const a = encResultAddr;
+    const ptr =
+      (m[a] | (m[a + 1] << 8) | (m[a + 2] << 16) | (m[a + 3] << 24)) >>> 0;
+    const p = [ptr];
+    const count = m[p[0]] | (m[p[0] + 1] << 8);
+    p[0] += 2;
+    const result: Uint8Array[] = new Array(count);
+    for (let i = 0; i < count; i++) {
+      const len =
+        (m[p[0]] |
+          (m[p[0] + 1] << 8) |
+          (m[p[0] + 2] << 16) |
+          (m[p[0] + 3] << 24)) >>>
+        0;
+      p[0] += 4;
+      result[i] = m.slice(p[0], p[0] + len);
+      p[0] += len;
+    }
+    return result;
+  }
+
+  // Post-handshake: use decodeFramePacked → read packed nodes from WASM memory
+  (this as any).decodeFramePacked(data);
+  const m = refreshMem();
+  const a = encResultAddr;
+  const ptr =
+    (m[a] | (m[a + 1] << 8) | (m[a + 2] << 16) | (m[a + 3] << 24)) >>> 0;
+  const bufLen =
+    (m[a + 4] | (m[a + 5] << 8) | (m[a + 6] << 16) | (m[a + 7] << 24)) >>> 0;
+
+  if (bufLen === 0) return [];
+
+  const p = [ptr];
+  const count = m[p[0]] | (m[p[0] + 1] << 8);
+  p[0] += 2;
+  const nodes: BinaryNode[] = new Array(count);
+  for (let i = 0; i < count; i++) {
+    nodes[i] = unpackNode(m, p);
+  }
+  return nodes;
+};
