@@ -11,7 +11,7 @@ function base64ToUint8Array(base64: string): Uint8Array {
   return bytes;
 }
 
-const bytes = base64ToUint8Array(await base64Wasm());
+const bytes = base64ToUint8Array(base64Wasm());
 
 initSync({ module: bytes });
 
