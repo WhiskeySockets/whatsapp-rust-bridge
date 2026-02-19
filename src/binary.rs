@@ -4,7 +4,7 @@ use std::cell::UnsafeCell;
 use std::mem;
 use std::rc::Rc;
 use wacore_binary::{
-    marshal::{marshal_ref, unmarshal_ref},
+    marshal::{marshal_ref_to, unmarshal_ref},
     node::{NodeContentRef, NodeRef, ValueRef},
     util::unpack,
 };
@@ -33,6 +33,7 @@ extern "C" {
     pub fn content(this: &EncodingNode) -> JsValue;
 }
 
+/// Manual JS→NodeRef conversion used by noise_session's encode_frame.
 #[inline]
 pub(crate) fn js_to_node_ref(val: &EncodingNode) -> Result<NodeRef<'static>, JsValue> {
     let attrs_obj = val.attrs().unchecked_into::<Object>();
@@ -69,7 +70,7 @@ pub(crate) fn js_to_node_ref(val: &EncodingNode) -> Result<NodeRef<'static>, JsV
 
     let content_js = val.content();
 
-    let content = if content_js.is_undefined() {
+    let content = if content_js.is_undefined() || content_js.is_null() {
         Ok(None)
     } else if let Some(string_value) = content_js.as_string() {
         Ok(Some(NodeContentRef::String(Cow::Owned(string_value))))
@@ -94,6 +95,96 @@ pub(crate) fn js_to_node_ref(val: &EncodingNode) -> Result<NodeRef<'static>, JsV
     };
 
     Ok(NodeRef::new(Cow::Owned(val.tag()), attrs, content?))
+}
+
+// ── Packed binary protocol ──────────────────────────────────────────────
+//
+// Format (little-endian):
+//   Node := tag_len:u16 + tag:utf8 + attr_count:u16 + Attr* + content_type:u8 + Content?
+//   Attr := key_len:u16 + key:utf8 + val_len:u16 + val:utf8
+//   Content:
+//     type=0 → None
+//     type=1 → string_len:u32 + string:utf8
+//     type=2 → bytes_len:u32 + bytes:raw
+//     type=3 → node_count:u16 + Node*
+//
+// JS packs a BinaryNode into this format in pure JS (zero FFI), then a single
+// wasm call passes the buffer. Rust parses with Cow::Borrowed — zero-copy strings.
+
+#[inline]
+fn read_u16(data: &[u8], pos: usize) -> u16 {
+    u16::from_le_bytes([data[pos], data[pos + 1]])
+}
+
+#[inline]
+fn read_u32(data: &[u8], pos: usize) -> u32 {
+    u32::from_le_bytes([data[pos], data[pos + 1], data[pos + 2], data[pos + 3]])
+}
+
+/// SAFETY contract: JS TextEncoder.encodeInto always produces valid UTF-8.
+/// We skip validation to avoid scanning every byte twice.
+#[inline(always)]
+unsafe fn read_str<'a>(data: &'a [u8], pos: &mut usize) -> &'a str {
+    let len = read_u16(data, *pos) as usize;
+    *pos += 2;
+    let s = unsafe { std::str::from_utf8_unchecked(&data[*pos..*pos + len]) };
+    *pos += len;
+    s
+}
+
+pub(crate) fn parse_packed_node<'a>(data: &'a [u8], pos: &mut usize) -> NodeRef<'a> {
+    // SAFETY: all strings written by JS TextEncoder — guaranteed valid UTF-8.
+    unsafe {
+        // Tag
+        let tag = read_str(data, pos);
+
+        // Attrs
+        let attr_count = read_u16(data, *pos) as usize;
+        *pos += 2;
+        let mut attrs = Vec::with_capacity(attr_count);
+
+        for _ in 0..attr_count {
+            let key = read_str(data, pos);
+            let val = read_str(data, pos);
+            attrs.push((Cow::Borrowed(key), ValueRef::String(Cow::Borrowed(val))));
+        }
+
+        // Content
+        let content_type = data[*pos];
+        *pos += 1;
+
+        let content = match content_type {
+            1 => {
+                // String content (u32 length)
+                let len = read_u32(data, *pos) as usize;
+                *pos += 4;
+                let s = std::str::from_utf8_unchecked(&data[*pos..*pos + len]);
+                *pos += len;
+                Some(NodeContentRef::String(Cow::Borrowed(s)))
+            }
+            2 => {
+                // Bytes content (u32 length)
+                let len = read_u32(data, *pos) as usize;
+                *pos += 4;
+                let bytes = &data[*pos..*pos + len];
+                *pos += len;
+                Some(NodeContentRef::Bytes(Cow::Borrowed(bytes)))
+            }
+            3 => {
+                // Child nodes (u16 count)
+                let count = read_u16(data, *pos) as usize;
+                *pos += 2;
+                let mut nodes = Vec::with_capacity(count);
+                for _ in 0..count {
+                    nodes.push(parse_packed_node(data, pos));
+                }
+                Some(NodeContentRef::Nodes(Box::new(nodes)))
+            }
+            _ => None, // 0 = None, anything else = None
+        };
+
+        NodeRef::new(Cow::Borrowed(tag), attrs, content)
+    }
 }
 
 #[wasm_bindgen(typescript_custom_section)]
@@ -246,14 +337,145 @@ impl InternalBinaryNode {
     }
 }
 
-#[wasm_bindgen(js_name = encodeNode)]
-pub fn encode_node(node_val: EncodingNode) -> Result<Uint8Array, JsValue> {
-    let node_ref = js_to_node_ref(&node_val)?;
-    let bytes = marshal_ref(&node_ref).map_err(|e| JsValue::from_str(&e.to_string()))?;
+// SAFETY: WASM is single-threaded — no contention on thread_local
+thread_local! {
+    static ENCODE_BUF: UnsafeCell<Vec<u8>> = const { UnsafeCell::new(Vec::new()) };
+    static INPUT_BUF: UnsafeCell<Vec<u8>> = const { UnsafeCell::new(Vec::new()) };
+    static DECODE_BUF: UnsafeCell<Vec<u8>> = const { UnsafeCell::new(Vec::new()) };
+}
 
-    let result = Uint8Array::new_with_length(bytes.len() as u32);
-    result.copy_from(&bytes);
-    Ok(result)
+// ── Zero-alloc result passing ───────────────────────────────────────────
+//
+// Instead of `Uint8Array::new_with_length` + `copy_from` (two FFI round-trips),
+// we write the marshal result into ENCODE_BUF and store (ptr, len) in a static
+// descriptor. JS reads those 8 bytes directly from WASM memory and does a
+// single `.slice()` — no FFI overhead for the output path.
+//
+// SAFETY: WASM is single-threaded — no data races on static.
+struct SyncCell<T>(UnsafeCell<T>);
+// SAFETY: only sound on single-threaded wasm32 without atomics/threads.
+#[cfg(all(target_arch = "wasm32", not(target_feature = "atomics")))]
+unsafe impl<T> Sync for SyncCell<T> {}
+
+static ENCODE_RESULT: SyncCell<[u32; 2]> = SyncCell(UnsafeCell::new([0, 0]));
+
+/// Returns the WASM memory address of the encode result descriptor.
+/// Called once at init time, cached by JS.
+#[wasm_bindgen(js_name = encodeResultPtr)]
+pub fn encode_result_ptr() -> u32 {
+    ENCODE_RESULT.0.get() as u32
+}
+
+// ── Shared input buffer ─────────────────────────────────────────────────
+//
+// JS packs the BinaryNode directly into WASM memory (zero intermediate copies).
+// `inputBufGrow` ensures capacity and returns the buffer pointer so JS can
+// create a Uint8Array view. `encodeFromInputBuf` reads from this buffer.
+
+/// Ensure input buffer has at least `min_cap` bytes. Returns buffer pointer.
+#[wasm_bindgen(js_name = inputBufGrow)]
+pub fn input_buf_grow(min_cap: u32) -> u32 {
+    INPUT_BUF.with(|cell| {
+        // SAFETY: WASM is single-threaded
+        let buf = unsafe { &mut *cell.get() };
+        let cap = min_cap as usize;
+        if buf.len() < cap {
+            buf.resize(cap, 0);
+        }
+        buf.as_ptr() as u32
+    })
+}
+
+/// Encode from shared input buffer. JS packs directly into WASM memory,
+/// then calls this with the packed length. Zero input copies.
+#[wasm_bindgen(js_name = encodeFromInputBuf)]
+pub fn encode_from_input_buf(len: u32) -> Result<(), JsValue> {
+    INPUT_BUF.with(|input_cell| {
+        let input = unsafe { &*input_cell.get() };
+        let len = len as usize;
+        if len > input.len() {
+            return Err(JsValue::from_str(
+                "encodeFromInputBuf: length exceeds input buffer",
+            ));
+        }
+        let packed = &input[..len];
+        let mut pos = 0;
+        let node_ref = parse_packed_node(packed, &mut pos);
+
+        ENCODE_BUF.with(|encode_cell| {
+            let buf = unsafe { &mut *encode_cell.get() };
+            buf.clear();
+            marshal_ref_to(&node_ref, buf).map_err(|e| {
+                JsValue::from_str(&format!("encodeFromInputBuf: marshal failed: {e}"))
+            })?;
+            unsafe {
+                let result = &mut *ENCODE_RESULT.0.get();
+                result[0] = buf.as_ptr() as u32;
+                result[1] = buf.len() as u32;
+            }
+            Ok(())
+        })
+    })
+}
+
+/// Fallback: encode from JS object (used when packed path is unavailable).
+#[wasm_bindgen(js_name = encodeNodeJs)]
+pub fn encode_node_js(node_val: EncodingNode) -> Result<Uint8Array, JsValue> {
+    let node_ref = js_to_node_ref(&node_val)?;
+
+    ENCODE_BUF.with(|cell| {
+        // SAFETY: WASM is single-threaded, no reentrant calls
+        let buf = unsafe { &mut *cell.get() };
+        buf.clear();
+        marshal_ref_to(&node_ref, buf).map_err(|e| JsValue::from_str(&e.to_string()))?;
+
+        let result = Uint8Array::new_with_length(buf.len() as u32);
+        result.copy_from(buf);
+        Ok(result)
+    })
+}
+
+/// Fast path: encode from pre-packed binary buffer (JS packs, Rust decodes + marshals).
+/// Zero-copy strings on the Rust side — all Cow::Borrowed from the input slice.
+#[wasm_bindgen(js_name = encodeNodePacked)]
+pub fn encode_node_packed(packed: &[u8]) -> Result<Uint8Array, JsValue> {
+    let mut pos = 0;
+    let node_ref = parse_packed_node(packed, &mut pos);
+
+    ENCODE_BUF.with(|cell| {
+        // SAFETY: WASM is single-threaded, no reentrant calls
+        let buf = unsafe { &mut *cell.get() };
+        buf.clear();
+        marshal_ref_to(&node_ref, buf).map_err(|e| JsValue::from_str(&e.to_string()))?;
+
+        let result = Uint8Array::new_with_length(buf.len() as u32);
+        result.copy_from(buf);
+        Ok(result)
+    })
+}
+
+/// Fastest path: encode packed node, write result descriptor to static.
+/// JS reads ptr+len directly from WASM memory — zero Uint8Array alloc on Rust side.
+#[wasm_bindgen(js_name = encodeNodePackedInto)]
+pub fn encode_node_packed_into(packed: &[u8]) -> Result<(), JsValue> {
+    let mut pos = 0;
+    let node_ref = parse_packed_node(packed, &mut pos);
+
+    ENCODE_BUF.with(|cell| {
+        // SAFETY: WASM is single-threaded, no reentrant calls
+        let buf = unsafe { &mut *cell.get() };
+        buf.clear();
+        marshal_ref_to(&node_ref, buf).map_err(|e| {
+            JsValue::from_str(&format!("encodeNodePackedInto: marshal failed: {e}"))
+        })?;
+        // SAFETY: WASM is single-threaded
+        unsafe {
+            let result = &mut *ENCODE_RESULT.0.get();
+            result[0] = buf.as_ptr() as u32;
+            result[1] = buf.len() as u32;
+        }
+        Ok(())
+    })
 }
 
 #[wasm_bindgen(js_name = decodeNode)]
@@ -278,4 +500,136 @@ pub fn decode_node(data: Vec<u8>) -> Result<InternalBinaryNode, JsValue> {
         cached_attrs: UnsafeCell::new(None),
         cached_content: UnsafeCell::new(None),
     })
+}
+
+// ── Packed decode: NodeRef → LNP buffer ─────────────────────────────────
+//
+// Reverse of parse_packed_node: serializes a NodeRef into the same packed
+// binary format that JS uses for encode input. JS reads this from WASM memory
+// and constructs plain { tag, attrs, content } objects — zero FFI wrappers.
+
+#[inline]
+fn write_packed_str(buf: &mut Vec<u8>, s: &str) {
+    debug_assert!(
+        s.len() <= u16::MAX as usize,
+        "write_packed_str: string length exceeds u16::MAX"
+    );
+    buf.extend_from_slice(&(s.len() as u16).to_le_bytes());
+    buf.extend_from_slice(s.as_bytes());
+}
+
+pub(crate) fn write_packed_node(node: &NodeRef, buf: &mut Vec<u8>) {
+    // Tag
+    write_packed_str(buf, &node.tag);
+
+    // Attrs
+    buf.extend_from_slice(&(node.attrs.len() as u16).to_le_bytes());
+    for (k, v) in &node.attrs {
+        write_packed_str(buf, k);
+        match v.as_str() {
+            Some(s) => write_packed_str(buf, s),
+            None => {
+                let s = v.to_string();
+                write_packed_str(buf, &s);
+            }
+        }
+    }
+
+    // Content
+    match node.content.as_deref() {
+        None => buf.push(0),
+        Some(NodeContentRef::String(s)) => {
+            buf.push(1);
+            buf.extend_from_slice(&(s.len() as u32).to_le_bytes());
+            buf.extend_from_slice(s.as_bytes());
+        }
+        Some(NodeContentRef::Bytes(b)) => {
+            buf.push(2);
+            buf.extend_from_slice(&(b.len() as u32).to_le_bytes());
+            buf.extend_from_slice(b);
+        }
+        Some(NodeContentRef::Nodes(nodes)) => {
+            buf.push(3);
+            buf.extend_from_slice(&(nodes.len() as u16).to_le_bytes());
+            for child in nodes.iter() {
+                write_packed_node(child, buf);
+            }
+        }
+    }
+}
+
+/// Release memory held by internal buffers (after processing large messages).
+#[wasm_bindgen(js_name = shrinkBuffers)]
+pub fn shrink_buffers() {
+    ENCODE_BUF.with(|c| unsafe { (&mut *c.get()).shrink_to_fit() });
+    INPUT_BUF.with(|c| unsafe { (&mut *c.get()).shrink_to_fit() });
+    DECODE_BUF.with(|c| unsafe { (&mut *c.get()).shrink_to_fit() });
+}
+
+/// Write (ptr, len) into the shared ENCODE_RESULT descriptor.
+pub(crate) fn set_result_descriptor(ptr: u32, len: u32) {
+    unsafe {
+        let result = &mut *ENCODE_RESULT.0.get();
+        result[0] = ptr;
+        result[1] = len;
+    }
+}
+
+/// Access ENCODE_BUF from outside binary.rs (e.g. noise_session fused encode).
+pub(crate) fn with_encode_buf<F, R>(f: F) -> R
+where
+    F: FnOnce(&mut Vec<u8>) -> R,
+{
+    ENCODE_BUF.with(|cell| {
+        let buf = unsafe { &mut *cell.get() };
+        f(buf)
+    })
+}
+
+/// Access DECODE_BUF from outside binary.rs (e.g. noise_session).
+pub(crate) fn with_decode_buf<F, R>(f: F) -> R
+where
+    F: FnOnce(&mut Vec<u8>) -> R,
+{
+    DECODE_BUF.with(|cell| {
+        let buf = unsafe { &mut *cell.get() };
+        f(buf)
+    })
+}
+
+/// Read-only access to INPUT_BUF from outside binary.rs.
+pub(crate) fn with_input_buf<F, R>(f: F) -> R
+where
+    F: FnOnce(&[u8]) -> R,
+{
+    INPUT_BUF.with(|cell| {
+        let buf = unsafe { &*cell.get() };
+        f(buf)
+    })
+}
+
+/// Decode WhatsApp binary format → packed LNP buffer in WASM memory.
+/// JS reads ptr+len from ENCODE_RESULT and constructs plain JS objects.
+#[wasm_bindgen(js_name = decodeNodeToPacked)]
+pub fn decode_node_to_packed(data: &[u8]) -> Result<(), JsValue> {
+    if data.is_empty() {
+        return Err(JsValue::from_str("Input data cannot be empty"));
+    }
+
+    let unpacked_cow = unpack(data).map_err(|e| JsValue::from_str(&e.to_string()))?;
+    let node_ref = unmarshal_ref(&unpacked_cow).map_err(|e| JsValue::from_str(&e.to_string()))?;
+
+    DECODE_BUF.with(|cell| {
+        // SAFETY: WASM is single-threaded
+        let buf = unsafe { &mut *cell.get() };
+        buf.clear();
+        write_packed_node(&node_ref, buf);
+        unsafe {
+            let result = &mut *ENCODE_RESULT.0.get();
+            result[0] = buf.as_ptr() as u32;
+            result[1] = buf.len() as u32;
+        }
+    });
+
+    Ok(())
 }
