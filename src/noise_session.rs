@@ -1,11 +1,15 @@
 use js_sys::Uint8Array;
 use wacore_binary::consts::NOISE_START_PATTERN as NOISE_MODE;
-use wacore_binary::marshal::marshal_ref;
+use wacore_binary::marshal::{marshal_ref, marshal_ref_to, unmarshal_ref};
+use wacore_binary::util::unpack;
 use wacore_noise::framing::{FrameDecoder, encode_frame_into};
 use wacore_noise::{NoiseCipher, NoiseHandshake, build_handshake_header};
 use wasm_bindgen::prelude::*;
 
-use crate::binary::{EncodingNode, decode_node, js_to_node_ref};
+use crate::binary::{
+    EncodingNode, decode_node, js_to_node_ref, parse_packed_node, set_result_descriptor,
+    with_encode_buf,
+};
 
 /// NoiseSession implements the Noise_XX_25519_AESGCM_SHA256 protocol pattern
 /// with combined binary encoding/decoding operations for reduced WASM boundary crossings.
@@ -106,11 +110,35 @@ impl NoiseSession {
         Ok(result)
     }
 
+    /// Packed variant: writes ciphertext to DECODE_BUF and sets result descriptor.
+    #[wasm_bindgen(js_name = encryptPacked)]
+    pub fn encrypt_packed(&mut self, plaintext: &[u8]) -> Result<(), JsValue> {
+        let ciphertext = self.encrypt_vec(plaintext)?;
+        crate::binary::with_decode_buf(|buf| {
+            buf.clear();
+            buf.extend_from_slice(&ciphertext);
+            set_result_descriptor(buf.as_ptr() as u32, buf.len() as u32);
+        });
+        Ok(())
+    }
+
     pub fn decrypt(&mut self, ciphertext: &[u8]) -> Result<Uint8Array, JsValue> {
         let plaintext = self.decrypt_vec(ciphertext)?;
         let result = Uint8Array::new_with_length(plaintext.len() as u32);
         result.copy_from(&plaintext);
         Ok(result)
+    }
+
+    /// Packed variant: writes plaintext to DECODE_BUF and sets result descriptor.
+    #[wasm_bindgen(js_name = decryptPacked)]
+    pub fn decrypt_packed(&mut self, ciphertext: &[u8]) -> Result<(), JsValue> {
+        let plaintext = self.decrypt_vec(ciphertext)?;
+        crate::binary::with_decode_buf(|buf| {
+            buf.clear();
+            buf.extend_from_slice(&plaintext);
+            set_result_descriptor(buf.as_ptr() as u32, buf.len() as u32);
+        });
+        Ok(())
     }
 
     #[wasm_bindgen(js_name = mixIntoKey)]
@@ -144,6 +172,27 @@ impl NoiseSession {
         Ok(())
     }
 
+    /// Like finishInit but swaps enc/dec ciphers (for test: simulates server side).
+    #[wasm_bindgen(js_name = finishInitAsServer)]
+    pub fn finish_init_as_server(&mut self) -> Result<(), JsValue> {
+        let handshake = self
+            .handshake
+            .take()
+            .ok_or_else(|| JsValue::from_str("NoiseHandshake not initialized"))?;
+
+        let (write_cipher, read_cipher) = handshake
+            .finish()
+            .map_err(|e| JsValue::from_str(&format!("finishInit failed: {}", e)))?;
+
+        // Swap: server's write = client's read, server's read = client's write
+        self.enc_cipher = Some(read_cipher);
+        self.dec_cipher = Some(write_cipher);
+        self.read_counter = 0;
+        self.write_counter = 0;
+        self.is_finished = true;
+        Ok(())
+    }
+
     #[wasm_bindgen(getter, js_name = isFinished)]
     pub fn is_finished(&self) -> bool {
         self.is_finished
@@ -151,19 +200,80 @@ impl NoiseSession {
 
     #[wasm_bindgen(js_name = encodeFrameRaw)]
     pub fn encode_frame_raw(&mut self, data: &[u8]) -> Result<Uint8Array, JsValue> {
-        let encrypted = if self.is_finished {
-            self.encrypt_vec(data)?
-        } else {
-            data.to_vec()
-        };
-
-        let header = self.intro_header.take();
-        encode_frame_into(&encrypted, header.as_deref(), &mut self.encode_scratch)
-            .map_err(|e| JsValue::from_str(&format!("Frame encoding failed: {}", e)))?;
+        self.encode_frame_raw_inner(data)?;
 
         let result = Uint8Array::new_with_length(self.encode_scratch.len() as u32);
         result.copy_from(&self.encode_scratch);
         Ok(result)
+    }
+
+    /// Packed variant: sets result descriptor instead of allocating Uint8Array.
+    /// JS reads ptr+len directly from WASM memory.
+    #[wasm_bindgen(js_name = encodeFrameRawPacked)]
+    pub fn encode_frame_raw_packed(&mut self, data: &[u8]) -> Result<(), JsValue> {
+        self.encode_frame_raw_inner(data)?;
+        set_result_descriptor(
+            self.encode_scratch.as_ptr() as u32,
+            self.encode_scratch.len() as u32,
+        );
+        Ok(())
+    }
+
+    /// Reads data from shared INPUT_BUF — avoids passArray8ToWasm0 malloc+copy.
+    #[wasm_bindgen(js_name = encodeFrameRawFromInputBuf)]
+    pub fn encode_frame_raw_from_input_buf(&mut self, len: u32) -> Result<(), JsValue> {
+        crate::binary::with_input_buf(|input| {
+            let data = &input[..len as usize];
+            self.encode_frame_raw_inner(data)?;
+            set_result_descriptor(
+                self.encode_scratch.as_ptr() as u32,
+                self.encode_scratch.len() as u32,
+            );
+            Ok(())
+        })
+    }
+
+    /// Fused encode: reads packed BinaryNode from INPUT_BUF, does
+    /// parse → marshal → encrypt → frame in one WASM call.
+    /// Eliminates the round-trip where encodeNode slices out of WASM
+    /// and encodeFrameRaw copies it back in.
+    #[wasm_bindgen(js_name = encodeFrameFromInputBuf)]
+    pub fn encode_frame_from_input_buf(&mut self, packed_len: u32) -> Result<(), JsValue> {
+        crate::binary::with_input_buf(|input| {
+            let packed = &input[..packed_len as usize];
+            let mut pos = 0;
+            let node_ref = parse_packed_node(packed, &mut pos);
+
+            // Marshal to ENCODE_BUF, then encrypt + frame from there
+            with_encode_buf(|encode_buf| {
+                encode_buf.clear();
+                marshal_ref_to(&node_ref, encode_buf).map_err(|e| {
+                    JsValue::from_str(&format!("encodeFrameFromInputBuf: marshal failed: {e}"))
+                })?;
+
+                // encrypt + frame into encode_scratch
+                self.encode_frame_raw_inner(encode_buf)?;
+                set_result_descriptor(
+                    self.encode_scratch.as_ptr() as u32,
+                    self.encode_scratch.len() as u32,
+                );
+                Ok(())
+            })
+        })
+    }
+
+    #[inline]
+    fn encode_frame_raw_inner(&mut self, data: &[u8]) -> Result<(), JsValue> {
+        let header = self.intro_header.take();
+        if self.is_finished {
+            let encrypted = self.encrypt_vec(data)?;
+            encode_frame_into(&encrypted, header.as_deref(), &mut self.encode_scratch)
+                .map_err(|e| JsValue::from_str(&format!("Frame encoding failed: {}", e)))?;
+        } else {
+            encode_frame_into(data, header.as_deref(), &mut self.encode_scratch)
+                .map_err(|e| JsValue::from_str(&format!("Frame encoding failed: {}", e)))?;
+        }
+        Ok(())
     }
 
     #[wasm_bindgen(js_name = encodeFrame)]
@@ -205,6 +315,124 @@ impl NoiseSession {
         }
 
         Ok(decoded_frames)
+    }
+
+    /// Packed decode path: writes decoded nodes as LNP to DECODE_BUF.
+    /// Handshake: returns JS Array of raw Uint8Array frames.
+    /// Post-handshake: returns node count (u32); packed nodes in WASM memory.
+    #[wasm_bindgen(js_name = decodeFramePacked)]
+    pub fn decode_frame_packed(&mut self, new_data: &[u8]) -> Result<JsValue, JsValue> {
+        self.frame_decoder.feed(new_data);
+
+        if !self.is_finished {
+            let result_array = js_sys::Array::new();
+            while let Some(frame_data) = self.frame_decoder.decode_frame() {
+                let result = Uint8Array::new_with_length(frame_data.len() as u32);
+                result.copy_from(&frame_data);
+                result_array.push(&result.into());
+            }
+            set_result_descriptor(0, 0);
+            return Ok(result_array.into());
+        }
+
+        // Post-handshake: decrypt + pack each frame directly into DECODE_BUF.
+        // Process one frame at a time — no intermediate Vec<Vec<u8>>.
+        crate::binary::with_decode_buf(|buf| {
+            buf.clear();
+            buf.extend_from_slice(&0u16.to_le_bytes()); // count placeholder
+            let mut count: u16 = 0;
+
+            while let Some(frame_data) = self.frame_decoder.decode_frame() {
+                let decrypted = self.decrypt_vec(&frame_data)?;
+                if decrypted.is_empty() {
+                    continue;
+                }
+                let unpacked = unpack(&decrypted).map_err(|e| JsValue::from_str(&e.to_string()))?;
+                let node_ref =
+                    unmarshal_ref(&unpacked).map_err(|e| JsValue::from_str(&e.to_string()))?;
+                crate::binary::write_packed_node(&node_ref, buf);
+                count += 1;
+            }
+
+            buf[0..2].copy_from_slice(&count.to_le_bytes());
+            set_result_descriptor(buf.as_ptr() as u32, buf.len() as u32);
+            Ok(JsValue::UNDEFINED)
+        })
+    }
+
+    /// Like decodeFramePacked but reads from shared INPUT_BUF — avoids passArray8ToWasm0.
+    /// Only for post-handshake mode (is_finished == true).
+    #[wasm_bindgen(js_name = decodeFramePackedFromInputBuf)]
+    pub fn decode_frame_packed_from_input_buf(&mut self, len: u32) -> Result<(), JsValue> {
+        crate::binary::with_input_buf(|input| {
+            self.frame_decoder.feed(&input[..len as usize]);
+        });
+
+        // Post-handshake: decrypt + pack each frame directly into DECODE_BUF.
+        crate::binary::with_decode_buf(|buf| {
+            buf.clear();
+            buf.extend_from_slice(&0u16.to_le_bytes()); // count placeholder
+            let mut count: u16 = 0;
+
+            while let Some(frame_data) = self.frame_decoder.decode_frame() {
+                let decrypted = self.decrypt_vec(&frame_data)?;
+                if decrypted.is_empty() {
+                    continue;
+                }
+                let unpacked = unpack(&decrypted).map_err(|e| JsValue::from_str(&e.to_string()))?;
+                let node_ref =
+                    unmarshal_ref(&unpacked).map_err(|e| JsValue::from_str(&e.to_string()))?;
+                crate::binary::write_packed_node(&node_ref, buf);
+                count += 1;
+            }
+
+            buf[0..2].copy_from_slice(&count.to_le_bytes());
+            set_result_descriptor(buf.as_ptr() as u32, buf.len() as u32);
+            Ok(())
+        })
+    }
+
+    /// Packed handshake decode: writes raw frames to DECODE_BUF.
+    /// Format: count:u16 + (len:u32 + raw_bytes)*
+    /// Avoids js_sys::Array + Uint8Array FFI allocations.
+    #[wasm_bindgen(js_name = decodeFrameHandshakePacked)]
+    pub fn decode_frame_handshake_packed(&mut self, new_data: &[u8]) {
+        self.frame_decoder.feed(new_data);
+        self.drain_handshake_frames();
+    }
+
+    /// Combined clear + feed + decode for handshake mode.
+    /// Saves one FFI call vs separate clearBuffer() + decodeFrameHandshakePacked().
+    #[wasm_bindgen(js_name = decodeFrameFreshPacked)]
+    pub fn decode_frame_fresh_packed(&mut self, new_data: &[u8]) {
+        self.frame_decoder.clear();
+        self.frame_decoder.feed(new_data);
+        self.drain_handshake_frames();
+    }
+
+    /// Feed from shared INPUT_BUF — avoids passArray8ToWasm0 malloc+copy.
+    #[wasm_bindgen(js_name = decodeFrameHandshakeFromInputBuf)]
+    pub fn decode_frame_handshake_from_input_buf(&mut self, len: u32) {
+        crate::binary::with_input_buf(|input| {
+            self.frame_decoder.feed(&input[..len as usize]);
+        });
+        self.drain_handshake_frames();
+    }
+
+    #[inline]
+    fn drain_handshake_frames(&mut self) {
+        crate::binary::with_decode_buf(|buf| {
+            buf.clear();
+            buf.extend_from_slice(&0u16.to_le_bytes()); // count placeholder
+            let mut count: u16 = 0;
+            while let Some(frame_data) = self.frame_decoder.decode_frame() {
+                buf.extend_from_slice(&(frame_data.len() as u32).to_le_bytes());
+                buf.extend_from_slice(&frame_data);
+                count += 1;
+            }
+            buf[0..2].copy_from_slice(&count.to_le_bytes());
+            set_result_descriptor(buf.as_ptr() as u32, buf.len() as u32);
+        });
     }
 
     #[wasm_bindgen(getter, js_name = bufferedBytes)]
