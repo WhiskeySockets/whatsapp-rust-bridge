@@ -29,7 +29,11 @@ pub fn generate_key_pair() -> KeyPair {
     let pair = CoreKeyPair::generate(&mut OsRng.unwrap_err());
 
     KeyPair {
-        pub_key: pair.public_key.serialize().to_vec(),
+        // Return raw 32-byte public key (without 0x05 DJB type prefix).
+        // Baileys works with raw 32-byte keys and adds the prefix only when needed
+        // (via generateSignalPubKey). Returning 33 bytes here would break the
+        // Noise handshake which expects a raw 32-byte ephemeral key.
+        pub_key: pair.public_key.public_key_bytes().to_vec(),
         priv_key: pair.private_key.serialize().to_vec(),
     }
 }

@@ -8,10 +8,16 @@ pub mod group_cipher;
 pub mod group_types;
 #[cfg(feature = "image")]
 pub mod image_utils;
+pub mod js_backend;
+pub mod js_http;
+pub mod js_time;
+pub mod js_transport;
 pub mod key_helper;
 pub mod logger;
 pub mod noise_session;
+pub mod proto;
 pub mod protocol_address;
+pub mod runtime;
 pub mod sender_key_name;
 pub mod session_builder;
 pub mod session_cipher;
@@ -19,6 +25,7 @@ pub mod session_record;
 #[cfg(feature = "sticker")]
 pub mod sticker_metadata;
 pub mod storage_adapter;
+pub mod wasm_client;
 
 // Re-export WhatsApp protocol constants for JS usage
 use js_sys::Uint8Array;

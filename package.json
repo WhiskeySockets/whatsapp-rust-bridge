@@ -11,21 +11,28 @@
     "type": "module",
     "files": [
         "dist/**/*",
-        "pkg/whatsapp_rust_bridge.d.ts"
+        "pkg/whatsapp_rust_bridge.d.ts",
+        "types/**/*"
     ],
     "exports": {
         ".": {
             "import": "./dist/index.js",
-            "types": "./dist/index.d.ts"
+            "types": "./types/index.d.ts"
+        },
+        "./types": {
+            "types": "./types/generated.d.ts"
         }
     },
     "scripts": {
         "bench": "bun run build && bun run benches/binary.ts && bun run benches/signal.ts && bun run benches/curve.ts && bun run benches/crypto.ts",
         "bench:node": "bun run build && node --expose-gc benches/binary.ts && node --expose-gc benches/signal.ts && node --expose-gc benches/curve.ts && node --expose-gc benches/crypto.ts",
+        "gen:types": "cd codegen && cargo run --target x86_64-unknown-linux-gnu 2>/dev/null > ../types/generated.d.ts",
         "build:wasm": "wasm-pack build --target web --out-dir pkg --no-pack",
+        "build:wasm:dev": "wasm-pack build --target web --out-dir pkg --no-pack --dev",
         "build:ts": "bun build ts/index.ts --outfile dist/index.js",
         "postbuild": "tsc -p tsconfig.json --outDir dist && rm -f dist/macro.d.ts",
         "build": "bun run build:wasm && bun run build:ts && bun run postbuild",
+        "build:dev": "bun run build:wasm:dev && bun run build:ts && bun run postbuild",
         "prepublishOnly": "bun run build"
     },
     "devDependencies": {

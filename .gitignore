@@ -5,3 +5,4 @@ pkg
 *.tgz
 *.xml
 docs
+codegen/target/
