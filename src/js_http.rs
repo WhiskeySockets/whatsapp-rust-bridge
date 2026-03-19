@@ -25,9 +25,7 @@ pub struct JsHttpClientAdapter {
     _js_obj: JsValue,
 }
 
-// SAFETY: WASM is single-threaded.
-unsafe impl Send for JsHttpClientAdapter {}
-unsafe impl Sync for JsHttpClientAdapter {}
+crate::wasm_send_sync!(JsHttpClientAdapter);
 
 impl JsHttpClientAdapter {
     pub fn from_js(obj: JsValue) -> Result<Self, JsValue> {

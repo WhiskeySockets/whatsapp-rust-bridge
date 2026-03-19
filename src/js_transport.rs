@@ -63,19 +63,28 @@ fn create_js_handle(event_tx: async_channel::Sender<TransportEvent>) -> JsValue 
     let tx = event_tx.clone();
     let on_data = Closure::wrap(Box::new(move |data: js_sys::Uint8Array| {
         let bytes = data.to_vec();
-        let _ = tx.try_send(TransportEvent::DataReceived(Bytes::from(bytes)));
+        if tx
+            .try_send(TransportEvent::DataReceived(Bytes::from(bytes)))
+            .is_err()
+        {
+            log::error!("Transport event channel full, data event dropped!");
+        }
     }) as Box<dyn FnMut(js_sys::Uint8Array)>);
     let _ = js_sys::Reflect::set(&obj, &"onData".into(), &on_data.into_js_value());
 
     let tx = event_tx.clone();
     let on_connected = Closure::wrap(Box::new(move || {
-        let _ = tx.try_send(TransportEvent::Connected);
+        if tx.try_send(TransportEvent::Connected).is_err() {
+            log::error!("Transport event channel full, Connected event dropped!");
+        }
     }) as Box<dyn FnMut()>);
     let _ = js_sys::Reflect::set(&obj, &"onConnected".into(), &on_connected.into_js_value());
 
     let tx = event_tx;
     let on_disconnected = Closure::wrap(Box::new(move || {
-        let _ = tx.try_send(TransportEvent::Disconnected);
+        if tx.try_send(TransportEvent::Disconnected).is_err() {
+            log::error!("Transport event channel full, Disconnected event dropped!");
+        }
     }) as Box<dyn FnMut()>);
     let _ = js_sys::Reflect::set(
         &obj,
@@ -103,9 +112,7 @@ struct RawTransportCallbacks {
     _js_obj: JsValue,
 }
 
-// SAFETY: WASM is single-threaded.
-unsafe impl Send for RawTransportCallbacks {}
-unsafe impl Sync for RawTransportCallbacks {}
+crate::wasm_send_sync!(RawTransportCallbacks);
 
 impl RawTransportCallbacks {
     /// Extract callbacks from a JS object with connect/send/disconnect methods.
@@ -171,9 +178,7 @@ struct JsTransportInner {
     callbacks: Arc<RawTransportCallbacks>,
 }
 
-// SAFETY: WASM is single-threaded.
-unsafe impl Send for JsTransportInner {}
-unsafe impl Sync for JsTransportInner {}
+crate::wasm_send_sync!(JsTransportInner);
 
 #[cfg_attr(target_arch = "wasm32", async_trait(?Send))]
 #[cfg_attr(not(target_arch = "wasm32"), async_trait)]
@@ -198,9 +203,7 @@ pub struct JsTransportFactory {
     callbacks: Arc<RawTransportCallbacks>,
 }
 
-// SAFETY: WASM is single-threaded.
-unsafe impl Send for JsTransportFactory {}
-unsafe impl Sync for JsTransportFactory {}
+crate::wasm_send_sync!(JsTransportFactory);
 
 impl JsTransportFactory {
     pub fn from_js(obj: JsValue) -> Result<Self, JsValue> {

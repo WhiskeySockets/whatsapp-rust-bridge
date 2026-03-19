@@ -27,6 +27,18 @@ pub mod sticker_metadata;
 pub mod storage_adapter;
 pub mod wasm_client;
 
+/// SAFETY: WASM is single-threaded — Send + Sync are trivially satisfied.
+/// This macro reduces boilerplate for types that hold JS values.
+macro_rules! wasm_send_sync {
+    ($($t:ty),+ $(,)?) => {
+        $(
+            unsafe impl Send for $t {}
+            unsafe impl Sync for $t {}
+        )+
+    };
+}
+pub(crate) use wasm_send_sync;
+
 // Re-export WhatsApp protocol constants for JS usage
 use js_sys::Uint8Array;
 use serde::Serialize;

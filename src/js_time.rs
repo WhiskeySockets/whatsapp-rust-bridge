@@ -4,9 +4,7 @@ use wacore::time::TimeProvider;
 
 pub struct JsTimeProvider;
 
-// SAFETY: WASM is single-threaded.
-unsafe impl Send for JsTimeProvider {}
-unsafe impl Sync for JsTimeProvider {}
+crate::wasm_send_sync!(JsTimeProvider);
 
 impl TimeProvider for JsTimeProvider {
     fn now_millis(&self) -> i64 {

@@ -85,13 +85,11 @@ struct JsEventHandler {
     event_tx: async_channel::Sender<JsValue>,
 }
 
-// SAFETY: WASM is single-threaded.
-unsafe impl Send for JsEventHandler {}
-unsafe impl Sync for JsEventHandler {}
+crate::wasm_send_sync!(JsEventHandler);
 
 impl JsEventHandler {
     fn new(callback: js_sys::Function) -> Self {
-        let (event_tx, event_rx) = async_channel::unbounded();
+        let (event_tx, event_rx) = async_channel::bounded(4096);
 
         // Single consumer loop — guarantees event ordering
         wasm_bindgen_futures::spawn_local(async move {
@@ -108,18 +106,82 @@ impl JsEventHandler {
 
 impl EventHandler for JsEventHandler {
     fn handle_event(&self, event: &Event) {
-        if let Ok(js_event) = event_to_js(event) {
-            let _ = self.event_tx.try_send(js_event);
+        match event_to_js(event) {
+            Ok(js_event) => {
+                if let Err(e) = self.event_tx.try_send(js_event) {
+                    log::warn!("Event channel send failed: {e}");
+                }
+            }
+            Err(e) => log::warn!("Event serialization failed: {e:?}"),
         }
     }
+}
+
+/// Helper macro for Event variants whose payload is directly serializable
+/// via `crate::proto::to_js_value`.
+macro_rules! serialize_event {
+    ($event:expr, { $( $variant:ident => $name:literal ),* $(,)? }) => {
+        match $event {
+            $( Event::$variant(data) => ($name, crate::proto::to_js_value(data)?), )*
+            other => return event_to_js_special(other),
+        }
+    };
 }
 
 /// Convert a Rust Event to a JS object `{ type: string, data: any }`.
 fn event_to_js(event: &Event) -> Result<JsValue, JsValue> {
     let obj = js_sys::Object::new();
+
+    // Common case: payload implements Serialize, just use to_js_value
+    let (event_type, data) = serialize_event!(event, {
+        Receipt                 => "receipt",
+        UndecryptableMessage    => "undecryptable_message",
+        Notification            => "notification",
+        ChatPresence            => "chat_presence",
+        Presence                => "presence",
+        PictureUpdate           => "picture_update",
+        UserAboutUpdate         => "user_about_update",
+        ContactUpdated          => "contact_updated",
+        ContactNumberChanged    => "contact_number_changed",
+        ContactSyncRequested    => "contact_sync_requested",
+        GroupUpdate             => "group_update",
+        ContactUpdate           => "contact_update",
+        PushNameUpdate          => "push_name_update",
+        SelfPushNameUpdated     => "self_push_name_updated",
+        PinUpdate               => "pin_update",
+        MuteUpdate              => "mute_update",
+        ArchiveUpdate           => "archive_update",
+        StarUpdate              => "star_update",
+        MarkChatAsReadUpdate    => "mark_chat_as_read_update",
+        HistorySync             => "history_sync",
+        OfflineSyncPreview      => "offline_sync_preview",
+        OfflineSyncCompleted    => "offline_sync_completed",
+        DeviceListUpdate        => "device_list_update",
+        BusinessStatusUpdate    => "business_status_update",
+        TemporaryBan            => "temporary_ban",
+        ConnectFailure          => "connect_failure",
+        StreamError             => "stream_error",
+        DisappearingModeChanged => "disappearing_mode_changed",
+        NewsletterLiveUpdate    => "newsletter_live_update",
+    });
+
+    js_sys::Reflect::set(&obj, &"type".into(), &event_type.into())?;
+    js_sys::Reflect::set(&obj, &"data".into(), &data)?;
+    Ok(obj.into())
+}
+
+/// Handles Event variants that need special serialization (no data, named
+/// fields, multi-field payloads, or pre-processing).
+fn event_to_js_special(event: &Event) -> Result<JsValue, JsValue> {
+    let obj = js_sys::Object::new();
+    let empty = || JsValue::from(js_sys::Object::new());
+
     let (event_type, data) = match event {
-        Event::Connected(_) => ("connected", JsValue::from(js_sys::Object::new())),
-        Event::Disconnected(_) => ("disconnected", JsValue::from(js_sys::Object::new())),
+        Event::Connected(_) => ("connected", empty()),
+        Event::Disconnected(_) => ("disconnected", empty()),
+        Event::QrScannedWithoutMultidevice(_) => ("qr_scanned_without_multidevice", empty()),
+        Event::ClientOutdated(_) => ("client_outdated", empty()),
+        Event::StreamReplaced(_) => ("stream_replaced", empty()),
         Event::PairingQrCode { code, timeout } => {
             let d = js_sys::Object::new();
             js_sys::Reflect::set(&d, &"code".into(), &code.into())?;
@@ -163,13 +225,6 @@ fn event_to_js(event: &Event) -> Result<JsValue, JsValue> {
             js_sys::Reflect::set(&d, &"reason".into(), &format!("{:?}", lo.reason).into())?;
             ("logged_out", d.into())
         }
-        Event::QrScannedWithoutMultidevice(_) => (
-            "qr_scanned_without_multidevice",
-            JsValue::from(js_sys::Object::new()),
-        ),
-        Event::ClientOutdated(_) => ("client_outdated", JsValue::from(js_sys::Object::new())),
-        Event::StreamReplaced(_) => ("stream_replaced", JsValue::from(js_sys::Object::new())),
-        // For Serialize-able event payloads, use our BigInt-aware serializer
         Event::Message(msg, info) => {
             let d = js_sys::Object::new();
             js_sys::Reflect::set(
@@ -180,52 +235,24 @@ fn event_to_js(event: &Event) -> Result<JsValue, JsValue> {
             js_sys::Reflect::set(&d, &"info".into(), &crate::proto::to_js_value(info)?)?;
             ("message", d.into())
         }
-        Event::Receipt(r) => ("receipt", crate::proto::to_js_value(r)?),
-        Event::UndecryptableMessage(u) => ("undecryptable_message", crate::proto::to_js_value(u)?),
-        Event::Notification(n) => ("notification", crate::proto::to_js_value(n)?),
-        Event::ChatPresence(cp) => ("chat_presence", crate::proto::to_js_value(cp)?),
-        Event::Presence(p) => ("presence", crate::proto::to_js_value(p)?),
-        Event::PictureUpdate(pu) => ("picture_update", crate::proto::to_js_value(pu)?),
-        Event::UserAboutUpdate(u) => ("user_about_update", crate::proto::to_js_value(u)?),
-        Event::ContactUpdated(c) => ("contact_updated", crate::proto::to_js_value(c)?),
-        Event::ContactNumberChanged(c) => ("contact_number_changed", crate::proto::to_js_value(c)?),
-        Event::ContactSyncRequested(c) => ("contact_sync_requested", crate::proto::to_js_value(c)?),
         Event::JoinedGroup(lg) => {
-            // Force parse to serialize
-            let _ = lg.get();
+            // Force parse before serialization; log if parsing fails
+            if lg.get().is_none() {
+                log::warn!("Failed to parse JoinedGroup conversation from raw bytes");
+            }
             ("joined_group", crate::proto::to_js_value(lg)?)
         }
-        Event::GroupUpdate(gu) => ("group_update", crate::proto::to_js_value(gu)?),
-        Event::ContactUpdate(cu) => ("contact_update", crate::proto::to_js_value(cu)?),
-        Event::PushNameUpdate(pu) => ("push_name_update", crate::proto::to_js_value(pu)?),
-        Event::SelfPushNameUpdated(s) => ("self_push_name_updated", crate::proto::to_js_value(s)?),
-        Event::PinUpdate(pu) => ("pin_update", crate::proto::to_js_value(pu)?),
-        Event::MuteUpdate(mu) => ("mute_update", crate::proto::to_js_value(mu)?),
-        Event::ArchiveUpdate(au) => ("archive_update", crate::proto::to_js_value(au)?),
-        Event::StarUpdate(su) => ("star_update", crate::proto::to_js_value(su)?),
-        Event::MarkChatAsReadUpdate(m) => {
-            ("mark_chat_as_read_update", crate::proto::to_js_value(m)?)
-        }
-        Event::HistorySync(hs) => ("history_sync", crate::proto::to_js_value(hs)?),
-        Event::OfflineSyncPreview(o) => ("offline_sync_preview", crate::proto::to_js_value(o)?),
-        Event::OfflineSyncCompleted(o) => ("offline_sync_completed", crate::proto::to_js_value(o)?),
-        Event::DeviceListUpdate(d) => ("device_list_update", crate::proto::to_js_value(d)?),
-        Event::BusinessStatusUpdate(b) => ("business_status_update", crate::proto::to_js_value(b)?),
-        Event::TemporaryBan(t) => ("temporary_ban", crate::proto::to_js_value(t)?),
-        Event::ConnectFailure(cf) => ("connect_failure", crate::proto::to_js_value(cf)?),
-        Event::StreamError(se) => ("stream_error", crate::proto::to_js_value(se)?),
-        Event::DisappearingModeChanged(dm) => {
-            ("disappearing_mode_changed", crate::proto::to_js_value(dm)?)
-        }
-        Event::NewsletterLiveUpdate(nlu) => {
-            ("newsletter_live_update", crate::proto::to_js_value(nlu)?)
-        }
+        // All other variants are handled by serialize_event! in event_to_js
+        _ => unreachable!("unhandled event variant in event_to_js_special"),
     };
 
     js_sys::Reflect::set(&obj, &"type".into(), &event_type.into())?;
     js_sys::Reflect::set(&obj, &"data".into(), &data)?;
     Ok(obj.into())
 }
+
+/// Default WhatsApp Web version. Hardcoded to skip HTTP version-check on startup.
+const DEFAULT_WA_WEB_VERSION: (u32, u32, u32) = (2, 3000, 1031424117);
 
 // ---------------------------------------------------------------------------
 // Initialization
@@ -284,7 +311,7 @@ pub async fn create_whatsapp_client(
         persistence_manager,
         transport_factory,
         http_client,
-        Some((2, 3000, 1031424117)), // Default WhatsApp Web version (skips HTTP fetch)
+        Some(DEFAULT_WA_WEB_VERSION),
         whatsapp_rust::CacheConfig::default(),
     )
     .await;
@@ -332,6 +359,9 @@ impl WasmWhatsAppClient {
     /// This is NOT `async` — it returns synchronously to avoid holding a wasm-bindgen
     /// borrow on `self` that would prevent calling other methods (disconnect, etc.).
     pub fn run(&mut self) -> Result<(), JsValue> {
+        if self.sync_rx.is_none() {
+            return Err(JsValue::from_str("run() has already been called"));
+        }
         let client = self.client.clone();
         let runtime = self.runtime.clone();
         let sync_rx = self.sync_rx.take();

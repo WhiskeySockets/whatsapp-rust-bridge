@@ -199,17 +199,8 @@ export declare function encodeProto(typeName: string, json: any): Uint8Array;
 /** Decode binary protobuf to a JS object. */
 export declare function decodeProto(typeName: string, data: Uint8Array): any;
 
-// Type-specific encode/decode (for common types)
-export declare function encodeMessage(json: any): Uint8Array;
-export declare function decodeMessage(data: Uint8Array): any;
-export declare function encodeWebMessageInfo(json: any): Uint8Array;
-export declare function decodeWebMessageInfo(data: Uint8Array): any;
-export declare function encodeClientPayload(json: any): Uint8Array;
-export declare function decodeClientPayload(data: Uint8Array): any;
-export declare function encodeHandshakeMessage(json: any): Uint8Array;
-export declare function decodeHandshakeMessage(data: Uint8Array): any;
-export declare function encodeHistorySync(json: any): Uint8Array;
-export declare function decodeHistorySync(data: Uint8Array): any;
+// Type-specific encode/decode removed — use encodeProto/decodeProto with a type name instead.
+// Example: encodeProto("Message", json) / decodeProto("Message", data)
 
 // ---------------------------------------------------------------------------
 // Low-level Signal protocol (for advanced use)
