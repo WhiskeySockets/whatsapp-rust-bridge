@@ -84,7 +84,7 @@ export function createTransport(label?: string): JsTransportCallbacks {
       }
       disconnectTarget = null;
     },
-  } as unknown as JsTransportCallbacks;
+  } satisfies JsTransportCallbacks;
 }
 
 /**
@@ -112,7 +112,7 @@ export function createHttp(): JsHttpClientConfig {
         return { statusCode: 0, body: new Uint8Array(0) };
       }
     },
-  } as unknown as JsHttpClientConfig;
+  } satisfies JsHttpClientConfig;
 }
 
 /**

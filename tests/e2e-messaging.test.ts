@@ -12,11 +12,9 @@ import { describe, test, expect, beforeAll } from "bun:test";
 import {
   initWasmEngine,
   createWhatsAppClient,
+  type WhatsAppEvent,
+  type WasmWhatsAppClient,
 } from "../dist/index.js";
-import type {
-  Event,
-  WasmWhatsAppClient,
-} from "../types/index.js";
 import { createTransport, createHttp, waitForEvent } from "./helpers.js";
 
 process.env.NODE_TLS_REJECT_UNAUTHORIZED = "0";
@@ -31,19 +29,19 @@ beforeAll(() => {
 
 interface TestClient {
   client: WasmWhatsAppClient;
-  events: Event[];
+  events: WhatsAppEvent[];
   name: string;
 }
 
 async function createTestClient(name: string): Promise<TestClient> {
-  const events: Event[] = [];
+  const events: WhatsAppEvent[] = [];
   const client = await createWhatsAppClient(
-    createTransport(name) as any,
-    createHttp() as any,
-    ((event: Event) => {
+    createTransport(name),
+    createHttp(),
+    (event) => {
       console.log(`  [${name}] event: ${event.type}`);
       events.push(event);
-    }) as any
+    }
   );
   return { client, events, name };
 }

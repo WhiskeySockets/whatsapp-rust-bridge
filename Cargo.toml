@@ -5,28 +5,28 @@ edition = "2024"
 
 [package.metadata.wasm-pack.profile.release]
 wasm-opt = [
-  "-O4",
-  "--gufa-optimizing",
-  "--inlining-optimizing",
-  "--ignore-implicit-traps",
-  "--traps-never-happen",
-  "--coalesce-locals-learning",
-  "--converge",
-  # Enable modern WASM features for better optimization
-  "--enable-simd",
-  "--enable-bulk-memory",
-  "--enable-nontrapping-float-to-int",
-  "--enable-sign-ext",
-  "--enable-mutable-globals",
-  "--enable-multivalue",
-  # Additional optimization passes
-  "--fast-math",
-  "--zero-filled-memory",
-  "--dce",
-  "--vacuum",
-  "--directize",
-  "--optimize-stack-ir",
-  "--strip-debug",
+    "-O4",
+    "--gufa-optimizing",
+    "--inlining-optimizing",
+    "--ignore-implicit-traps",
+    "--traps-never-happen",
+    "--coalesce-locals-learning",
+    "--converge",
+    # Enable modern WASM features for better optimization
+    "--enable-simd",
+    "--enable-bulk-memory",
+    "--enable-nontrapping-float-to-int",
+    "--enable-sign-ext",
+    "--enable-mutable-globals",
+    "--enable-multivalue",
+    # Additional optimization passes
+    "--fast-math",
+    "--zero-filled-memory",
+    "--dce",
+    "--vacuum",
+    "--directize",
+    "--optimize-stack-ir",
+    "--strip-debug",
 ]
 
 [lib]
@@ -43,8 +43,10 @@ anyhow = { version = "1.0", default-features = false }
 async-channel = { version = "2.5.0", default-features = false, features = ["std"] }
 async-lock = { version = "3", default-features = false }
 async-trait = "0.1.89"
-bytes = { version = "1.5", default-features = false }
 base64 = { version = "0.22.1", default-features = false, features = ["alloc"] }
+bytes = { version = "1.5", default-features = false }
+console_error_panic_hook = "0.1"
+console_log = { version = "1", features = ["color"] }
 curve25519-dalek = { version = "4.1.3", default-features = false, features = [
   "alloc",
   "digest",
@@ -63,8 +65,6 @@ image = { version = "0.25.5", default-features = false, features = [
 ], optional = true }
 
 img-parts = { version = "0.4", default-features = false, optional = true }
-console_error_panic_hook = "0.1"
-console_log = { version = "1", features = ["color"] }
 js-sys = "0.3"
 log = "0.4"
 md-5 = "0.10"
@@ -90,8 +90,7 @@ wacore-appstate = { path = "../whatsapp-rust/wacore/appstate" }
 wacore-binary = { path = "../whatsapp-rust/wacore/binary", features = ["serde"] }
 wacore-libsignal = { path = "../whatsapp-rust/wacore/libsignal" }
 wacore-noise = { path = "../whatsapp-rust/wacore/noise" }
-waproto = { path = "../whatsapp-rust/waproto" }
-whatsapp-rust = { path = "../whatsapp-rust", default-features = false }
+waproto = { path = "../whatsapp-rust/waproto", features = ["serde-deserialize"] }
 wasm-bindgen = "0.2.100"
 wasm-bindgen-futures = "0.4.55"
 web-sys = { version = "0.3", features = [
@@ -99,6 +98,7 @@ web-sys = { version = "0.3", features = [
   "ReadableStreamDefaultReader",
   "Window",
 ] }
+whatsapp-rust = { path = "../whatsapp-rust", default-features = false }
 
 [profile.release]
 lto = "fat"

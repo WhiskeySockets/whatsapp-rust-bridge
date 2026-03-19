@@ -28,10 +28,69 @@ import type {
   DisappearingModeChanged,
   NewsletterLiveUpdate,
   BusinessStatusUpdate,
+  ContactUpdated,
+  ContactNumberChanged,
+  ContactSyncRequested,
+  ContactUpdate,
+  PushNameUpdate,
+  PinUpdate,
+  MuteUpdate,
+  ArchiveUpdate,
+  StarUpdate,
+  MarkChatAsReadUpdate,
+  UserAboutUpdate,
 } from "./generated.js";
 
 // Re-export all generated types
 export * from "./generated.js";
+
+// ---------------------------------------------------------------------------
+// Fully typed WhatsApp event — overrides the wasm-bindgen generated version
+// with precise data types from generated.d.ts
+// ---------------------------------------------------------------------------
+
+export type WhatsAppEvent =
+  | { type: 'connected'; data: Record<string, never> }
+  | { type: 'disconnected'; data: Record<string, never> }
+  | { type: 'qr'; data: { code: string; timeout: number } }
+  | { type: 'pairing_code'; data: { code: string; timeout: number } }
+  | { type: 'pair_success'; data: { id: string; lid: string; businessName: string; platform: string } }
+  | { type: 'pair_error'; data: { id: string; lid: string; businessName: string; platform: string; error: string } }
+  | { type: 'logged_out'; data: { onConnect: boolean; reason: string } }
+  | { type: 'message'; data: { message: Record<string, unknown>; info: MessageInfo } }
+  | { type: 'receipt'; data: Receipt }
+  | { type: 'undecryptable_message'; data: UndecryptableMessage }
+  | { type: 'notification'; data: Record<string, unknown> }
+  | { type: 'chat_presence'; data: ChatPresenceUpdate }
+  | { type: 'presence'; data: PresenceUpdate }
+  | { type: 'picture_update'; data: PictureUpdate }
+  | { type: 'user_about_update'; data: UserAboutUpdate }
+  | { type: 'contact_updated'; data: ContactUpdated }
+  | { type: 'contact_number_changed'; data: ContactNumberChanged }
+  | { type: 'contact_sync_requested'; data: ContactSyncRequested }
+  | { type: 'joined_group'; data: Record<string, unknown> }
+  | { type: 'group_update'; data: GroupUpdate }
+  | { type: 'contact_update'; data: ContactUpdate }
+  | { type: 'push_name_update'; data: PushNameUpdate }
+  | { type: 'self_push_name_updated'; data: SelfPushNameUpdated }
+  | { type: 'pin_update'; data: PinUpdate }
+  | { type: 'mute_update'; data: MuteUpdate }
+  | { type: 'archive_update'; data: ArchiveUpdate }
+  | { type: 'star_update'; data: StarUpdate }
+  | { type: 'mark_chat_as_read_update'; data: MarkChatAsReadUpdate }
+  | { type: 'history_sync'; data: Record<string, unknown> }
+  | { type: 'offline_sync_preview'; data: OfflineSyncPreview }
+  | { type: 'offline_sync_completed'; data: OfflineSyncCompleted }
+  | { type: 'device_list_update'; data: DeviceListUpdate }
+  | { type: 'business_status_update'; data: BusinessStatusUpdate }
+  | { type: 'stream_replaced'; data: Record<string, never> }
+  | { type: 'temporary_ban'; data: TemporaryBan }
+  | { type: 'connect_failure'; data: ConnectFailure }
+  | { type: 'stream_error'; data: StreamError }
+  | { type: 'disappearing_mode_changed'; data: DisappearingModeChanged }
+  | { type: 'newsletter_live_update'; data: NewsletterLiveUpdate }
+  | { type: 'qr_scanned_without_multidevice'; data: Record<string, never> }
+  | { type: 'client_outdated'; data: Record<string, never> };
 
 // ---------------------------------------------------------------------------
 // Transport & HTTP interfaces
@@ -187,7 +246,7 @@ export declare function initWasmEngine(): void;
 export declare function createWhatsAppClient(
   transport: JsTransportCallbacks,
   httpClient: JsHttpClientConfig,
-  onEvent?: (event: Event) => void
+  onEvent?: (event: WhatsAppEvent) => void
 ): Promise<WasmWhatsAppClient>;
 
 // ---------------------------------------------------------------------------

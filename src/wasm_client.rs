@@ -30,38 +30,38 @@ export type WhatsAppEvent =
   | { type: 'pair_success'; data: { id: string; lid: string; businessName: string; platform: string } }
   | { type: 'pair_error'; data: { id: string; lid: string; businessName: string; platform: string; error: string } }
   | { type: 'logged_out'; data: { onConnect: boolean; reason: string } }
-  | { type: 'message'; data: { message: any; info: any } }
-  | { type: 'receipt'; data: any }
-  | { type: 'undecryptable_message'; data: any }
-  | { type: 'notification'; data: any }
-  | { type: 'chat_presence'; data: any }
-  | { type: 'presence'; data: any }
-  | { type: 'picture_update'; data: any }
-  | { type: 'user_about_update'; data: any }
-  | { type: 'contact_updated'; data: any }
-  | { type: 'contact_number_changed'; data: any }
-  | { type: 'contact_sync_requested'; data: any }
-  | { type: 'joined_group'; data: any }
-  | { type: 'group_update'; data: any }
-  | { type: 'contact_update'; data: any }
-  | { type: 'push_name_update'; data: any }
-  | { type: 'self_push_name_updated'; data: any }
-  | { type: 'pin_update'; data: any }
-  | { type: 'mute_update'; data: any }
-  | { type: 'archive_update'; data: any }
-  | { type: 'star_update'; data: any }
-  | { type: 'mark_chat_as_read_update'; data: any }
-  | { type: 'history_sync'; data: any }
-  | { type: 'offline_sync_preview'; data: any }
-  | { type: 'offline_sync_completed'; data: any }
-  | { type: 'device_list_update'; data: any }
-  | { type: 'business_status_update'; data: any }
+  | { type: 'message'; data: { message: Record<string, unknown>; info: MessageInfo } }
+  | { type: 'receipt'; data: Receipt }
+  | { type: 'undecryptable_message'; data: UndecryptableMessage }
+  | { type: 'notification'; data: Record<string, unknown> }
+  | { type: 'chat_presence'; data: ChatPresenceUpdate }
+  | { type: 'presence'; data: PresenceUpdate }
+  | { type: 'picture_update'; data: PictureUpdate }
+  | { type: 'user_about_update'; data: UserAboutUpdate }
+  | { type: 'contact_updated'; data: ContactUpdated }
+  | { type: 'contact_number_changed'; data: ContactNumberChanged }
+  | { type: 'contact_sync_requested'; data: ContactSyncRequested }
+  | { type: 'joined_group'; data: Record<string, unknown> }
+  | { type: 'group_update'; data: GroupUpdate }
+  | { type: 'contact_update'; data: ContactUpdate }
+  | { type: 'push_name_update'; data: PushNameUpdate }
+  | { type: 'self_push_name_updated'; data: SelfPushNameUpdated }
+  | { type: 'pin_update'; data: PinUpdate }
+  | { type: 'mute_update'; data: MuteUpdate }
+  | { type: 'archive_update'; data: ArchiveUpdate }
+  | { type: 'star_update'; data: StarUpdate }
+  | { type: 'mark_chat_as_read_update'; data: MarkChatAsReadUpdate }
+  | { type: 'history_sync'; data: Record<string, unknown> }
+  | { type: 'offline_sync_preview'; data: OfflineSyncPreview }
+  | { type: 'offline_sync_completed'; data: OfflineSyncCompleted }
+  | { type: 'device_list_update'; data: DeviceListUpdate }
+  | { type: 'business_status_update'; data: BusinessStatusUpdate }
   | { type: 'stream_replaced'; data: Record<string, never> }
-  | { type: 'temporary_ban'; data: any }
-  | { type: 'connect_failure'; data: any }
-  | { type: 'stream_error'; data: any }
-  | { type: 'disappearing_mode_changed'; data: any }
-  | { type: 'newsletter_live_update'; data: any }
+  | { type: 'temporary_ban'; data: TemporaryBan }
+  | { type: 'connect_failure'; data: ConnectFailure }
+  | { type: 'stream_error'; data: StreamError }
+  | { type: 'disappearing_mode_changed'; data: DisappearingModeChanged }
+  | { type: 'newsletter_live_update'; data: NewsletterLiveUpdate }
   | { type: 'qr_scanned_without_multidevice'; data: Record<string, never> }
   | { type: 'client_outdated'; data: Record<string, never> };
 
@@ -70,6 +70,22 @@ export interface WhatsAppClientConfig {
   httpClient: JsHttpClientConfig;
   onEvent?: (event: WhatsAppEvent) => void;
 }
+
+/** Initialize the WASM engine. Call once before creating clients. */
+export function initWasmEngine(): void;
+
+/**
+ * Create a full WhatsApp client running in WASM.
+ *
+ * @param transport_config WebSocket transport callbacks (connect/send/disconnect)
+ * @param http_config HTTP client callbacks (execute via fetch)
+ * @param on_event Optional event callback — receives typed WhatsApp events in order
+ */
+export function createWhatsAppClient(
+  transport_config: JsTransportCallbacks,
+  http_config: JsHttpClientConfig,
+  on_event?: ((event: WhatsAppEvent) => void) | null,
+): Promise<WasmWhatsAppClient>;
 "#;
 
 // ---------------------------------------------------------------------------
@@ -264,7 +280,7 @@ const DEFAULT_WA_WEB_VERSION: (u32, u32, u32) = (2, 3000, 1031424117);
 /// - Panic hook: Rust panics are logged to console.error with full messages
 /// - Logger: Rust `log::info!`, `log::warn!`, etc. go to console.log
 /// - Time provider: Uses JS `Date.now()` for timestamps
-#[wasm_bindgen(js_name = initWasmEngine)]
+#[wasm_bindgen(js_name = initWasmEngine, skip_typescript)]
 pub fn init_wasm_engine() {
     // Only init once (all three are idempotent or check internally)
     console_error_panic_hook::set_once();
@@ -284,7 +300,7 @@ pub fn init_wasm_engine() {
 /// const client = await createWhatsAppClient(transportConfig, httpConfig, onEvent);
 /// await client.run();
 /// ```
-#[wasm_bindgen(js_name = createWhatsAppClient)]
+#[wasm_bindgen(js_name = createWhatsAppClient, skip_typescript)]
 pub async fn create_whatsapp_client(
     transport_config: JsValue,
     http_config: JsValue,

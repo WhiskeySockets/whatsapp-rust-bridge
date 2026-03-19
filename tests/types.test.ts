@@ -5,7 +5,7 @@
 
 import { describe, test, expect } from "bun:test";
 import type {
-  Event,
+  WhatsAppEvent,
   MessageInfo,
   MessageSource,
   Receipt,
@@ -14,9 +14,14 @@ import type {
   EditAttribute,
   ConnectFailureReason,
   GroupNotificationAction,
+  GroupUpdate,
   ChatPresence,
+  ChatPresenceUpdate,
   PresenceUpdate,
-  WasmWhatsAppClient,
+  PictureUpdate,
+  UndecryptableMessage,
+  OfflineSyncPreview,
+  ConnectFailure,
   JsTransportCallbacks,
   JsTransportHandle,
   JsHttpClientConfig,
@@ -26,42 +31,72 @@ import type {
 } from "../types/index.js";
 
 describe("Generated TypeScript types", () => {
-  test("Event discriminated union is type-safe", () => {
-    // This function only compiles if the Event type is a proper discriminated union
-    function handleEvent(event: Event) {
+  test("WhatsAppEvent discriminated union is fully typed", () => {
+    // This function only compiles if all event data types are correct
+    function handleEvent(event: WhatsAppEvent) {
       switch (event.type) {
         case "connected":
-          // data should be Connected (empty interface)
+          // data is Record<string, never> — no accessible fields
           break;
         case "pair_success":
-          // data has id, lid, businessName, platform
-          const ps = event.data;
-          const _id: string = ps.id;
-          const _lid: string = ps.lid;
+          const _id: string = event.data.id;
+          const _lid: string = event.data.lid;
+          const _biz: string = event.data.businessName;
+          const _plat: string = event.data.platform;
           break;
         case "message":
-          // message event
+          // data.info is typed MessageInfo, data.message is Record<string, unknown>
+          const info: MessageInfo = event.data.info;
+          const _sender: string = info.source.sender;
+          const _chat: string = info.source.chat;
+          const _isFromMe: boolean = info.source.isFromMe;
           break;
         case "receipt":
           const receipt: Receipt = event.data;
           const _msgIds: string[] = receipt.messageIds;
           break;
         case "logged_out":
-          const lo = event.data;
-          const _onConnect: boolean = lo.onConnect;
+          const _onConnect: boolean = event.data.onConnect;
+          const _reason: string = event.data.reason;
           break;
         case "group_update":
-          const gu = event.data;
+          const gu: GroupUpdate = event.data;
           const _groupJid: string = gu.groupJid;
           break;
         case "connect_failure":
-          const cf = event.data;
-          const _reason: ConnectFailureReason = cf.reason;
+          const cf: ConnectFailure = event.data;
+          const _cfReason: ConnectFailureReason = cf.reason;
+          break;
+        case "chat_presence":
+          const cp: ChatPresenceUpdate = event.data;
+          const _cpState: string = cp.state;
+          break;
+        case "presence":
+          const pu: PresenceUpdate = event.data;
+          const _puFrom: string = pu.from;
+          break;
+        case "picture_update":
+          const pic: PictureUpdate = event.data;
+          const _picJid: string = pic.jid;
+          break;
+        case "undecryptable_message":
+          const um: UndecryptableMessage = event.data;
+          const _umInfo: MessageInfo = um.info;
+          break;
+        case "offline_sync_preview":
+          const osp: OfflineSyncPreview = event.data;
+          const _total: number = osp.total;
+          break;
+        case "offline_sync_completed":
+          const _count: number = event.data.count;
+          break;
+        case "qr":
+          const _code: string = event.data.code;
+          const _timeout: number = event.data.timeout;
           break;
       }
     }
 
-    // Just verify the function compiles
     expect(typeof handleEvent).toBe("function");
   });
 
