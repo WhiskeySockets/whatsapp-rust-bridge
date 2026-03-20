@@ -71,6 +71,13 @@ export interface WhatsAppClientConfig {
   onEvent?: (event: WhatsAppEvent) => void;
 }
 
+/** JS storage callbacks for persistent backend. */
+export interface JsStoreCallbacks {
+  get(store: string, key: string): Promise<Uint8Array | null>;
+  set(store: string, key: string, value: Uint8Array): Promise<void>;
+  delete(store: string, key: string): Promise<void>;
+}
+
 /** Initialize the WASM engine. Call once before creating clients. */
 export function initWasmEngine(): void;
 
@@ -80,11 +87,13 @@ export function initWasmEngine(): void;
  * @param transport_config WebSocket transport callbacks (connect/send/disconnect)
  * @param http_config HTTP client callbacks (execute via fetch)
  * @param on_event Optional event callback — receives typed WhatsApp events in order
+ * @param store Optional JS storage callbacks — if provided, enables persistent storage
  */
 export function createWhatsAppClient(
   transport_config: JsTransportCallbacks,
   http_config: JsHttpClientConfig,
   on_event?: ((event: WhatsAppEvent) => void) | null,
+  store?: JsStoreCallbacks | null,
 ): Promise<WasmWhatsAppClient>;
 "#;
 
@@ -243,11 +252,13 @@ fn event_to_js_special(event: &Event) -> Result<JsValue, JsValue> {
         }
         Event::Message(msg, info) => {
             let d = js_sys::Object::new();
+            // Proto message → camelCase (matches protobufjs/Baileys convention)
             js_sys::Reflect::set(
                 &d,
                 &"message".into(),
-                &crate::proto::to_js_value(msg.as_ref())?,
+                &crate::camel_serializer::to_js_value_camel(msg.as_ref())?,
             )?;
+            // MessageInfo → snake_case (wacore type, Option B)
             js_sys::Reflect::set(&d, &"info".into(), &crate::proto::to_js_value(info)?)?;
             ("message", d.into())
         }
@@ -276,15 +287,18 @@ const DEFAULT_WA_WEB_VERSION: (u32, u32, u32) = (2, 3000, 1031424117);
 
 /// Initialize the WASM environment. Must be called once before creating clients.
 ///
-/// Sets up:
-/// - Panic hook: Rust panics are logged to console.error with full messages
-/// - Logger: Rust `log::info!`, `log::warn!`, etc. go to console.log
-/// - Time provider: Uses JS `Date.now()` for timestamps
+/// `log_level` accepts: "trace", "debug", "info", "warn", "error". Defaults to "warn".
 #[wasm_bindgen(js_name = initWasmEngine, skip_typescript)]
-pub fn init_wasm_engine() {
-    // Only init once (all three are idempotent or check internally)
+pub fn init_wasm_engine(log_level: Option<String>) {
     console_error_panic_hook::set_once();
-    let _ = console_log::init_with_level(log::Level::Debug);
+    let level = match log_level.as_deref() {
+        Some("trace") => log::Level::Trace,
+        Some("debug") => log::Level::Debug,
+        Some("info") => log::Level::Info,
+        Some("error") => log::Level::Error,
+        _ => log::Level::Warn,
+    };
+    let _ = console_log::init_with_level(level);
     js_time::init_time_provider();
 }
 
@@ -305,9 +319,31 @@ pub async fn create_whatsapp_client(
     transport_config: JsValue,
     http_config: JsValue,
     on_event: Option<js_sys::Function>,
+    store: Option<JsValue>,
 ) -> Result<WasmWhatsAppClient, JsValue> {
     let runtime = Arc::new(WasmRuntime) as Arc<dyn wacore::runtime::Runtime>;
-    let backend = js_backend::new_in_memory_backend();
+    let backend = match store {
+        Some(ref store_val) if !store_val.is_null() && !store_val.is_undefined() => {
+            let get_fn = js_sys::Reflect::get(store_val, &"get".into())
+                .map_err(|_| JsValue::from_str("store.get is required"))?
+                .dyn_into::<js_sys::Function>()
+                .map_err(|_| JsValue::from_str("store.get must be a function"))?;
+            let set_fn = js_sys::Reflect::get(store_val, &"set".into())
+                .map_err(|_| JsValue::from_str("store.set is required"))?
+                .dyn_into::<js_sys::Function>()
+                .map_err(|_| JsValue::from_str("store.set must be a function"))?;
+            let delete_fn = js_sys::Reflect::get(store_val, &"delete".into())
+                .map_err(|_| JsValue::from_str("store.delete is required"))?
+                .dyn_into::<js_sys::Function>()
+                .map_err(|_| JsValue::from_str("store.delete must be a function"))?;
+            info!("Using JS-backed persistent storage");
+            js_backend::new_js_backend(get_fn, set_fn, delete_fn)
+        }
+        _ => {
+            info!("Using in-memory storage (no persistence)");
+            js_backend::new_in_memory_backend()
+        }
+    };
     let transport_factory = Arc::new(JsTransportFactory::from_js(transport_config)?)
         as Arc<dyn wacore::net::TransportFactory>;
     let http_client =
@@ -321,10 +357,15 @@ pub async fn create_whatsapp_client(
                 .map_err(|e| JsValue::from_str(&format!("create persistence manager: {e}")))?,
         );
 
+    // Start background saver — flushes dirty Device state to the backend
+    persistence_manager
+        .clone()
+        .run_background_saver(runtime.clone(), std::time::Duration::from_secs(5));
+
     // Create the client
     let (client, sync_rx) = whatsapp_rust::Client::new_with_cache_config(
         runtime.clone(),
-        persistence_manager,
+        persistence_manager.clone(),
         transport_factory,
         http_client,
         Some(DEFAULT_WA_WEB_VERSION),
@@ -342,6 +383,7 @@ pub async fn create_whatsapp_client(
         client,
         runtime,
         sync_rx: Some(sync_rx),
+        persistence_manager,
     })
 }
 
@@ -356,6 +398,7 @@ pub struct WasmWhatsAppClient {
     #[allow(dead_code)]
     runtime: Arc<dyn wacore::runtime::Runtime>,
     sync_rx: Option<async_channel::Receiver<whatsapp_rust::sync_task::MajorSyncTask>>,
+    persistence_manager: Arc<whatsapp_rust::store::persistence_manager::PersistenceManager>,
 }
 
 #[wasm_bindgen]
@@ -412,9 +455,13 @@ impl WasmWhatsAppClient {
             .map_err(|e| JsValue::from_str(&format!("{e}")))
     }
 
-    /// Disconnect the client.
+    /// Disconnect the client and flush pending state to storage.
     pub async fn disconnect(&self) {
         self.client.disconnect().await;
+        // Flush any dirty device state before shutdown
+        if let Err(e) = self.persistence_manager.flush().await {
+            log::warn!("Failed to flush state on disconnect: {e}");
+        }
     }
 
     /// Check if the client is connected.
@@ -429,54 +476,47 @@ impl WasmWhatsAppClient {
         self.client.is_logged_in()
     }
 
-    // ── Sending messages ─────────────────────────────────────────────────
+    // ── Pairing ──────────────────────────────────────────────────────────
 
-    /// Send an end-to-end encrypted message.
+    /// Request a pairing code for phone number login (alternative to QR).
     ///
-    /// `jid` is the recipient as a string (e.g. `"5511999999999@s.whatsapp.net"`).
-    /// `message` is a JS object matching the Message protobuf schema.
-    /// Returns the message ID string on success.
-    #[wasm_bindgen(js_name = sendMessage)]
-    pub async fn send_message(&self, jid: &str, message: JsValue) -> Result<JsValue, JsValue> {
-        let to: Jid = jid
-            .parse()
-            .map_err(|e: wacore_binary::jid::JidError| JsValue::from_str(&format!("{e}")))?;
-        let msg: waproto::whatsapp::Message = serde_wasm_bindgen::from_value(message)
-            .map_err(|e| JsValue::from_str(&format!("invalid message: {e}")))?;
-
-        let message_id = self
+    /// Returns the 8-character pairing code to enter on the phone.
+    #[wasm_bindgen(js_name = requestPairingCode)]
+    pub async fn request_pairing_code(
+        &self,
+        phone_number: &str,
+        custom_code: Option<String>,
+    ) -> Result<JsValue, JsValue> {
+        use whatsapp_rust::pair_code::PairCodeOptions;
+        let options = PairCodeOptions {
+            phone_number: phone_number.to_string(),
+            custom_code,
+            ..Default::default()
+        };
+        let code = self
             .client
-            .send_message(to, msg)
+            .pair_with_code(options)
             .await
             .map_err(|e| JsValue::from_str(&format!("{e}")))?;
+        Ok(JsValue::from_str(&code))
+    }
 
-        Ok(JsValue::from_str(&message_id))
+    // ── Sending messages ─────────────────────────────────────────────────
+
+    /// Send an E2E encrypted message from a JS object.
+    #[wasm_bindgen(js_name = sendMessage)]
+    pub async fn send_message(&self, jid: &str, message: JsValue) -> Result<JsValue, JsValue> {
+        let (to, msg) = parse_jid_and_msg(jid, message)?;
+        let id = self.client.send_message(to, msg).await.map_err(js_err)?;
+        Ok(JsValue::from_str(&id))
     }
 
     /// Send a message from protobuf binary bytes.
-    ///
-    /// This avoids serde deserialization issues with prost's strict field requirements.
-    /// The bytes are decoded as a `wa.Message` protobuf.
     #[wasm_bindgen(js_name = sendMessageBytes)]
-    pub async fn send_message_bytes(
-        &self,
-        jid: &str,
-        message_bytes: &[u8],
-    ) -> Result<JsValue, JsValue> {
-        use prost::Message;
-        let to: Jid = jid
-            .parse()
-            .map_err(|e: wacore_binary::jid::JidError| JsValue::from_str(&format!("{e}")))?;
-        let msg = waproto::whatsapp::Message::decode(message_bytes)
-            .map_err(|e| JsValue::from_str(&format!("invalid message bytes: {e}")))?;
-
-        let message_id = self
-            .client
-            .send_message(to, msg)
-            .await
-            .map_err(|e| JsValue::from_str(&format!("{e}")))?;
-
-        Ok(JsValue::from_str(&message_id))
+    pub async fn send_message_bytes(&self, jid: &str, bytes: &[u8]) -> Result<JsValue, JsValue> {
+        let (to, msg) = parse_jid_and_msg_bytes(jid, bytes)?;
+        let id = self.client.send_message(to, msg).await.map_err(js_err)?;
+        Ok(JsValue::from_str(&id))
     }
 
     // ── Message management ──────────────────────────────────────────────
@@ -489,19 +529,13 @@ impl WasmWhatsAppClient {
         message_id: &str,
         new_content: JsValue,
     ) -> Result<JsValue, JsValue> {
-        let to: Jid = jid
-            .parse()
-            .map_err(|e: wacore_binary::jid::JidError| JsValue::from_str(&format!("{e}")))?;
-        let msg: waproto::whatsapp::Message = serde_wasm_bindgen::from_value(new_content)
-            .map_err(|e| JsValue::from_str(&format!("invalid message: {e}")))?;
-
-        let new_id = self
+        let (to, msg) = parse_jid_and_msg(jid, new_content)?;
+        let id = self
             .client
             .edit_message(to, message_id, msg)
             .await
-            .map_err(|e| JsValue::from_str(&format!("{e}")))?;
-
-        Ok(JsValue::from_str(&new_id))
+            .map_err(js_err)?;
+        Ok(JsValue::from_str(&id))
     }
 
     /// Edit a previously sent message from protobuf bytes.
@@ -510,22 +544,15 @@ impl WasmWhatsAppClient {
         &self,
         jid: &str,
         message_id: &str,
-        new_content_bytes: &[u8],
+        bytes: &[u8],
     ) -> Result<JsValue, JsValue> {
-        use prost::Message;
-        let to: Jid = jid
-            .parse()
-            .map_err(|e: wacore_binary::jid::JidError| JsValue::from_str(&format!("{e}")))?;
-        let msg = waproto::whatsapp::Message::decode(new_content_bytes)
-            .map_err(|e| JsValue::from_str(&format!("invalid message bytes: {e}")))?;
-
-        let new_id = self
+        let (to, msg) = parse_jid_and_msg_bytes(jid, bytes)?;
+        let id = self
             .client
             .edit_message(to, message_id, msg)
             .await
-            .map_err(|e| JsValue::from_str(&format!("{e}")))?;
-
-        Ok(JsValue::from_str(&new_id))
+            .map_err(js_err)?;
+        Ok(JsValue::from_str(&id))
     }
 
     /// Revoke (delete) a sent message.
@@ -1281,24 +1308,11 @@ impl WasmWhatsAppClient {
         let hosts = js_sys::Array::new();
         for h in &conn.hosts {
             let host_obj = js_sys::Object::new();
-            js_sys::Reflect::set(
-                &host_obj,
-                &"hostname".into(),
-                &h.hostname.as_str().into(),
-            )?;
-            js_sys::Reflect::set(
-                &host_obj,
-                &"maxContentLengthBytes".into(),
-                &JsValue::from_f64(0.0),
-            )?;
+            js_sys::Reflect::set(&host_obj, &"hostname".into(), &h.hostname.as_str().into())?;
             hosts.push(&host_obj.into());
         }
         js_sys::Reflect::set(&obj, &"hosts".into(), &hosts.into())?;
-        js_sys::Reflect::set(
-            &obj,
-            &"fetchDate".into(),
-            &js_sys::Date::new_0().into(),
-        )?;
+        js_sys::Reflect::set(&obj, &"fetchDate".into(), &js_sys::Date::new_0().into())?;
 
         Ok(obj.into())
     }
@@ -1368,7 +1382,7 @@ fn group_metadata_to_js(
     js_sys::Reflect::set(
         &obj,
         &"addressingMode".into(),
-        &format!("{:?}", metadata.addressing_mode).into(),
+        &crate::proto::to_js_value(&metadata.addressing_mode)?,
     )?;
 
     // Optional fields
@@ -1456,6 +1470,38 @@ fn group_metadata_to_js(
     )?;
 
     Ok(obj.into())
+}
+
+/// Convert any error to JsValue string.
+fn js_err(e: impl std::fmt::Display) -> JsValue {
+    JsValue::from_str(&e.to_string())
+}
+
+/// Parse a JID string and deserialize a JS object as a proto Message.
+fn parse_jid_and_msg(
+    jid: &str,
+    message: JsValue,
+) -> Result<(Jid, waproto::whatsapp::Message), JsValue> {
+    let to: Jid = jid
+        .parse()
+        .map_err(|e: wacore_binary::jid::JidError| js_err(e))?;
+    let msg = serde_wasm_bindgen::from_value(message)
+        .map_err(|e| JsValue::from_str(&format!("invalid message: {e}")))?;
+    Ok((to, msg))
+}
+
+/// Parse a JID string and decode protobuf binary bytes as a proto Message.
+fn parse_jid_and_msg_bytes(
+    jid: &str,
+    bytes: &[u8],
+) -> Result<(Jid, waproto::whatsapp::Message), JsValue> {
+    use prost::Message;
+    let to: Jid = jid
+        .parse()
+        .map_err(|e: wacore_binary::jid::JidError| js_err(e))?;
+    let msg = waproto::whatsapp::Message::decode(bytes)
+        .map_err(|e| JsValue::from_str(&format!("invalid message bytes: {e}")))?;
+    Ok((to, msg))
 }
 
 fn set_optional_str(obj: &js_sys::Object, key: &str, val: &Option<String>) -> Result<(), JsValue> {

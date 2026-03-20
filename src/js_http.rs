@@ -51,11 +51,7 @@ impl HttpClient for JsHttpClientAdapter {
         }
 
         let body_js = match &request.body {
-            Some(b) => {
-                let arr = Uint8Array::new_with_length(b.len() as u32);
-                arr.copy_from(b);
-                arr.into()
-            }
+            Some(b) => Uint8Array::from(b.as_slice()).into(),
             None => JsValue::NULL,
         };
 

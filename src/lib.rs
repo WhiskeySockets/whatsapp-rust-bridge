@@ -2,6 +2,7 @@ pub mod appstate;
 #[cfg(feature = "audio")]
 pub mod audio;
 pub mod binary;
+pub mod camel_serializer;
 pub mod crypto;
 pub mod curve;
 pub mod group_cipher;

@@ -3,21 +3,30 @@
 //
 // Source: wacore/src/types/, src/features/, waproto/src/
 
+/** WhatsApp JID (Jabber ID) — identifies a user, group, or device. */
+export interface Jid {
+  user: string;
+  server: string;
+  agent: number;
+  device: number;
+  integrator: number;
+}
+
 /** Addressing mode for a group (phone number vs LID). */
 export type AddressingMode = "pn" | "lid";
 
 /** App state synchronization key for WhatsApp's app state protocol. */
 export interface AppStateSyncKey {
-  keyData: Uint8Array;
+  key_data: Uint8Array;
   fingerprint: Uint8Array;
   timestamp: number;
 }
 
 export interface ArchiveUpdate {
-  jid: string;
+  jid: Jid;
   timestamp: number;
   action: ArchiveChatAction;
-  fromFullSync: boolean;
+  from_full_sync: boolean;
 }
 
 /** Action to perform on a blocklist entry. */
@@ -27,15 +36,15 @@ export type BotEditType = "first" | "inner" | "last";
 
 /** Parsed `<notification type="business">` stanza. */
 export interface BusinessNotification {
-  from: string;
-  stanzaId: string;
+  from: Jid;
+  stanza_id: string;
   timestamp: number;
-  notificationType: BusinessNotificationType;
-  jid?: string | null;
+  notification_type: BusinessNotificationType;
+  jid?: Jid | null;
   hash?: string | null;
-  verifiedName?: VerifiedName | null;
-  productIds: string[];
-  collectionIds: string[];
+  verified_name?: VerifiedName | null;
+  product_ids: string[];
+  collection_ids: string[];
   subscriptions: BusinessSubscription[];
 }
 
@@ -44,14 +53,14 @@ export type BusinessNotificationType = "remove_jid" | "remove_hash" | "verified_
 
 /** Business status update notification. */
 export interface BusinessStatusUpdate {
-  jid: string;
-  updateType: BusinessUpdateType;
+  jid: Jid;
+  update_type: BusinessUpdateType;
   timestamp: number;
-  targetJid?: string | null;
+  target_jid?: Jid | null;
   hash?: string | null;
-  verifiedName?: string | null;
-  productIds: string[];
-  collectionIds: string[];
+  verified_name?: string | null;
+  product_ids: string[];
+  collection_ids: string[];
   subscriptions: BusinessSubscription[];
 }
 
@@ -59,8 +68,8 @@ export interface BusinessStatusUpdate {
 export interface BusinessSubscription {
   id: string;
   status: string;
-  expirationDate?: number | null;
-  creationTime?: number | null;
+  expiration_date?: number | null;
+  creation_time?: number | null;
 }
 
 /** Type of business status update. */
@@ -110,13 +119,13 @@ export type ConnectFailureReason =
 /** A contact changed their phone number.  Emitted from `<notification type="contacts"><modify old="..." new="..." old_lid="..." new_lid="..."/>`.  WA Web creates two LID-PN mappings (`old_lid→old_jid`, `new_lid→new_jid`) and generates a system notification message in both old and new chats. */
 export interface ContactNumberChanged {
   /** Old phone number JID. */
-  oldJid: string;
+  old_jid: Jid;
   /** New phone number JID. */
-  newJid: string;
+  new_jid: Jid;
   /** Old LID (if provided by server). */
-  oldLid?: string | null;
+  old_lid?: Jid | null;
   /** New LID (if provided by server). */
-  newLid?: string | null;
+  new_lid?: Jid | null;
   timestamp: number;
 }
 
@@ -127,61 +136,61 @@ export interface ContactSyncRequested {
 }
 
 export interface ContactUpdate {
-  jid: string;
+  jid: Jid;
   timestamp: number;
   action: ContactAction;
-  fromFullSync: boolean;
+  from_full_sync: boolean;
 }
 
 /** A contact's profile changed (server notification).  Emitted from `<notification type="contacts"><update jid="..."/>`. WA Web resets cached presence and refreshes the profile picture on this event — consumers should invalidate any cached presence/profile data.  Not to be confused with [`ContactUpdate`] which comes from app-state sync mutations (different source, different payload). */
 export interface ContactUpdated {
-  jid: string;
+  jid: Jid;
   timestamp: number;
 }
 
 export type DecryptFailMode = "show" | "hide";
 
 export interface Device {
-  pn?: string | null;
-  lid?: string | null;
-  registrationId: number;
-  noiseKey: KeyPair;
-  identityKey: KeyPair;
-  signedPreKey: KeyPair;
-  signedPreKeyId: number;
-  signedPreKeySignature: any;
-  advSecretKey: any;
+  pn?: Jid | null;
+  lid?: Jid | null;
+  registration_id: number;
+  noise_key: KeyPair;
+  identity_key: KeyPair;
+  signed_pre_key: KeyPair;
+  signed_pre_key_id: number;
+  signed_pre_key_signature: any;
+  adv_secret_key: any;
   account?: AdvSignedDeviceIdentity | null;
-  pushName: string;
-  appVersionPrimary: number;
-  appVersionSecondary: number;
-  appVersionTertiary: number;
-  appVersionLastFetchedMs: number;
-  deviceProps: DeviceProps;
+  push_name: string;
+  app_version_primary: number;
+  app_version_secondary: number;
+  app_version_tertiary: number;
+  app_version_last_fetched_ms: number;
+  device_props: DeviceProps;
   /** Edge routing info received from server, used for optimized reconnection. When present, this should be sent as a pre-intro before the Noise handshake. */
-  edgeRoutingInfo?: Uint8Array | null;
+  edge_routing_info?: Uint8Array | null;
   /** Hash from the last props (A/B experiment config) fetch. Sent on subsequent connects to enable delta updates instead of full fetches. */
-  propsHash?: string | null;
+  props_hash?: string | null;
   /** Monotonically increasing counter for one-time pre-key ID generation. Matches WhatsApp Web's `NEXT_PK_ID` pattern: only increases, never resets. Prevents prekey ID collisions when prekeys are consumed non-sequentially. */
-  nextPreKeyId: number;
+  next_pre_key_id: number;
 }
 
 /** Device element from notification.  Wire format: ```xml <device jid="185169143189667:75@lid" key-index="2" lid="..."/> ```  Device ID is extracted from the JID's device part (e.g., 75 from "user:75@lid").  Per WhatsApp Web: if both `jid` and `lid` attributes are present, the device IDs must match or the notification is rejected. */
 export interface DeviceElement {
   /** Device JID (contains user and device ID) */
-  jid: string;
+  jid: Jid;
   /** Optional key index */
-  keyIndex?: number | null;
+  key_index?: number | null;
   /** Optional LID (device ID must match jid's device ID if present) */
-  lid?: string | null;
+  lid?: Jid | null;
 }
 
 /** Device information for registry tracking. */
 export interface DeviceInfo {
   /** The device ID (0 = primary device, 1+ = companion devices) */
-  deviceId: number;
+  device_id: number;
   /** The key index, if known */
-  keyIndex?: number | null;
+  key_index?: number | null;
 }
 
 /** Device list record matching WhatsApp Web's DeviceListRecord structure. */
@@ -199,17 +208,17 @@ export interface DeviceListRecord {
 /** Device list update notification. Emitted when a user's device list changes (device added/removed/updated). */
 export interface DeviceListUpdate {
   /** The user whose device list changed (from attribute) */
-  user: string;
+  user: Jid;
   /** Optional LID user (for LID-PN mapping) */
-  lidUser?: string | null;
+  lid_user?: Jid | null;
   /** Type of update (add/remove/update) */
-  updateType: DeviceListUpdateType;
+  update_type: DeviceListUpdateType;
   /** Affected devices with detailed info */
   devices: DeviceNotificationInfo[];
   /** Key index info (for add/remove) */
-  keyIndex?: KeyIndexInfo | null;
+  key_index?: KeyIndexInfo | null;
   /** Contact hash (for update - used for contact lookup) */
-  contactHash?: string | null;
+  contact_hash?: string | null;
 }
 
 /** Type of device list update notification. Matches WhatsApp Web's device notification types. */
@@ -218,11 +227,11 @@ export type DeviceListUpdateType = "add" | "remove" | "update";
 /** Parsed device notification stanza.  Wire format: ```xml <notification from="185169143189667@lid" id="..." t="..." type="devices" lid="..."> <remove> <device jid="185169143189667:75@lid"/> <key-index-list ts="1769296600"/> </remove> </notification> ```  Reference: WhatsApp Web `WAWebHandleDeviceNotification` parser (5Yec01dI04o.js:23125-23183)  Per WhatsApp Web: Only ONE operation per notification is processed. Priority order: remove > add > update */
 export interface DeviceNotification {
   /** User JID (from attribute) */
-  from: string;
+  from: Jid;
   /** Optional LID user (for LID-PN mapping learning) */
-  lidUser?: string | null;
+  lid_user?: Jid | null;
   /** Stanza ID (for ACK) */
-  stanzaId: string;
+  stanza_id: string;
   /** Timestamp */
   timestamp: number;
   /** The operation (one per notification, priority: remove > add > update) */
@@ -232,9 +241,9 @@ export interface DeviceNotification {
 /** Device information from notification. */
 export interface DeviceNotificationInfo {
   /** Device ID (extracted from JID) */
-  deviceId: number;
+  device_id: number;
   /** Optional key index */
-  keyIndex?: number | null;
+  key_index?: number | null;
 }
 
 /** Device notification operation type.  Wire format: Child element tag of `<notification type="devices">` - `<add>` - Device was added - `<remove>` - Device was removed - `<update>` - Device info updated (hash-based lookup) */
@@ -243,17 +252,17 @@ export type DeviceNotificationType = "add" | "remove" | "update";
 /** Operation content (add/remove/update child element).  Wire format per WhatsApp Web (5Yec01dI04o.js:23141-23180): ```xml <add> <device jid="user:75@lid" key-index="2"/> <key-index-list ts="...">SIGNED_BYTES</key-index-list> </add> <!-- OR --> <remove> <device jid="user:75@lid"/> <key-index-list ts="..."/>  <!-- ts required for remove --> </remove> <!-- OR --> <update hash="CONTACT_HASH"/> ```  Note: WhatsApp Web does NOT read any attributes from add/remove nodes. The `device_hash` attribute (if present) is not used by the official client. */
 export interface DeviceOperation {
   /** Operation type (add/remove/update) */
-  operationType: DeviceNotificationType;
+  operation_type: DeviceNotificationType;
   /** Contact hash (for update only) - from `hash` attribute, used for contact lookup */
-  contactHash?: string | null;
+  contact_hash?: string | null;
   /** Device elements (for add/remove, single device per WhatsApp Web) */
   devices: DeviceElement[];
   /** Key index info (required for add/remove per WhatsApp Web) */
-  keyIndex?: KeyIndexInfo | null;
+  key_index?: KeyIndexInfo | null;
 }
 
 export interface DeviceSentMeta {
-  destinationJid: string;
+  destination_jid: string;
   phash: string;
 }
 
@@ -263,11 +272,11 @@ export type DirtyType = "account_sync" | "groups" | "other";
 /** A contact's default disappearing messages setting changed.  Sent by the server as `<notification type="disappearing_mode">`. WA Web: `WAWebHandleDisappearingModeNotification` → `WAWebUpdateDisappearingModeForContact`. */
 export interface DisappearingModeChanged {
   /** The contact whose setting changed. */
-  from: string;
+  from: Jid;
   /** New duration in seconds (0 = disabled, 86400 = 24h, etc.). */
   duration: number;
   /** Unix timestamp (seconds) when the setting was changed. Consumers should only apply this if it's newer than their stored timestamp. */
-  settingTimestamp: number;
+  setting_timestamp: number;
 }
 
 export type EditAttribute = "empty" | "message_edit" | "pin_in_chat" | "admin_edit" | "sender_revoke" | "admin_revoke" | "unknown";
@@ -316,8 +325,8 @@ export type Event =
   | { type: "newsletter_live_update"; data: NewsletterLiveUpdate };
 
 export interface GroupInfo {
-  participants: string[];
-  addressingMode: AddressingMode;
+  participants: Jid[];
+  addressing_mode: AddressingMode;
 }
 
 /** All possible group notification action types.  Maps 1:1 to `GROUP_NOTIFICATION_TAG` child element tags from WhatsApp Web. */
@@ -327,7 +336,7 @@ export type GroupNotificationAction =
   | { type: "promote"; participants: GroupParticipantInfo[] }
   | { type: "demote"; participants: GroupParticipantInfo[] }
   | { type: "modify"; participants: GroupParticipantInfo[] }
-  | { type: "subject"; subject: string; subjectOwner?: string | null; subjectTime?: number | null }
+  | { type: "subject"; subject: string; subject_owner?: Jid | null; subject_time?: number | null }
   | { type: "description"; id: string; description?: string | null }
   | { type: "locked"; threshold?: string | null }
   | { type: "unlocked" }
@@ -340,18 +349,18 @@ export type GroupNotificationAction =
   | { type: "frequently_forwarded_ok" }
   | { type: "invite"; code: string }
   | { type: "revoke_invite" }
-  | { type: "growth_locked"; expiration: number; lockType: string }
+  | { type: "growth_locked"; expiration: number; lock_type: string }
   | { type: "growth_unlocked" }
   | { type: "create"; raw: any }
   | { type: "delete"; reason?: string | null }
-  | { type: "link"; linkType: string; raw: any }
-  | { type: "unlink"; unlinkType: string; unlinkReason?: string | null; raw: any }
+  | { type: "link"; link_type: string; raw: any }
+  | { type: "unlink"; unlink_type: string; unlink_reason?: string | null; raw: any }
   | { type: "unknown"; tag: string };
 
 /** Participant info extracted from `<participant>` child elements.  Wire format: ```xml <participant jid="1234567890@s.whatsapp.net" phone_number="1234567890@s.whatsapp.net"/> ``` */
 export interface GroupParticipantInfo {
-  jid: string;
-  phoneNumber?: string | null;
+  jid: Jid;
+  phone_number?: Jid | null;
 }
 
 /** Query request type. */
@@ -360,15 +369,15 @@ export type GroupQueryRequestType = "interactive";
 /** Group update notification.  Emitted for each action in a `<notification type="w:gp2">` stanza. A single notification may produce multiple `GroupUpdate` events (one per action). */
 export interface GroupUpdate {
   /** The group this update applies to */
-  groupJid: string;
+  group_jid: Jid;
   /** The admin/user who triggered the change (`participant` attribute) */
-  participant?: string | null;
+  participant?: Jid | null;
   /** Phone number JID of the participant (for LID-addressed groups) */
-  participantPn?: string | null;
+  participant_pn?: Jid | null;
   /** When the change occurred */
   timestamp: number;
   /** Whether the group uses LID addressing mode */
-  isLidAddressingMode: boolean;
+  is_lid_addressing_mode: boolean;
   /** The specific action */
   action: GroupNotificationAction;
 }
@@ -381,7 +390,7 @@ export interface KeyIndexInfo {
   /** Timestamp (required for remove per WhatsApp Web) */
   timestamp: number;
   /** Signed key index bytes (only present for add) */
-  signedBytes?: Uint8Array | null;
+  signed_bytes?: Uint8Array | null;
 }
 
 /** The source from which a LID-PN mapping was learned. Different sources have different trust levels and handling for identity changes. */
@@ -392,11 +401,11 @@ export interface LidPnEntry {
   /** The LID user part (e.g., "100000012345678") */
   lid: string;
   /** The phone number user part (e.g., "559980000001") */
-  phoneNumber: string;
+  phone_number: string;
   /** Unix timestamp when the mapping was first learned */
-  createdAt: number;
+  created_at: number;
   /** The source from which this mapping was learned */
-  learningSource: LearningSource;
+  learning_source: LearningSource;
 }
 
 /** Entry representing a LID to Phone Number mapping. */
@@ -404,25 +413,25 @@ export interface LidPnMappingEntry {
   /** The LID user part (e.g., "100000012345678") */
   lid: string;
   /** The phone number user part (e.g., "559980000001") */
-  phoneNumber: string;
+  phone_number: string;
   /** Unix timestamp when the mapping was first learned */
-  createdAt: number;
+  created_at: number;
   /** Unix timestamp when the mapping was last updated */
-  updatedAt: number;
+  updated_at: number;
   /** The source from which this mapping was learned (e.g., "usync", "peer_pn_message") */
-  learningSource: string;
+  learning_source: string;
 }
 
 export interface LoggedOut {
-  onConnect: boolean;
+  on_connect: boolean;
   reason: ConnectFailureReason;
 }
 
 export interface MarkChatAsReadUpdate {
-  jid: string;
+  jid: Jid;
   timestamp: number;
   action: MarkChatAsReadAction;
-  fromFullSync: boolean;
+  from_full_sync: boolean;
 }
 
 /** Member add mode for who can add participants. */
@@ -437,37 +446,37 @@ export type MembershipApprovalMode = "off" | "on";
 export interface MessageInfo {
   source: MessageSource;
   id: string;
-  serverId: number;
+  server_id: number;
   type: string;
-  pushName: string;
+  push_name: string;
   timestamp: number;
   category: string;
   multicast: boolean;
-  mediaType: string;
+  media_type: string;
   edit: EditAttribute;
-  botInfo?: MsgBotInfo | null;
-  metaInfo: MsgMetaInfo;
-  verifiedName?: VerifiedNameCertificate | null;
-  deviceSentMeta?: DeviceSentMeta | null;
+  bot_info?: MsgBotInfo | null;
+  meta_info: MsgMetaInfo;
+  verified_name?: VerifiedNameCertificate | null;
+  device_sent_meta?: DeviceSentMeta | null;
 }
 
 export interface MessageSource {
-  chat: string;
-  sender: string;
-  isFromMe: boolean;
-  isGroup: boolean;
-  addressingMode?: AddressingMode | null;
-  senderAlt?: string | null;
-  recipientAlt?: string | null;
-  broadcastListOwner?: string | null;
-  recipient?: string | null;
+  chat: Jid;
+  sender: Jid;
+  is_from_me: boolean;
+  is_group: boolean;
+  addressing_mode?: AddressingMode | null;
+  sender_alt?: Jid | null;
+  recipient_alt?: Jid | null;
+  broadcast_list_owner?: Jid | null;
+  recipient?: Jid | null;
 }
 
 /** MEX GraphQL error extensions. */
 export interface MexErrorExtensions {
-  errorCode?: number | null;
-  isSummary?: boolean | null;
-  isRetryable?: boolean | null;
+  error_code?: number | null;
+  is_summary?: boolean | null;
+  is_retryable?: boolean | null;
   severity?: string | null;
 }
 
@@ -484,35 +493,35 @@ export interface MexResponse {
 }
 
 export interface MsgBotInfo {
-  editType?: BotEditType | null;
-  editTargetId?: string | null;
-  editSenderTimestampMs?: number | null;
+  edit_type?: BotEditType | null;
+  edit_target_id?: string | null;
+  edit_sender_timestamp_ms?: number | null;
 }
 
 export interface MsgMetaInfo {
-  targetId?: string | null;
-  targetSender?: string | null;
-  deprecatedLidSession?: boolean | null;
-  threadMessageId?: string | null;
-  threadMessageSenderJid?: string | null;
+  target_id?: string | null;
+  target_sender?: Jid | null;
+  deprecated_lid_session?: boolean | null;
+  thread_message_id?: string | null;
+  thread_message_sender_jid?: Jid | null;
 }
 
 export interface MuteUpdate {
-  jid: string;
+  jid: Jid;
   timestamp: number;
   action: MuteAction;
-  fromFullSync: boolean;
+  from_full_sync: boolean;
 }
 
 /** A newsletter live update notification, typically containing updated reaction counts for one or more messages. */
 export interface NewsletterLiveUpdate {
-  newsletterJid: string;
+  newsletter_jid: Jid;
   messages: NewsletterLiveUpdateMessage[];
 }
 
 /** A single message entry in a newsletter live update. */
 export interface NewsletterLiveUpdateMessage {
-  serverId: number;
+  server_id: number;
   reactions: NewsletterLiveUpdateReaction[];
 }
 
@@ -528,24 +537,24 @@ export interface OfflineSyncCompleted {
 
 export interface OfflineSyncPreview {
   total: number;
-  appDataChanges: number;
+  app_data_changes: number;
   messages: number;
   notifications: number;
   receipts: number;
 }
 
 export interface PairError {
-  id: string;
-  lid: string;
-  businessName: string;
+  id: Jid;
+  lid: Jid;
+  business_name: string;
   platform: string;
   error: string;
 }
 
 export interface PairSuccess {
-  id: string;
-  lid: string;
-  businessName: string;
+  id: Jid;
+  lid: Jid;
+  business_name: string;
   platform: string;
 }
 
@@ -554,21 +563,21 @@ export type ParticipantType = "member" | "admin" | "super_admin";
 
 export interface PictureUpdate {
   /** The JID whose picture changed (user or group). */
-  jid: string;
+  jid: Jid;
   /** The user who made the change. Present for group picture changes (the admin who changed it). `None` for personal picture updates. */
-  author?: string | null;
+  author?: Jid | null;
   timestamp: number;
   /** Whether the picture was removed (true) or set/updated (false). */
   removed: boolean;
   /** The server-assigned picture ID (from `<set id="..."/>`). `None` for deletions. */
-  pictureId?: string | null;
+  picture_id?: string | null;
 }
 
 export interface PinUpdate {
-  jid: string;
+  jid: Jid;
   timestamp: number;
   action: PinAction;
-  fromFullSync: boolean;
+  from_full_sync: boolean;
 }
 
 /** Platform identifiers for companion devices. These match the DeviceProps.PlatformType protobuf enum. */
@@ -580,9 +589,9 @@ export type Presence = "available" | "unavailable";
 export type PresenceStatus = "available" | "unavailable";
 
 export interface PresenceUpdate {
-  from: string;
+  from: Jid;
   unavailable: boolean;
-  lastSeen?: number | null;
+  last_seen?: number | null;
 }
 
 /** Privacy setting category name. */
@@ -593,12 +602,12 @@ export type PrivacySetting = "all" | "contacts" | "contact_blacklist" | "match_l
 export type PrivacySettingType = "group_add" | "last" | "status" | "profile" | "read_receipts" | "online" | "call_add";
 
 export interface PrivacySettings {
-  groupAdd?: PrivacySetting | null;
-  lastSeen?: PrivacySetting | null;
+  group_add?: PrivacySetting | null;
+  last_seen?: PrivacySetting | null;
   status?: PrivacySetting | null;
   profile?: PrivacySetting | null;
-  readReceipts?: PrivacySetting | null;
-  callAdd?: PrivacySetting | null;
+  read_receipts?: PrivacySetting | null;
+  call_add?: PrivacySetting | null;
   online?: PrivacySetting | null;
 }
 
@@ -609,18 +618,18 @@ export type PrivacyValue = "all" | "contacts" | "none" | "contact_blacklist" | "
 export type ProfilePictureType = "preview" | "full";
 
 export interface PushNameUpdate {
-  jid: string;
+  jid: Jid;
   message: MessageInfo;
-  oldPushName: string;
-  newPushName: string;
+  old_push_name: string;
+  new_push_name: string;
 }
 
 export interface Receipt {
   source: MessageSource;
-  messageIds: string[];
+  message_ids: string[];
   timestamp: number;
   type: ReceiptType;
-  messageSender: string;
+  message_sender: Jid;
 }
 
 export type ReceiptType =
@@ -642,9 +651,9 @@ export type ReceiptType =
 export type ReceivedChatState = "typing" | "recording_audio" | "idle";
 
 export interface SelfPushNameUpdated {
-  fromServer: boolean;
-  oldName: string;
-  newName: string;
+  from_server: boolean;
+  old_name: string;
+  new_name: string;
 }
 
 /** The type of spam flow indicating the source of the report. */
@@ -652,19 +661,19 @@ export type SpamFlow = "group_spam_banner_report" | "group_info_report" | "messa
 
 /** Unique identifier for a message stanza within a chat. Used for deduplication and retry tracking. */
 export interface StanzaKey {
-  chat: string;
+  chat: Jid;
   id: string;
 }
 
 export interface StarUpdate {
-  chatJid: string;
+  chat_jid: Jid;
   /** The participant who sent the message. `Some` for group messages from others, `None` for self-authored or 1-on-1 messages (wire value `"0"`). */
-  participantJid?: string | null;
-  messageId: string;
-  fromMe: boolean;
+  participant_jid?: Jid | null;
+  message_id: string;
+  from_me: boolean;
   timestamp: number;
   action: StarAction;
-  fromFullSync: boolean;
+  from_full_sync: boolean;
 }
 
 /** Privacy setting sent in the `<meta>` node of the status stanza. Matches WhatsApp Web's `status_setting` attribute. */
@@ -680,9 +689,9 @@ export interface TcTokenEntry {
   /** Raw token bytes received from the server. */
   token: Uint8Array;
   /** Unix timestamp (seconds) when the token was received. */
-  tokenTimestamp: number;
+  token_timestamp: number;
   /** Unix timestamp (seconds) when we last issued our token to this contact. */
-  senderTimestamp?: number | null;
+  sender_timestamp?: number | null;
 }
 
 export type TempBanReason =
@@ -702,13 +711,13 @@ export type UnavailableType = "unknown" | "view_once";
 
 export interface UndecryptableMessage {
   info: MessageInfo;
-  isUnavailable: boolean;
-  unavailableType: UnavailableType;
-  decryptFailMode: DecryptFailMode;
+  is_unavailable: boolean;
+  unavailable_type: UnavailableType;
+  decrypt_fail_mode: DecryptFailMode;
 }
 
 export interface UserAboutUpdate {
-  jid: string;
+  jid: Jid;
   status: string;
   timestamp: number;
 }

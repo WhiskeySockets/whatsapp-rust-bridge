@@ -93,6 +93,20 @@ export type WhatsAppEvent =
   | { type: 'client_outdated'; data: Record<string, never> };
 
 // ---------------------------------------------------------------------------
+// Storage interface
+// ---------------------------------------------------------------------------
+
+/** JS storage callbacks for persistent backend (file, SQLite, Redis, etc.). */
+export interface JsStoreCallbacks {
+  /** Get a value from the store. Returns null if not found. */
+  get(store: string, key: string): Promise<Uint8Array | null>;
+  /** Set a value in the store. */
+  set(store: string, key: string, value: Uint8Array): Promise<void>;
+  /** Delete a value from the store. */
+  delete(store: string, key: string): Promise<void>;
+}
+
+// ---------------------------------------------------------------------------
 // Transport & HTTP interfaces
 // ---------------------------------------------------------------------------
 
@@ -147,6 +161,14 @@ export interface WasmWhatsAppClient {
   isConnected(): boolean;
   /** Check if the client has completed pairing. */
   isLoggedIn(): boolean;
+
+  /**
+   * Request a pairing code for phone number login (alternative to QR).
+   * @param phoneNumber Phone number (e.g. "15551234567")
+   * @param customCode Optional custom 8-character code
+   * @returns The 8-character pairing code to enter on the phone
+   */
+  requestPairingCode(phoneNumber: string, customCode?: string): Promise<string>;
 
   /**
    * Send an E2E encrypted message.
@@ -276,7 +298,7 @@ export interface WasmWhatsAppClient {
 export interface MediaConnResult {
   auth: string;
   ttl: number;
-  hosts: Array<{ hostname: string; maxContentLengthBytes: number }>;
+  hosts: Array<{ hostname: string; maxContentLengthBytes?: number }>;
   fetchDate: Date;
 }
 
@@ -377,8 +399,10 @@ export interface IsOnWhatsAppResult {
 // Client creation
 // ---------------------------------------------------------------------------
 
-/** Initialize the WASM engine. Call once before creating clients. */
-export declare function initWasmEngine(): void;
+/** Initialize the WASM engine. Call once before creating clients.
+ * @param logLevel Rust log level: "trace" | "debug" | "info" | "warn" | "error". Defaults to "warn".
+ */
+export declare function initWasmEngine(logLevel?: string): void;
 
 /**
  * Create a full WhatsApp client running in WASM.
@@ -386,11 +410,13 @@ export declare function initWasmEngine(): void;
  * @param transport WebSocket transport callbacks
  * @param httpClient HTTP client callbacks (for media, version fetching)
  * @param onEvent Event callback — receives typed WhatsApp events
+ * @param store Optional JS storage callbacks — if provided, enables persistent storage
  */
 export declare function createWhatsAppClient(
   transport: JsTransportCallbacks,
   httpClient: JsHttpClientConfig,
-  onEvent?: (event: WhatsAppEvent) => void
+  onEvent?: ((event: WhatsAppEvent) => void) | null,
+  store?: JsStoreCallbacks | null,
 ): Promise<WasmWhatsAppClient>;
 
 // ---------------------------------------------------------------------------

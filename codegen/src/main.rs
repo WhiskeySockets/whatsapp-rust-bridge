@@ -50,6 +50,19 @@ fn main() {
     println!("// Source: wacore/src/types/, src/features/, waproto/src/");
     println!();
 
+    // Jid is defined in wacore-binary with cfg_attr(feature = "serde"), so the codegen
+    // can't discover it automatically. Output it as a hardcoded interface matching what
+    // serde actually serializes.
+    println!("/** WhatsApp JID (Jabber ID) — identifies a user, group, or device. */");
+    println!("export interface Jid {{");
+    println!("  user: string;");
+    println!("  server: string;");
+    println!("  agent: number;");
+    println!("  device: number;");
+    println!("  integrator: number;");
+    println!("}}");
+    println!();
+
     for (name, ts_type) in &all_types {
         println!("{}", ts_type.to_typescript(name));
         println!();
@@ -184,7 +197,7 @@ fn parse_file(path: &Path, types: &mut BTreeMap<String, TsTypeDef>) {
                                 let (ts_type, optional) = rust_type_to_ts(&f.ty);
                                 let serde_name = get_serde_rename(f);
                                 TsField {
-                                    name: serde_name.unwrap_or_else(|| to_camel_case(&field_name)),
+                                    name: serde_name.unwrap_or(field_name),
                                     ts_type,
                                     optional,
                                     doc: extract_doc(&f.attrs),
@@ -269,7 +282,7 @@ fn parse_file(path: &Path, types: &mut BTreeMap<String, TsTypeDef>) {
                                             let fname = f.ident.as_ref().unwrap().to_string();
                                             let (ts, opt) = rust_type_to_ts(&f.ty);
                                             TsField {
-                                                name: to_camel_case(&fname),
+                                                name: fname,
                                                 ts_type: ts,
                                                 optional: opt,
                                                 doc: None,
@@ -473,8 +486,8 @@ fn rust_type_to_ts(ty: &Type) -> (String, bool) {
                 // DateTime → number (unix timestamp)
                 "DateTime" => ("number".to_string(), false),
 
-                // Jid → string
-                "Jid" => ("string".to_string(), false),
+                // Jid → Jid (structured object with user, server, device, etc.)
+                "Jid" => ("Jid".to_string(), false),
 
                 // MessageId → string
                 "MessageId" => ("string".to_string(), false),

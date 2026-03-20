@@ -9,6 +9,8 @@
         "url": "https://github.com/jlucaso1/whatsapp-rust-bridge.git"
     },
     "type": "module",
+    "main": "./dist/index.js",
+    "types": "./types/index.d.ts",
     "files": [
         "dist/**/*",
         "pkg/whatsapp_rust_bridge.d.ts",
