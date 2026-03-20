@@ -216,7 +216,7 @@ fn event_to_js_special(event: &Event) -> Result<JsValue, JsValue> {
             js_sys::Reflect::set(&d, &"lid".into(), &ps.lid.to_string().into())?;
             js_sys::Reflect::set(
                 &d,
-                &"businessName".into(),
+                &"business_name".into(),
                 &ps.business_name.as_str().into(),
             )?;
             js_sys::Reflect::set(&d, &"platform".into(), &ps.platform.as_str().into())?;
@@ -228,7 +228,7 @@ fn event_to_js_special(event: &Event) -> Result<JsValue, JsValue> {
             js_sys::Reflect::set(&d, &"lid".into(), &pe.lid.to_string().into())?;
             js_sys::Reflect::set(
                 &d,
-                &"businessName".into(),
+                &"business_name".into(),
                 &pe.business_name.as_str().into(),
             )?;
             js_sys::Reflect::set(&d, &"platform".into(), &pe.platform.as_str().into())?;
@@ -237,7 +237,7 @@ fn event_to_js_special(event: &Event) -> Result<JsValue, JsValue> {
         }
         Event::LoggedOut(lo) => {
             let d = js_sys::Object::new();
-            js_sys::Reflect::set(&d, &"onConnect".into(), &lo.on_connect.into())?;
+            js_sys::Reflect::set(&d, &"on_connect".into(), &lo.on_connect.into())?;
             js_sys::Reflect::set(&d, &"reason".into(), &format!("{:?}", lo.reason).into())?;
             ("logged_out", d.into())
         }
@@ -453,6 +453,32 @@ impl WasmWhatsAppClient {
         Ok(JsValue::from_str(&message_id))
     }
 
+    /// Send a message from protobuf binary bytes.
+    ///
+    /// This avoids serde deserialization issues with prost's strict field requirements.
+    /// The bytes are decoded as a `wa.Message` protobuf.
+    #[wasm_bindgen(js_name = sendMessageBytes)]
+    pub async fn send_message_bytes(
+        &self,
+        jid: &str,
+        message_bytes: &[u8],
+    ) -> Result<JsValue, JsValue> {
+        use prost::Message;
+        let to: Jid = jid
+            .parse()
+            .map_err(|e: wacore_binary::jid::JidError| JsValue::from_str(&format!("{e}")))?;
+        let msg = waproto::whatsapp::Message::decode(message_bytes)
+            .map_err(|e| JsValue::from_str(&format!("invalid message bytes: {e}")))?;
+
+        let message_id = self
+            .client
+            .send_message(to, msg)
+            .await
+            .map_err(|e| JsValue::from_str(&format!("{e}")))?;
+
+        Ok(JsValue::from_str(&message_id))
+    }
+
     // ── Message management ──────────────────────────────────────────────
 
     /// Edit a previously sent message.
@@ -468,6 +494,30 @@ impl WasmWhatsAppClient {
             .map_err(|e: wacore_binary::jid::JidError| JsValue::from_str(&format!("{e}")))?;
         let msg: waproto::whatsapp::Message = serde_wasm_bindgen::from_value(new_content)
             .map_err(|e| JsValue::from_str(&format!("invalid message: {e}")))?;
+
+        let new_id = self
+            .client
+            .edit_message(to, message_id, msg)
+            .await
+            .map_err(|e| JsValue::from_str(&format!("{e}")))?;
+
+        Ok(JsValue::from_str(&new_id))
+    }
+
+    /// Edit a previously sent message from protobuf bytes.
+    #[wasm_bindgen(js_name = editMessageBytes, skip_typescript)]
+    pub async fn edit_message_bytes(
+        &self,
+        jid: &str,
+        message_id: &str,
+        new_content_bytes: &[u8],
+    ) -> Result<JsValue, JsValue> {
+        use prost::Message;
+        let to: Jid = jid
+            .parse()
+            .map_err(|e: wacore_binary::jid::JidError| JsValue::from_str(&format!("{e}")))?;
+        let msg = waproto::whatsapp::Message::decode(new_content_bytes)
+            .map_err(|e| JsValue::from_str(&format!("invalid message bytes: {e}")))?;
 
         let new_id = self
             .client
@@ -1211,6 +1261,48 @@ impl WasmWhatsAppClient {
             .map_err(|e| JsValue::from_str(&format!("{e}")))
     }
 
+    // ── Media ────────────────────────────────────────────────────────────
+
+    /// Get media connection info (auth token + upload hosts).
+    ///
+    /// Returns `{ auth: string, ttl: number, hosts: [{hostname: string, maxContentLengthBytes: number}] }`.
+    #[wasm_bindgen(js_name = getMediaConn, skip_typescript)]
+    pub async fn get_media_conn(&self, force: bool) -> Result<JsValue, JsValue> {
+        let conn = self
+            .client
+            .refresh_media_conn(force)
+            .await
+            .map_err(|e| JsValue::from_str(&format!("{e}")))?;
+
+        let obj = js_sys::Object::new();
+        js_sys::Reflect::set(&obj, &"auth".into(), &conn.auth.as_str().into())?;
+        js_sys::Reflect::set(&obj, &"ttl".into(), &(conn.ttl as f64).into())?;
+
+        let hosts = js_sys::Array::new();
+        for h in &conn.hosts {
+            let host_obj = js_sys::Object::new();
+            js_sys::Reflect::set(
+                &host_obj,
+                &"hostname".into(),
+                &h.hostname.as_str().into(),
+            )?;
+            js_sys::Reflect::set(
+                &host_obj,
+                &"maxContentLengthBytes".into(),
+                &JsValue::from_f64(0.0),
+            )?;
+            hosts.push(&host_obj.into());
+        }
+        js_sys::Reflect::set(&obj, &"hosts".into(), &hosts.into())?;
+        js_sys::Reflect::set(
+            &obj,
+            &"fetchDate".into(),
+            &js_sys::Date::new_0().into(),
+        )?;
+
+        Ok(obj.into())
+    }
+
     // ── State getters ────────────────────────────────────────────────────
 
     /// Get the current push name.
@@ -1220,15 +1312,26 @@ impl WasmWhatsAppClient {
     }
 
     /// Get the own JID (phone number JID) if logged in.
+    ///
+    /// Returns the non-AD JID (without device suffix), e.g. "559980000014@s.whatsapp.net".
+    /// This is the JID used for addressing in messages.
     #[wasm_bindgen(js_name = getJid)]
     pub async fn get_jid(&self) -> Option<String> {
-        self.client.get_pn().await.map(|j| j.to_string())
+        self.client
+            .get_pn()
+            .await
+            .map(|j| j.to_non_ad().to_string())
     }
 
     /// Get the own LID (linked identity) if available.
+    ///
+    /// Returns the non-AD LID (without device suffix), e.g. "100000012345678@lid".
     #[wasm_bindgen(js_name = getLid)]
     pub async fn get_lid(&self) -> Option<String> {
-        self.client.get_lid().await.map(|j| j.to_string())
+        self.client
+            .get_lid()
+            .await
+            .map(|j| j.to_non_ad().to_string())
     }
 }
 

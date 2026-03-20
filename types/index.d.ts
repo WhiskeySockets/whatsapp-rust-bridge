@@ -54,9 +54,9 @@ export type WhatsAppEvent =
   | { type: 'disconnected'; data: Record<string, never> }
   | { type: 'qr'; data: { code: string; timeout: number } }
   | { type: 'pairing_code'; data: { code: string; timeout: number } }
-  | { type: 'pair_success'; data: { id: string; lid: string; businessName: string; platform: string } }
-  | { type: 'pair_error'; data: { id: string; lid: string; businessName: string; platform: string; error: string } }
-  | { type: 'logged_out'; data: { onConnect: boolean; reason: string } }
+  | { type: 'pair_success'; data: { id: string; lid: string; business_name: string; platform: string } }
+  | { type: 'pair_error'; data: { id: string; lid: string; business_name: string; platform: string; error: string } }
+  | { type: 'logged_out'; data: { on_connect: boolean; reason: string } }
   | { type: 'message'; data: { message: Record<string, unknown>; info: MessageInfo } }
   | { type: 'receipt'; data: Receipt }
   | { type: 'undecryptable_message'; data: UndecryptableMessage }
@@ -172,10 +172,21 @@ export interface WasmWhatsAppClient {
   /** Get the own LID (linked identity). */
   getLid(): Promise<string | undefined>;
 
+  /**
+   * Send a message from protobuf binary bytes.
+   * Avoids serde issues with prost's strict field requirements.
+   * @param jid Recipient JID
+   * @param messageBytes Protobuf-encoded wa.Message bytes
+   * @returns Message ID string
+   */
+  sendMessageBytes(jid: string, messageBytes: Uint8Array): Promise<string>;
+
   // ── Message management ──
 
   /** Edit a previously sent message. Returns new message ID. */
   editMessage(jid: string, messageId: string, newContent: Record<string, unknown>): Promise<string>;
+  /** Edit a previously sent message from protobuf binary bytes. Returns new message ID. */
+  editMessageBytes(jid: string, messageId: string, newContentBytes: Uint8Array): Promise<string>;
   /** Revoke (delete) a message. Pass participant for admin revoke in groups. */
   revokeMessage(jid: string, messageId: string, participant?: string | null): Promise<void>;
 
@@ -195,6 +206,11 @@ export interface WasmWhatsAppClient {
   groupInviteCode(jid: string): Promise<string>;
   /** Update a group setting. Setting: "locked", "announce", "membership_approval". */
   groupSettingUpdate(jid: string, setting: "locked" | "announce" | "membership_approval", value: boolean): Promise<void>;
+
+  // ── Media ──
+
+  /** Get media connection info (auth token + upload hosts) for media upload/download. */
+  getMediaConn(force: boolean): Promise<MediaConnResult>;
 
   // ── Contacts ──
 
@@ -254,6 +270,14 @@ export interface WasmWhatsAppClient {
 
   /** Free WASM resources. Call when done with the client. */
   free(): void;
+}
+
+/** Result from getMediaConn. */
+export interface MediaConnResult {
+  auth: string;
+  ttl: number;
+  hosts: Array<{ hostname: string; maxContentLengthBytes: number }>;
+  fetchDate: Date;
 }
 
 /** Result from groupParticipantsUpdate (add/remove). */

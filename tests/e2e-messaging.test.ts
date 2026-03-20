@@ -14,6 +14,7 @@ import type {
   WhatsAppEvent,
   WasmWhatsAppClient,
   MessageInfo,
+  Jid,
 } from "../types/index.js";
 import {
   createTransport,
@@ -53,19 +54,16 @@ async function createTestClient(name: string): Promise<TestClient> {
 
 type MessageEventData = {
   message: Record<string, unknown>;
-  info: Record<string, unknown>;
+  info: MessageInfo;
 };
 
-function isMessageEvent(
-  e: WhatsAppEvent
+function isIncomingMessage(
+  e: WhatsAppEvent,
+  text: string
 ): e is WhatsAppEvent & { type: "message"; data: MessageEventData } {
-  return e.type === "message";
-}
-
-/** Get isFromMe from message info source, handling both camelCase and snake_case */
-function getIsFromMe(data: MessageEventData): boolean | undefined {
-  const source = (data.info?.source ?? data.info) as Record<string, unknown>;
-  return (source?.isFromMe ?? source?.is_from_me) as boolean | undefined;
+  if (e.type !== "message") return false;
+  const data = e.data as MessageEventData;
+  return data.message?.conversation === text && !data.info.source.is_from_me;
 }
 
 // ---------------------------------------------------------------------------
@@ -83,28 +81,20 @@ describe("Two-client E2E messaging", () => {
     // before Client B starts, ensuring mock server state is clean.
     alice = await createTestClient("alice");
     alice.client.run();
-    console.log("  Waiting for Alice to pair...");
     await waitForEvent(alice.events, "pair_success", 20000);
-    console.log("  Alice paired! Waiting for connected...");
     await waitForEvent(alice.events, "connected", 45000);
-    console.log("  Alice fully connected!");
+    console.log("  Alice connected!");
 
     bob = await createTestClient("bob");
     bob.client.run();
-    console.log("  Waiting for Bob to pair...");
     await waitForEvent(bob.events, "pair_success", 20000);
-    console.log("  Bob paired! Waiting for connected...");
     await waitForEvent(bob.events, "connected", 45000);
-    console.log("  Bob fully connected!");
+    console.log("  Bob connected!");
 
-    // getJid() returns the AD JID with device (e.g. "559980000014:33@s.whatsapp.net").
-    // For addressing, we need the non-AD JID (without device), like whatsapp-rust's to_non_ad().
-    const rawAliceJid = (await alice.client.getJid())!;
-    const rawBobJid = (await bob.client.getJid())!;
-    aliceJid = rawAliceJid.replace(/:[\d]+@/, "@");
-    bobJid = rawBobJid.replace(/:[\d]+@/, "@");
-    console.log(`  Alice JID: ${aliceJid} (raw: ${rawAliceJid})`);
-    console.log(`  Bob JID: ${bobJid} (raw: ${rawBobJid})`);
+    // getJid() returns non-AD JID string for addressing (e.g. "559980000014@s.whatsapp.net")
+    aliceJid = (await alice.client.getJid())!;
+    bobJid = (await bob.client.getJid())!;
+    console.log(`  Alice: ${aliceJid}, Bob: ${bobJid}`);
 
     expect(aliceJid).toBeDefined();
     expect(bobJid).toBeDefined();
@@ -125,35 +115,26 @@ describe("Two-client E2E messaging", () => {
     "Alice sends a text message to Bob and Bob receives it",
     async () => {
       const text = `Hello Bob! ${Date.now()}`;
-      const bobEventsBefore = bob.events.length;
+      const before = bob.events.length;
 
-      // Alice sends to Bob
-      const msgId = await alice.client.sendMessage(bobJid, {
-        conversation: text,
-      });
+      const msgId = await alice.client.sendMessage(bobJid, { conversation: text });
       expect(msgId).toBeTruthy();
-      console.log(`  Alice sent message (id=${msgId}) to Bob`);
+      console.log(`  Alice → Bob: "${text}" (id=${msgId})`);
 
-      // Wait for Bob to receive Alice's message
-      const received = await waitForEventMatching(
+      const event = await waitForEventMatching(
         bob.events,
-        (e) => {
-          if (!isMessageEvent(e)) return false;
-          const data = e.data as MessageEventData;
-          return (
-            data.message?.conversation === text &&
-            !getIsFromMe(data)
-          );
-        },
+        (e) => isIncomingMessage(e, text),
         15000,
-        bobEventsBefore
+        before
       );
 
-      const data = (received as { data: MessageEventData }).data;
+      const data = (event as { data: MessageEventData }).data;
       expect(data.message.conversation).toBe(text);
-      expect(getIsFromMe(data)).toBe(false);
+      expect(data.info.source.is_from_me).toBe(false);
+      expect(data.info.source.sender.user).toBeTruthy();
+      expect(data.info.source.sender.server).toBe("s.whatsapp.net");
       console.log(
-        `  Bob received: "${data.message.conversation}"`
+        `  Bob received: "${data.message.conversation}" from ${data.info.source.sender.user}@${data.info.source.sender.server}`
       );
     },
     30000
@@ -163,35 +144,24 @@ describe("Two-client E2E messaging", () => {
     "Bob sends a text message to Alice and Alice receives it",
     async () => {
       const text = `Hey Alice! ${Date.now()}`;
-      const aliceEventsBefore = alice.events.length;
+      const before = alice.events.length;
 
-      // Bob sends to Alice
-      const msgId = await bob.client.sendMessage(aliceJid, {
-        conversation: text,
-      });
+      const msgId = await bob.client.sendMessage(aliceJid, { conversation: text });
       expect(msgId).toBeTruthy();
-      console.log(`  Bob sent message (id=${msgId}) to Alice`);
+      console.log(`  Bob → Alice: "${text}" (id=${msgId})`);
 
-      // Wait for Alice to receive Bob's message
-      const received = await waitForEventMatching(
+      const event = await waitForEventMatching(
         alice.events,
-        (e) => {
-          if (!isMessageEvent(e)) return false;
-          const data = e.data as MessageEventData;
-          return (
-            data.message?.conversation === text &&
-            !getIsFromMe(data)
-          );
-        },
+        (e) => isIncomingMessage(e, text),
         15000,
-        aliceEventsBefore
+        before
       );
 
-      const data = (received as { data: MessageEventData }).data;
+      const data = (event as { data: MessageEventData }).data;
       expect(data.message.conversation).toBe(text);
-      expect(getIsFromMe(data)).toBe(false);
+      expect(data.info.source.is_from_me).toBe(false);
       console.log(
-        `  Alice received: "${data.message.conversation}"`
+        `  Alice received: "${data.message.conversation}" from ${data.info.source.sender.user}@${data.info.source.sender.server}`
       );
     },
     30000
@@ -200,41 +170,31 @@ describe("Two-client E2E messaging", () => {
   test(
     "Both clients exchange multiple messages in sequence",
     async () => {
-      const messages = [
-        { from: alice, to: bob, fromJid: aliceJid, toJid: bobJid, text: `Msg1 A→B ${Date.now()}` },
-        { from: bob, to: alice, fromJid: bobJid, toJid: aliceJid, text: `Msg2 B→A ${Date.now()}` },
-        { from: alice, to: bob, fromJid: aliceJid, toJid: bobJid, text: `Msg3 A→B ${Date.now()}` },
-        { from: bob, to: alice, fromJid: bobJid, toJid: aliceJid, text: `Msg4 B→A ${Date.now()}` },
+      const exchanges = [
+        { from: alice, to: bob, toJid: bobJid, text: `Msg1 A→B ${Date.now()}` },
+        { from: bob, to: alice, toJid: aliceJid, text: `Msg2 B→A ${Date.now()}` },
+        { from: alice, to: bob, toJid: bobJid, text: `Msg3 A→B ${Date.now()}` },
+        { from: bob, to: alice, toJid: aliceJid, text: `Msg4 B→A ${Date.now()}` },
       ];
 
-      for (const msg of messages) {
-        const receiverEventsBefore = msg.to.events.length;
+      for (const { from, to, toJid, text } of exchanges) {
+        const before = to.events.length;
 
-        const msgId = await msg.from.client.sendMessage(msg.toJid, {
-          conversation: msg.text,
-        });
+        const msgId = await from.client.sendMessage(toJid, { conversation: text });
         expect(msgId).toBeTruthy();
-        console.log(`  ${msg.from.name} → ${msg.to.name}: "${msg.text}" (id=${msgId})`);
+        console.log(`  ${from.name} → ${to.name}: "${text}"`);
 
-        // Wait for receiver to get the message
-        const received = await waitForEventMatching(
-          msg.to.events,
-          (e) => {
-            if (!isMessageEvent(e)) return false;
-            const data = e.data as MessageEventData;
-            return (
-              data.message?.conversation === msg.text &&
-              !getIsFromMe(data)
-            );
-          },
+        const event = await waitForEventMatching(
+          to.events,
+          (e) => isIncomingMessage(e, text),
           15000,
-          receiverEventsBefore
+          before
         );
 
-        const data = (received as { data: MessageEventData }).data;
-        expect(data.message.conversation).toBe(msg.text);
-        expect(getIsFromMe(data)).toBe(false);
-        console.log(`  ${msg.to.name} received: "${data.message.conversation}"`);
+        const data = (event as { data: MessageEventData }).data;
+        expect(data.message.conversation).toBe(text);
+        expect(data.info.source.is_from_me).toBe(false);
+        console.log(`  ${to.name} received: "${data.message.conversation}"`);
       }
     },
     60000
@@ -244,28 +204,21 @@ describe("Two-client E2E messaging", () => {
     "messages arrive quickly (under 2 seconds)",
     async () => {
       const text = `Latency test ${Date.now()}`;
-      const bobEventsBefore = bob.events.length;
+      const before = bob.events.length;
       const start = Date.now();
 
       await alice.client.sendMessage(bobJid, { conversation: text });
 
-      const received = await waitForEventMatching(
+      await waitForEventMatching(
         bob.events,
-        (e) => {
-          if (!isMessageEvent(e)) return false;
-          const data = e.data as MessageEventData;
-          return data.message?.conversation === text && !getIsFromMe(data);
-        },
+        (e) => isIncomingMessage(e, text),
         5000,
-        bobEventsBefore
+        before
       );
 
       const elapsed = Date.now() - start;
       console.log(`  Message delivered in ${elapsed}ms`);
       expect(elapsed).toBeLessThan(2000);
-
-      const data = (received as { data: MessageEventData }).data;
-      expect(data.message.conversation).toBe(text);
     },
     10000
   );
