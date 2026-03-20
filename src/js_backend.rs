@@ -622,30 +622,36 @@ impl ProtocolStore for JsBackend {
         data.extend_from_slice(payload);
         self.js_set(STORE_SENT_MESSAGE, &key, &data).await?;
 
-        // Track key in memory only — no serialization on the hot path.
-        // The key list is persisted during delete_expired_sent_messages (periodic cleanup).
-        let mut guard = self.sent_message_keys.lock().await;
-        guard.get_or_insert_with(Vec::new).push(key);
+        // Track key in memory — no serialization on the hot path.
+        // Lazily loads existing keys from disk on first access so prior-session
+        // keys aren't orphaned from the expiration index.
+        let mut guard = self.get_sent_keys().await?;
+        if let Some(ref mut keys) = *guard {
+            keys.push(key);
+        }
         Ok(())
     }
 
     async fn take_sent_message(&self, chat_jid: &str, message_id: &str) -> Result<Option<Vec<u8>>> {
         let key = format!("{chat_jid}:{message_id}");
-        match self.js_get(STORE_SENT_MESSAGE, &key).await? {
-            Some(data) if data.len() > 8 => {
-                self.js_delete(STORE_SENT_MESSAGE, &key).await?;
 
-                // Remove from in-memory index (no disk flush — cleanup will reconcile)
-                let mut guard = self.sent_message_keys.lock().await;
-                if let Some(ref mut keys) = *guard {
-                    keys.retain(|k| k != &key);
-                }
+        // Fetch and delete from store WITHOUT holding the mutex
+        let data = match self.js_get(STORE_SENT_MESSAGE, &key).await? {
+            Some(data) if data.len() > 8 => data,
+            _ => return Ok(None),
+        };
+        self.js_delete(STORE_SENT_MESSAGE, &key).await?;
 
-                // Skip 8-byte timestamp prefix
-                Ok(Some(data[8..].to_vec()))
+        // Brief lock to update in-memory index
+        {
+            let mut guard = self.sent_message_keys.lock().await;
+            if let Some(ref mut keys) = *guard {
+                keys.retain(|k| k != &key);
             }
-            _ => Ok(None),
         }
+
+        // Skip 8-byte timestamp prefix
+        Ok(Some(data[8..].to_vec()))
     }
 
     async fn delete_expired_sent_messages(&self, cutoff_timestamp: i64) -> Result<u32> {
@@ -656,21 +662,39 @@ impl ProtocolStore for JsBackend {
         };
 
         let mut deleted = 0u32;
-        let mut remaining = Vec::new();
-        for key in keys.drain(..) {
-            if let Some(data) = self.js_get(STORE_SENT_MESSAGE, &key).await? {
-                if data.len() >= 8 {
+        // Collect indices to remove in reverse order to avoid shifting
+        let mut to_remove = Vec::new();
+        for (i, key) in keys.iter().enumerate() {
+            match self.js_get(STORE_SENT_MESSAGE, key).await {
+                Ok(Some(data)) if data.len() >= 8 => {
                     let ts = i64::from_be_bytes(data[..8].try_into().unwrap_or([0; 8]));
                     if ts < cutoff_timestamp {
-                        self.js_delete(STORE_SENT_MESSAGE, &key).await?;
+                        self.js_delete(STORE_SENT_MESSAGE, key).await?;
+                        to_remove.push(i);
                         deleted += 1;
-                        continue;
                     }
                 }
-                remaining.push(key);
+                Ok(None) => {
+                    // Key in index but not on disk — stale entry, remove
+                    to_remove.push(i);
+                }
+                Ok(Some(_)) => {
+                    // Data too short — corrupted, remove
+                    self.js_delete(STORE_SENT_MESSAGE, key).await?;
+                    to_remove.push(i);
+                }
+                Err(e) => {
+                    log::warn!("Failed to check sent message {key}: {e}");
+                    // Keep the key — don't lose it on transient errors
+                }
             }
         }
-        *keys = remaining;
+
+        // Remove in reverse order to preserve indices
+        for i in to_remove.into_iter().rev() {
+            keys.swap_remove(i);
+        }
+
         self.flush_sent_keys(keys).await?;
         Ok(deleted)
     }
