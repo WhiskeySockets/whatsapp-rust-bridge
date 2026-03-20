@@ -15,36 +15,16 @@ const bytes = base64ToUint8Array(base64Wasm());
 
 initSync({ module: bytes });
 
-// Runtime exports from WASM
+// Runtime exports from WASM — only the functions actually used by Baileys
 export {
   encodeProto,
   decodeProto,
-  encodeNode,
-  decodeNode,
-  getWAConnHeader,
   generateKeyPair,
   calculateAgreement,
   calculateSignature,
   verifySignature,
-  generateSignedPreKey,
-  generatePreKey,
-  generateIdentityKeyPair,
-  generateRegistrationId,
   md5,
   hkdf,
-  NoiseSession,
-  SessionCipher,
-  SessionBuilder,
-  GroupCipher,
-  GroupSessionBuilder,
-  ProtocolAddress,
-  SessionRecord,
-  SenderKeyName,
-  SenderKeyRecord,
-  SenderKeyDistributionMessage,
-  LTHashAntiTampering,
-  ExpandedAppStateKeys,
-  expandAppStateKeys,
 } from "../pkg/whatsapp_rust_bridge.js";
 
 // initWasmEngine and createWhatsAppClient need explicit typing
@@ -62,6 +42,7 @@ export const createWhatsAppClient: (
   httpClient: import("../types/index.js").JsHttpClientConfig,
   onEvent?: ((event: WhatsAppEvent) => void) | null,
   store?: import("../types/index.js").JsStoreCallbacks | null,
+  cache?: import("../types/index.js").CacheConfig | null,
 ) => Promise<WasmWhatsAppClient> = _createWhatsAppClient as any;
 
 // Type exports from hand-maintained types (accurate, snake_case matching serde output)

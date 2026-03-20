@@ -323,6 +323,7 @@ pub async fn create_whatsapp_client(
     http_config: JsValue,
     on_event: Option<js_sys::Function>,
     store: Option<JsValue>,
+    cache_config_js: Option<JsValue>,
 ) -> Result<WasmWhatsAppClient, JsValue> {
     let runtime = Arc::new(WasmRuntime) as Arc<dyn wacore::runtime::Runtime>;
     let backend = match store {
@@ -365,6 +366,9 @@ pub async fn create_whatsapp_client(
         .clone()
         .run_background_saver(runtime.clone(), std::time::Duration::from_secs(5));
 
+    // Build cache config from JS overrides (if provided)
+    let cache_config = build_cache_config(cache_config_js.as_ref())?;
+
     // Create the client
     let (client, sync_rx) = whatsapp_rust::Client::new_with_cache_config(
         runtime.clone(),
@@ -372,7 +376,7 @@ pub async fn create_whatsapp_client(
         transport_factory,
         http_client,
         Some(DEFAULT_WA_WEB_VERSION),
-        whatsapp_rust::CacheConfig::default(),
+        cache_config,
     )
     .await;
 
@@ -467,6 +471,16 @@ impl WasmWhatsAppClient {
         }
     }
 
+    /// Enable or disable automatic reconnection on disconnect.
+    /// Enabled by default. When disabled, the client will not attempt
+    /// to reconnect after an unexpected disconnection.
+    #[wasm_bindgen(js_name = setAutoReconnect)]
+    pub fn set_auto_reconnect(&self, enabled: bool) {
+        self.client
+            .enable_auto_reconnect
+            .store(enabled, std::sync::atomic::Ordering::Relaxed);
+    }
+
     /// Check if the client is connected.
     #[wasm_bindgen(js_name = isConnected)]
     pub fn is_connected(&self) -> bool {
@@ -477,6 +491,54 @@ impl WasmWhatsAppClient {
     #[wasm_bindgen(js_name = isLoggedIn)]
     pub fn is_logged_in(&self) -> bool {
         self.client.is_logged_in()
+    }
+
+    // ── Device props ─────────────────────────────────────────────────────
+
+    /// Set device properties (OS name, browser/platform type).
+    /// This controls what device name is shown on the phone (e.g. "Chrome", "Firefox").
+    ///
+    /// `os` — OS name (e.g. "Mac OS", "Windows", "Ubuntu")
+    /// `browser` — Browser name mapped to PlatformType (e.g. "Chrome", "Firefox", "Safari")
+    #[wasm_bindgen(js_name = setDeviceProps)]
+    pub async fn set_device_props(&self, os: &str, browser: &str) {
+        use wacore::store::commands::DeviceCommand;
+        use waproto::whatsapp::device_props;
+
+        let platform_type = match browser {
+            "Chrome" => device_props::PlatformType::Chrome,
+            "Firefox" => device_props::PlatformType::Firefox,
+            "Safari" => device_props::PlatformType::Safari,
+            "Edge" => device_props::PlatformType::Edge,
+            "Opera" => device_props::PlatformType::Opera,
+            "Desktop" => device_props::PlatformType::Desktop,
+            _ => device_props::PlatformType::Chrome,
+        };
+
+        self.persistence_manager
+            .process_command(DeviceCommand::SetDeviceProps(
+                Some(os.to_string()),
+                None,
+                Some(platform_type),
+            ))
+            .await;
+    }
+
+    /// Override the WhatsApp Web version used for the connection.
+    /// Accepts [major, minor, patch] array.
+    #[wasm_bindgen(js_name = setVersion)]
+    pub fn set_version(&self, major: u32, minor: u32, patch: u32) {
+        use wacore::store::commands::DeviceCommand;
+        // This sets the app version on the device, which is sent during login.
+        // The actual protocol version is set once at client creation and can't
+        // be changed after, but this ensures subsequent reconnections use it.
+        let pm = self.persistence_manager.clone();
+        let rt = self.runtime.clone();
+        rt.spawn(Box::pin(async move {
+            pm.process_command(DeviceCommand::SetAppVersion((major, minor, patch)))
+                .await;
+        }))
+        .detach();
     }
 
     // ── Pairing ──────────────────────────────────────────────────────────
@@ -542,24 +604,22 @@ impl WasmWhatsAppClient {
     }
 
     /// Edit a previously sent message from protobuf bytes.
-    #[wasm_bindgen(js_name = editMessageBytes, skip_typescript)]
+    #[wasm_bindgen(js_name = editMessageBytes)]
     pub async fn edit_message_bytes(
         &self,
         jid: &str,
         message_id: &str,
         bytes: &[u8],
-    ) -> Result<JsValue, JsValue> {
+    ) -> Result<String, JsValue> {
         let (to, msg) = parse_jid_and_msg_bytes(jid, bytes)?;
-        let id = self
-            .client
+        self.client
             .edit_message(to, message_id, msg)
             .await
-            .map_err(js_err)?;
-        Ok(JsValue::from_str(&id))
+            .map_err(js_err)
     }
 
     /// Revoke (delete) a sent message.
-    #[wasm_bindgen(js_name = revokeMessage, skip_typescript)]
+    #[wasm_bindgen(js_name = revokeMessage)]
     pub async fn revoke_message(
         &self,
         jid: &str,
@@ -644,7 +704,7 @@ impl WasmWhatsAppClient {
     }
 
     /// Update a group's subject (name).
-    #[wasm_bindgen(js_name = groupUpdateSubject, skip_typescript)]
+    #[wasm_bindgen(js_name = groupUpdateSubject)]
     pub async fn group_update_subject(&self, jid: &str, subject: &str) -> Result<(), JsValue> {
         let group_jid: Jid = jid
             .parse()
@@ -661,7 +721,7 @@ impl WasmWhatsAppClient {
     }
 
     /// Update a group's description. Pass null/undefined to remove.
-    #[wasm_bindgen(js_name = groupUpdateDescription, skip_typescript)]
+    #[wasm_bindgen(js_name = groupUpdateDescription)]
     pub async fn group_update_description(
         &self,
         jid: &str,
@@ -687,7 +747,7 @@ impl WasmWhatsAppClient {
     }
 
     /// Leave a group.
-    #[wasm_bindgen(js_name = groupLeave, skip_typescript)]
+    #[wasm_bindgen(js_name = groupLeave)]
     pub async fn group_leave(&self, jid: &str) -> Result<(), JsValue> {
         let group_jid: Jid = jid
             .parse()
@@ -781,8 +841,8 @@ impl WasmWhatsAppClient {
     }
 
     /// Get the invite link for a group.
-    #[wasm_bindgen(js_name = groupInviteCode, skip_typescript)]
-    pub async fn group_invite_code(&self, jid: &str) -> Result<JsValue, JsValue> {
+    #[wasm_bindgen(js_name = groupInviteCode)]
+    pub async fn group_invite_code(&self, jid: &str) -> Result<String, JsValue> {
         let group_jid: Jid = jid
             .parse()
             .map_err(|e: wacore_binary::jid::JidError| JsValue::from_str(&format!("{e}")))?;
@@ -794,11 +854,11 @@ impl WasmWhatsAppClient {
             .await
             .map_err(|e| JsValue::from_str(&format!("{e}")))?;
 
-        Ok(JsValue::from_str(&link))
+        Ok(link)
     }
 
     /// Update a group setting (locked, announce, membership_approval).
-    #[wasm_bindgen(js_name = groupSettingUpdate, skip_typescript)]
+    #[wasm_bindgen(js_name = groupSettingUpdate)]
     pub async fn group_setting_update(
         &self,
         jid: &str,
@@ -844,6 +904,34 @@ impl WasmWhatsAppClient {
         Ok(())
     }
 
+    /// Set disappearing messages timer for a group (0 to disable).
+    #[wasm_bindgen(js_name = groupToggleEphemeral)]
+    pub async fn group_toggle_ephemeral(&self, jid: &str, expiration: u32) -> Result<(), JsValue> {
+        let group_jid: Jid = jid
+            .parse()
+            .map_err(|e: wacore_binary::jid::JidError| js_err(e))?;
+        self.client
+            .groups()
+            .set_ephemeral(&group_jid, expiration)
+            .await
+            .map_err(js_err)
+    }
+
+    /// Revoke a group's invite link (generates new one).
+    #[wasm_bindgen(js_name = groupRevokeInvite)]
+    pub async fn group_revoke_invite(&self, jid: &str) -> Result<String, JsValue> {
+        let group_jid: Jid = jid
+            .parse()
+            .map_err(|e: wacore_binary::jid::JidError| js_err(e))?;
+        let new_code = self
+            .client
+            .groups()
+            .get_invite_link(&group_jid, true)
+            .await
+            .map_err(js_err)?;
+        Ok(new_code)
+    }
+
     // ── Contacts ─────────────────────────────────────────────────────────
 
     /// Check if a phone number is registered on WhatsApp.
@@ -871,16 +959,13 @@ impl WasmWhatsAppClient {
     /// Get the profile picture URL for a user or group.
     ///
     /// `picture_type` should be "preview" or "image".
-    #[wasm_bindgen(js_name = profilePictureUrl, skip_typescript)]
+    #[wasm_bindgen(js_name = profilePictureUrl)]
     pub async fn profile_picture_url(
         &self,
         jid: &str,
         picture_type: &str,
-    ) -> Result<JsValue, JsValue> {
-        let target: Jid = jid
-            .parse()
-            .map_err(|e: wacore_binary::jid::JidError| JsValue::from_str(&format!("{e}")))?;
-
+    ) -> Result<Option<crate::result_types::ProfilePictureInfo>, JsValue> {
+        let target: Jid = jid.parse().map_err(js_err)?;
         let preview = match picture_type {
             "preview" => true,
             "image" => false,
@@ -896,19 +981,14 @@ impl WasmWhatsAppClient {
             .contacts()
             .get_profile_picture(&target, preview)
             .await
-            .map_err(|e| JsValue::from_str(&format!("{e}")))?;
+            .map_err(js_err)?;
 
-        match result {
-            Some(pic) => {
-                let obj = js_sys::Object::new();
-                js_sys::Reflect::set(&obj, &"id".into(), &pic.id.as_str().into())?;
-                js_sys::Reflect::set(&obj, &"url".into(), &pic.url.as_str().into())?;
-                set_optional_str(&obj, "directPath", &pic.direct_path)?;
-                set_optional_str(&obj, "hash", &pic.hash)?;
-                Ok(obj.into())
-            }
-            None => Ok(JsValue::NULL),
-        }
+        Ok(result.map(|pic| crate::result_types::ProfilePictureInfo {
+            id: pic.id.clone(),
+            url: pic.url.clone(),
+            direct_path: pic.direct_path.clone(),
+            hash: pic.hash.clone(),
+        }))
     }
 
     /// Fetch user info for one or more JIDs.
@@ -962,37 +1042,42 @@ impl WasmWhatsAppClient {
     }
 
     /// Set the profile picture for the logged-in user.
-    #[wasm_bindgen(js_name = updateProfilePicture, skip_typescript)]
-    pub async fn update_profile_picture(&self, img_data: Vec<u8>) -> Result<JsValue, JsValue> {
+    #[wasm_bindgen(js_name = updateProfilePicture)]
+    pub async fn update_profile_picture(
+        &self,
+        img_data: Vec<u8>,
+    ) -> Result<crate::result_types::ProfilePictureResult, JsValue> {
         let result = self
             .client
             .profile()
             .set_profile_picture(img_data)
             .await
-            .map_err(|e| JsValue::from_str(&format!("{e}")))?;
+            .map_err(js_err)?;
 
-        let obj = js_sys::Object::new();
-        js_sys::Reflect::set(&obj, &"id".into(), &result.id.as_str().into())?;
-        Ok(obj.into())
+        Ok(crate::result_types::ProfilePictureResult {
+            id: result.id.clone(),
+        })
     }
 
     /// Remove the profile picture for the logged-in user.
-    #[wasm_bindgen(js_name = removeProfilePicture, skip_typescript)]
-    pub async fn remove_profile_picture(&self) -> Result<JsValue, JsValue> {
+    #[wasm_bindgen(js_name = removeProfilePicture)]
+    pub async fn remove_profile_picture(
+        &self,
+    ) -> Result<crate::result_types::ProfilePictureResult, JsValue> {
         let result = self
             .client
             .profile()
             .remove_profile_picture()
             .await
-            .map_err(|e| JsValue::from_str(&format!("{e}")))?;
+            .map_err(js_err)?;
 
-        let obj = js_sys::Object::new();
-        js_sys::Reflect::set(&obj, &"id".into(), &result.id.as_str().into())?;
-        Ok(obj.into())
+        Ok(crate::result_types::ProfilePictureResult {
+            id: result.id.clone(),
+        })
     }
 
     /// Update the user's status text (about).
-    #[wasm_bindgen(js_name = updateProfileStatus, skip_typescript)]
+    #[wasm_bindgen(js_name = updateProfileStatus)]
     pub async fn update_profile_status(&self, status: &str) -> Result<(), JsValue> {
         self.client
             .profile()
@@ -1006,7 +1091,7 @@ impl WasmWhatsAppClient {
     /// Block or unblock a contact.
     ///
     /// `action` must be "block" or "unblock".
-    #[wasm_bindgen(js_name = updateBlockStatus, skip_typescript)]
+    #[wasm_bindgen(js_name = updateBlockStatus)]
     pub async fn update_block_status(&self, jid: &str, action: &str) -> Result<(), JsValue> {
         let target: Jid = jid
             .parse()
@@ -1034,29 +1119,30 @@ impl WasmWhatsAppClient {
     }
 
     /// Fetch the full blocklist.
-    #[wasm_bindgen(js_name = fetchBlocklist, skip_typescript)]
-    pub async fn fetch_blocklist(&self) -> Result<JsValue, JsValue> {
+    #[wasm_bindgen(js_name = fetchBlocklist)]
+    pub async fn fetch_blocklist(
+        &self,
+    ) -> Result<Vec<crate::result_types::BlocklistEntryResult>, JsValue> {
         let entries = self
             .client
             .blocking()
             .get_blocklist()
             .await
-            .map_err(|e| JsValue::from_str(&format!("{e}")))?;
+            .map_err(js_err)?;
 
-        let arr = js_sys::Array::new();
-        for entry in &entries {
-            let obj = js_sys::Object::new();
-            js_sys::Reflect::set(&obj, &"jid".into(), &entry.jid.to_string().into())?;
-            set_optional_num(&obj, "timestamp", &entry.timestamp.map(|v| v as f64))?;
-            arr.push(&obj.into());
-        }
-        Ok(arr.into())
+        Ok(entries
+            .iter()
+            .map(|e| crate::result_types::BlocklistEntryResult {
+                jid: e.jid.to_string(),
+                timestamp: e.timestamp.map(|v| v as f64),
+            })
+            .collect())
     }
 
     // ── Chat actions ──────────────────────────────────────────────────────
 
     /// Pin or unpin a chat.
-    #[wasm_bindgen(js_name = pinChat, skip_typescript)]
+    #[wasm_bindgen(js_name = pinChat)]
     pub async fn pin_chat(&self, jid: &str, pin: bool) -> Result<(), JsValue> {
         let chat_jid: Jid = jid
             .parse()
@@ -1082,7 +1168,7 @@ impl WasmWhatsAppClient {
     /// Mute or unmute a chat.
     ///
     /// Pass a positive timestamp (ms) to mute until that time, or null/undefined to unmute.
-    #[wasm_bindgen(js_name = muteChat, skip_typescript)]
+    #[wasm_bindgen(js_name = muteChat)]
     pub async fn mute_chat(&self, jid: &str, mute_until: Option<f64>) -> Result<(), JsValue> {
         let chat_jid: Jid = jid
             .parse()
@@ -1107,7 +1193,7 @@ impl WasmWhatsAppClient {
     }
 
     /// Archive or unarchive a chat.
-    #[wasm_bindgen(js_name = archiveChat, skip_typescript)]
+    #[wasm_bindgen(js_name = archiveChat)]
     pub async fn archive_chat(&self, jid: &str, archive: bool) -> Result<(), JsValue> {
         let chat_jid: Jid = jid
             .parse()
@@ -1131,7 +1217,7 @@ impl WasmWhatsAppClient {
     }
 
     /// Star or unstar a message.
-    #[wasm_bindgen(js_name = starMessage, skip_typescript)]
+    #[wasm_bindgen(js_name = starMessage)]
     pub async fn star_message(
         &self,
         jid: &str,
@@ -1159,6 +1245,271 @@ impl WasmWhatsAppClient {
         Ok(())
     }
 
+    // ── Read receipts ─────────────────────────────────────────────────
+
+    /// Mark messages as read by sending read receipts.
+    ///
+    /// `keys` is an array of `{ remoteJid, id, participant? }` objects.
+    #[wasm_bindgen(js_name = readMessages)]
+    pub async fn read_messages(&self, keys: JsValue) -> Result<(), JsValue> {
+        let arr = js_sys::Array::from(&keys);
+
+        // Group message IDs by chat+sender for batch receipts
+        use std::collections::HashMap;
+        let mut grouped: HashMap<(String, Option<String>), Vec<String>> = HashMap::new();
+
+        for i in 0..arr.length() {
+            let key = arr.get(i);
+            let remote_jid = js_sys::Reflect::get(&key, &"remoteJid".into())
+                .ok()
+                .and_then(|v| v.as_string())
+                .ok_or_else(|| JsValue::from_str("key.remoteJid is required"))?;
+            let id = js_sys::Reflect::get(&key, &"id".into())
+                .ok()
+                .and_then(|v| v.as_string())
+                .ok_or_else(|| JsValue::from_str("key.id is required"))?;
+            let participant = js_sys::Reflect::get(&key, &"participant".into())
+                .ok()
+                .and_then(|v| v.as_string());
+
+            grouped
+                .entry((remote_jid, participant))
+                .or_default()
+                .push(id);
+        }
+
+        for ((chat_jid_str, participant_str), ids) in grouped {
+            let chat_jid: Jid = chat_jid_str.parse().map_err(js_err)?;
+            let participant_jid = participant_str
+                .as_deref()
+                .map(|s| s.parse::<Jid>())
+                .transpose()
+                .map_err(js_err)?;
+
+            self.client
+                .mark_as_read(&chat_jid, participant_jid.as_ref(), ids)
+                .await
+                .map_err(js_err)?;
+        }
+
+        Ok(())
+    }
+
+    // ── Group invite ────────────────────────────────────────────────────
+
+    /// Join a group using an invite code.
+    #[wasm_bindgen(js_name = groupAcceptInvite)]
+    pub async fn group_accept_invite(&self, code: &str) -> Result<JsValue, JsValue> {
+        let jid = self
+            .client
+            .groups()
+            .join_with_invite_code(code)
+            .await
+            .map_err(js_err)?;
+        Ok(JsValue::from_str(&jid.group_jid().to_string()))
+    }
+
+    /// Get group info from an invite code (without joining).
+    /// Returns the same shape as groupMetadata.
+    #[wasm_bindgen(js_name = groupGetInviteInfo)]
+    pub async fn group_get_invite_info(&self, code: &str) -> Result<JsValue, JsValue> {
+        let metadata = self
+            .client
+            .groups()
+            .get_invite_info(code)
+            .await
+            .map_err(js_err)?;
+        group_metadata_to_js(&metadata)
+    }
+
+    /// Get list of pending join requests for a group.
+    #[wasm_bindgen(js_name = groupRequestParticipantsList)]
+    pub async fn group_request_participants_list(&self, jid: &str) -> Result<JsValue, JsValue> {
+        let group_jid: Jid = jid.parse().map_err(js_err)?;
+        let list = self
+            .client
+            .groups()
+            .get_membership_requests(&group_jid)
+            .await
+            .map_err(js_err)?;
+        // MembershipRequest derives Serialize
+        serde_wasm_bindgen::to_value(&list).map_err(js_err)
+    }
+
+    /// Approve or reject pending join requests.
+    #[wasm_bindgen(js_name = groupRequestParticipantsUpdate)]
+    pub async fn group_request_participants_update(
+        &self,
+        jid: &str,
+        participants: Vec<String>,
+        action: &str,
+    ) -> Result<JsValue, JsValue> {
+        let group_jid: Jid = jid.parse().map_err(js_err)?;
+        let participant_jids: Vec<Jid> = participants
+            .iter()
+            .map(|s| s.parse::<Jid>())
+            .collect::<std::result::Result<Vec<_>, _>>()
+            .map_err(js_err)?;
+
+        let result = match action {
+            "approve" => {
+                self.client
+                    .groups()
+                    .approve_membership_requests(&group_jid, &participant_jids)
+                    .await
+            }
+            "reject" => {
+                self.client
+                    .groups()
+                    .reject_membership_requests(&group_jid, &participant_jids)
+                    .await
+            }
+            _ => return Err(JsValue::from_str("action must be 'approve' or 'reject'")),
+        };
+
+        result.map_err(js_err)?;
+        Ok(JsValue::undefined())
+    }
+
+    // ── Privacy settings ──────────────────────────────────────────────
+
+    /// Fetch all privacy settings.
+    #[wasm_bindgen(js_name = fetchPrivacySettings)]
+    pub async fn fetch_privacy_settings(&self) -> Result<JsValue, JsValue> {
+        let response = self.client.fetch_privacy_settings().await.map_err(js_err)?;
+        let obj = js_sys::Object::new();
+        for setting in &response.settings {
+            js_sys::Reflect::set(
+                &obj,
+                &setting.category.as_str().into(),
+                &setting.value.as_str().into(),
+            )?;
+        }
+        Ok(obj.into())
+    }
+
+    /// Update a single privacy setting.
+    #[wasm_bindgen(js_name = updatePrivacySetting)]
+    pub async fn update_privacy_setting(&self, category: &str, value: &str) -> Result<(), JsValue> {
+        self.client
+            .set_privacy_setting(category, value)
+            .await
+            .map_err(js_err)
+    }
+
+    /// Set default disappearing messages duration (seconds). 0 to disable.
+    #[wasm_bindgen(js_name = updateDefaultDisappearingMode)]
+    pub async fn update_default_disappearing_mode(&self, duration: u32) -> Result<(), JsValue> {
+        self.client
+            .set_default_disappearing_mode(duration)
+            .await
+            .map_err(js_err)
+    }
+
+    // ── Calls ────────────────────────────────────────────────────────────
+
+    /// Reject an incoming call.
+    #[wasm_bindgen(js_name = rejectCall)]
+    pub async fn reject_call(&self, call_id: &str, call_from: &str) -> Result<(), JsValue> {
+        let from_jid: Jid = call_from.parse().map_err(js_err)?;
+        self.client
+            .reject_call(call_id, &from_jid)
+            .await
+            .map_err(js_err)
+    }
+
+    // ── User status ──────────────────────────────────────────────────────
+
+    /// Fetch user status/about text for one or more JIDs.
+    #[wasm_bindgen(js_name = fetchStatus)]
+    pub async fn fetch_status(&self, jids: Vec<String>) -> Result<JsValue, JsValue> {
+        let jid_refs: Vec<&str> = jids.iter().map(|s| s.as_str()).collect();
+        let infos = self
+            .client
+            .contacts()
+            .get_info(&jid_refs)
+            .await
+            .map_err(js_err)?;
+        let arr = js_sys::Array::new();
+        for info in infos {
+            let obj = js_sys::Object::new();
+            js_sys::Reflect::set(&obj, &"jid".into(), &info.jid.to_string().into())?;
+            if let Some(status) = &info.status {
+                js_sys::Reflect::set(&obj, &"status".into(), &status.into())?;
+            }
+            arr.push(&obj.into());
+        }
+        Ok(arr.into())
+    }
+
+    // ── Business profile ───────────────────────────────────────────────
+
+    /// Get business profile information for a JID.
+    #[wasm_bindgen(js_name = getBusinessProfile)]
+    pub async fn get_business_profile(&self, jid: &str) -> Result<JsValue, JsValue> {
+        let target_jid: Jid = jid.parse().map_err(js_err)?;
+        let profile = self
+            .client
+            .execute(wacore::iq::business::BusinessProfileSpec::new(&target_jid))
+            .await
+            .map_err(js_err)?;
+        match profile {
+            Some(p) => serde_wasm_bindgen::to_value(&p).map_err(js_err),
+            None => Ok(JsValue::undefined()),
+        }
+    }
+
+    // ── Message history ──────────────────────────────────────────────────
+
+    /// Request on-demand message history from the primary phone.
+    /// Returns the message ID of the PDO request.
+    /// Results will arrive as history_sync events.
+    #[wasm_bindgen(js_name = fetchMessageHistory)]
+    pub async fn fetch_message_history(
+        &self,
+        count: i32,
+        chat_jid: &str,
+        oldest_msg_id: &str,
+        oldest_msg_from_me: bool,
+        oldest_msg_timestamp_ms: f64,
+    ) -> Result<JsValue, JsValue> {
+        let chat: Jid = chat_jid.parse().map_err(js_err)?;
+        let msg_id = self
+            .client
+            .fetch_message_history(
+                &chat,
+                oldest_msg_id,
+                oldest_msg_from_me,
+                oldest_msg_timestamp_ms as i64,
+                count,
+            )
+            .await
+            .map_err(js_err)?;
+        Ok(JsValue::from_str(&msg_id))
+    }
+
+    // ── Group member add mode ────────────────────────────────────────────
+
+    /// Set who can add members to a group: "admin_add" or "all_member_add".
+    #[wasm_bindgen(js_name = groupMemberAddMode)]
+    pub async fn group_member_add_mode(&self, jid: &str, mode: &str) -> Result<(), JsValue> {
+        let group_jid: Jid = jid.parse().map_err(js_err)?;
+        let add_mode = match mode {
+            "admin_add" => whatsapp_rust::features::MemberAddMode::AdminAdd,
+            "all_member_add" => whatsapp_rust::features::MemberAddMode::AllMemberAdd,
+            _ => {
+                return Err(JsValue::from_str(
+                    "mode must be 'admin_add' or 'all_member_add'",
+                ));
+            }
+        };
+        self.client
+            .groups()
+            .set_member_add_mode(&group_jid, add_mode)
+            .await
+            .map_err(js_err)
+    }
+
     // ── Presence ─────────────────────────────────────────────────────────
 
     /// Send presence status ("available" or "unavailable").
@@ -1182,7 +1533,7 @@ impl WasmWhatsAppClient {
     }
 
     /// Subscribe to a contact's presence updates.
-    #[wasm_bindgen(js_name = presenceSubscribe, skip_typescript)]
+    #[wasm_bindgen(js_name = presenceSubscribe)]
     pub async fn presence_subscribe(&self, jid: &str) -> Result<(), JsValue> {
         let target: Jid = jid
             .parse()
@@ -1249,7 +1600,7 @@ impl WasmWhatsAppClient {
     }
 
     /// Unsubscribe (leave) a newsletter.
-    #[wasm_bindgen(js_name = newsletterUnsubscribe, skip_typescript)]
+    #[wasm_bindgen(js_name = newsletterUnsubscribe)]
     pub async fn newsletter_unsubscribe(&self, jid: &str) -> Result<(), JsValue> {
         let target: Jid = jid
             .parse()
@@ -1260,6 +1611,62 @@ impl WasmWhatsAppClient {
             .leave(&target)
             .await
             .map_err(|e| JsValue::from_str(&format!("{e}")))
+    }
+
+    // ── Media reupload ────────────────────────────────────────────────────
+
+    /// Request the server to re-upload expired media.
+    ///
+    /// Returns the new `directPath` on success.
+    /// Throws on failure (not found, decryption error, timeout, etc.).
+    #[wasm_bindgen(js_name = requestMediaReupload, skip_typescript)]
+    pub async fn request_media_reupload(
+        &self,
+        msg_id: &str,
+        chat_jid: &str,
+        media_key: &[u8],
+        is_from_me: bool,
+        participant: Option<String>,
+    ) -> Result<JsValue, JsValue> {
+        let chat: Jid = chat_jid
+            .parse()
+            .map_err(|e: wacore_binary::jid::JidError| js_err(e))?;
+
+        let participant_jid = participant
+            .as_deref()
+            .map(|p| p.parse::<Jid>())
+            .transpose()
+            .map_err(|e: wacore_binary::jid::JidError| js_err(e))?;
+
+        let req = whatsapp_rust::MediaReuploadRequest {
+            msg_id,
+            chat_jid: &chat,
+            media_key,
+            is_from_me,
+            participant: participant_jid.as_ref(),
+        };
+
+        let result = self
+            .client
+            .media_reupload()
+            .request(&req)
+            .await
+            .map_err(|e| JsValue::from_str(&format!("{e}")))?;
+
+        match result {
+            whatsapp_rust::MediaRetryResult::Success { direct_path } => {
+                Ok(JsValue::from_str(&direct_path))
+            }
+            whatsapp_rust::MediaRetryResult::NotFound => {
+                Err(JsValue::from_str("Media not found on server"))
+            }
+            whatsapp_rust::MediaRetryResult::DecryptionError => {
+                Err(JsValue::from_str("Media decryption error"))
+            }
+            whatsapp_rust::MediaRetryResult::GeneralError => {
+                Err(JsValue::from_str("Media reupload failed"))
+            }
+        }
     }
 
     // ── Chat state ───────────────────────────────────────────────────────
@@ -1296,28 +1703,28 @@ impl WasmWhatsAppClient {
     /// Get media connection info (auth token + upload hosts).
     ///
     /// Returns `{ auth: string, ttl: number, hosts: [{hostname: string, maxContentLengthBytes: number}] }`.
-    #[wasm_bindgen(js_name = getMediaConn, skip_typescript)]
-    pub async fn get_media_conn(&self, force: bool) -> Result<JsValue, JsValue> {
+    #[wasm_bindgen(js_name = getMediaConn)]
+    pub async fn get_media_conn(
+        &self,
+        force: bool,
+    ) -> Result<crate::result_types::MediaConnResult, JsValue> {
         let conn = self
             .client
             .refresh_media_conn(force)
             .await
-            .map_err(|e| JsValue::from_str(&format!("{e}")))?;
+            .map_err(js_err)?;
 
-        let obj = js_sys::Object::new();
-        js_sys::Reflect::set(&obj, &"auth".into(), &conn.auth.as_str().into())?;
-        js_sys::Reflect::set(&obj, &"ttl".into(), &(conn.ttl as f64).into())?;
-
-        let hosts = js_sys::Array::new();
-        for h in &conn.hosts {
-            let host_obj = js_sys::Object::new();
-            js_sys::Reflect::set(&host_obj, &"hostname".into(), &h.hostname.as_str().into())?;
-            hosts.push(&host_obj.into());
-        }
-        js_sys::Reflect::set(&obj, &"hosts".into(), &hosts.into())?;
-        js_sys::Reflect::set(&obj, &"fetchDate".into(), &js_sys::Date::new_0().into())?;
-
-        Ok(obj.into())
+        Ok(crate::result_types::MediaConnResult {
+            auth: conn.auth.clone(),
+            ttl: conn.ttl as f64,
+            hosts: conn
+                .hosts
+                .iter()
+                .map(|h| crate::result_types::MediaHost {
+                    hostname: h.hostname.clone(),
+                })
+                .collect(),
+        })
     }
 
     // ── State getters ────────────────────────────────────────────────────
@@ -1574,4 +1981,145 @@ fn newsletter_metadata_to_js(
     )?;
     set_optional_num(&obj, "creationTime", &meta.creation_time.map(|v| v as f64))?;
     Ok(obj.into())
+}
+
+// ---------------------------------------------------------------------------
+// Cache config builder
+// ---------------------------------------------------------------------------
+
+/// Build a Rust `CacheConfig` from an optional JS `CacheConfig` object.
+/// Omitted fields keep their defaults.
+fn build_cache_config(js: Option<&JsValue>) -> Result<whatsapp_rust::CacheConfig, JsValue> {
+    use crate::js_cache_store::JsCacheStoreAdapter;
+    use std::sync::Arc;
+
+    let mut config = whatsapp_rust::CacheConfig::default();
+
+    let js = match js {
+        Some(v) if !v.is_null() && !v.is_undefined() => v,
+        _ => return Ok(config),
+    };
+
+    // Global store (applied to all pluggable caches unless overridden per-cache)
+    let global_store = js_sys::Reflect::get(js, &"store".into())
+        .ok()
+        .filter(|v| !v.is_undefined() && !v.is_null())
+        .and_then(|v| {
+            JsCacheStoreAdapter::from_js(&v)
+                .ok()
+                .map(|a| Arc::new(a) as Arc<dyn whatsapp_rust::CacheStore>)
+        });
+
+    if let Some(ref store) = global_store {
+        config.cache_stores = whatsapp_rust::CacheStores::all(store.clone());
+    }
+
+    // Per-cache overrides
+    apply_cache_entry(
+        js,
+        "group",
+        &mut config.group_cache,
+        &mut config.cache_stores.group_cache,
+        &global_store,
+    )?;
+    apply_cache_entry(
+        js,
+        "device",
+        &mut config.device_cache,
+        &mut config.cache_stores.device_cache,
+        &global_store,
+    )?;
+    apply_cache_entry(
+        js,
+        "deviceRegistry",
+        &mut config.device_registry_cache,
+        &mut config.cache_stores.device_registry_cache,
+        &global_store,
+    )?;
+    apply_cache_entry(
+        js,
+        "lidPn",
+        &mut config.lid_pn_cache,
+        &mut config.cache_stores.lid_pn_cache,
+        &global_store,
+    )?;
+    apply_cache_entry_simple(
+        js,
+        "retriedGroupMessages",
+        &mut config.retried_group_messages,
+    )?;
+    apply_cache_entry_simple(js, "recentMessages", &mut config.recent_messages)?;
+    apply_cache_entry_simple(js, "messageRetry", &mut config.message_retry_counts)?;
+
+    Ok(config)
+}
+
+/// Apply JS overrides to a cache entry that supports custom stores.
+fn apply_cache_entry(
+    parent: &JsValue,
+    key: &str,
+    entry: &mut whatsapp_rust::CacheEntryConfig,
+    store_slot: &mut Option<std::sync::Arc<dyn whatsapp_rust::CacheStore>>,
+    _global_store: &Option<std::sync::Arc<dyn whatsapp_rust::CacheStore>>,
+) -> Result<(), JsValue> {
+    use crate::js_cache_store::JsCacheStoreAdapter;
+    use std::sync::Arc;
+
+    let obj = match js_sys::Reflect::get(parent, &key.into()) {
+        Ok(v) if !v.is_undefined() && !v.is_null() => v,
+        _ => return Ok(()),
+    };
+
+    apply_ttl_capacity(&obj, entry)?;
+
+    // Per-cache store override (takes priority over global)
+    if let Ok(store_val) = js_sys::Reflect::get(&obj, &"store".into())
+        && !store_val.is_undefined()
+        && !store_val.is_null()
+        && let Ok(adapter) = JsCacheStoreAdapter::from_js(&store_val)
+    {
+        *store_slot = Some(Arc::new(adapter) as Arc<dyn whatsapp_rust::CacheStore>);
+    }
+
+    Ok(())
+}
+
+/// Apply JS overrides to a simple cache entry (no custom store support).
+fn apply_cache_entry_simple(
+    parent: &JsValue,
+    key: &str,
+    entry: &mut whatsapp_rust::CacheEntryConfig,
+) -> Result<(), JsValue> {
+    let obj = match js_sys::Reflect::get(parent, &key.into()) {
+        Ok(v) if !v.is_undefined() && !v.is_null() => v,
+        _ => return Ok(()),
+    };
+
+    apply_ttl_capacity(&obj, entry)
+}
+
+/// Shared: apply ttlSecs and capacity from a JS object to a CacheEntryConfig.
+fn apply_ttl_capacity(
+    obj: &JsValue,
+    entry: &mut whatsapp_rust::CacheEntryConfig,
+) -> Result<(), JsValue> {
+    use std::time::Duration;
+
+    if let Ok(ttl) = js_sys::Reflect::get(obj, &"ttlSecs".into())
+        && let Some(secs) = ttl.as_f64()
+    {
+        entry.timeout = if secs > 0.0 {
+            Some(Duration::from_secs(secs as u64))
+        } else {
+            None
+        };
+    }
+
+    if let Ok(cap) = js_sys::Reflect::get(obj, &"capacity".into())
+        && let Some(c) = cap.as_f64()
+    {
+        entry.capacity = c as u64;
+    }
+
+    Ok(())
 }

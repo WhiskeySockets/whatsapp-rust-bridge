@@ -35,6 +35,7 @@
         "postbuild": "tsc -p tsconfig.json --outDir dist && rm -f dist/macro.d.ts",
         "build": "bun run build:wasm && bun run build:ts && bun run postbuild",
         "build:dev": "bun run build:wasm:dev && bun run build:ts && bun run postbuild",
+        "build:profile": "cargo build --profile profiling --target wasm32-unknown-unknown && wasm-bindgen --target web --out-dir pkg --keep-debug target/wasm32-unknown-unknown/profiling/whatsapp_rust_bridge.wasm && wasm-tools strip pkg/whatsapp_rust_bridge_bg.wasm -o pkg/whatsapp_rust_bridge_bg.wasm && bun run build:ts && bun run postbuild",
         "example": "NODE_TLS_REJECT_UNAUTHORIZED=0 bun run examples/connect.ts",
         "prepublishOnly": "bun run build"
     },

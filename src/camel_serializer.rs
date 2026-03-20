@@ -237,7 +237,7 @@ impl ser::SerializeSeq for SeqSerializer {
         if self.all_u8 {
             if let Some(n) = js.as_f64() {
                 let rounded = n as u8;
-                if (rounded as f64 - n).abs() < f64::EPSILON && n >= 0.0 && n <= 255.0 {
+                if (rounded as f64 - n).abs() < f64::EPSILON && (0.0..=255.0).contains(&n) {
                     self.u8_buf.push(rounded);
                 } else {
                     self.all_u8 = false;

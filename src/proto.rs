@@ -76,10 +76,10 @@ pub fn to_snake_case_js(val: &JsValue) -> JsValue {
     }
 
     // Truncate floats to integers for proto integer fields
-    if let Some(n) = val.as_f64() {
-        if n != n.trunc() {
-            return JsValue::from_f64(n.trunc());
-        }
+    if let Some(n) = val.as_f64()
+        && n != n.trunc()
+    {
+        return JsValue::from_f64(n.trunc());
     }
 
     val.clone()

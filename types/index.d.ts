@@ -146,6 +146,66 @@ export interface JsHttpClientConfig {
 }
 
 // ---------------------------------------------------------------------------
+// Cache Configuration
+// ---------------------------------------------------------------------------
+
+/** Custom cache backend (Redis, Memcached, IndexedDB, etc.) */
+export interface JsCacheStore {
+  get(namespace: string, key: string): Promise<Uint8Array | null>;
+  set(namespace: string, key: string, value: Uint8Array, ttlSecs?: number): Promise<void>;
+  delete(namespace: string, key: string): Promise<void>;
+  clear(namespace: string): Promise<void>;
+}
+
+/** Config for a single cache — TTL, capacity, and optional custom store. */
+export interface CacheEntryConfig {
+  /** Time-to-live in seconds. Omit → keep default. */
+  ttlSecs?: number;
+  /** Max entries. 0 = disabled. Omit → keep default. */
+  capacity?: number;
+  /** Custom store for this specific cache. Omit → in-memory. */
+  store?: JsCacheStore;
+}
+
+/**
+ * Cache configuration. All fields optional — omitted values keep defaults.
+ *
+ * @example
+ * // Override just group cache TTL, everything else stays default
+ * { group: { ttlSecs: 7200 } }
+ *
+ * @example
+ * // Group cache on Redis, everything else in-memory
+ * { group: { store: redisCacheStore } }
+ *
+ * @example
+ * // All pluggable caches on Redis
+ * { store: redisCacheStore }
+ *
+ * @example
+ * // Mix: global Redis + custom group TTL
+ * { store: redisCacheStore, group: { ttlSecs: 7200, capacity: 1000 } }
+ */
+export interface CacheConfig {
+  /** Global store for all pluggable caches. Per-cache `store` overrides this. */
+  store?: JsCacheStore;
+  /** Group metadata cache. Default: 1h TTL, 250 entries. */
+  group?: CacheEntryConfig;
+  /** Device list cache. Default: 1h TTL, 5000 entries. */
+  device?: CacheEntryConfig;
+  /** Device registry cache. Default: 1h TTL, 5000 entries. */
+  deviceRegistry?: CacheEntryConfig;
+  /** LID-to-phone mapping cache. Default: 1h timeout, 10000 entries. */
+  lidPn?: CacheEntryConfig;
+  /** Retried group messages tracker. Default: 5m TTL, 2000 entries. */
+  retriedGroupMessages?: CacheEntryConfig;
+  /** Recent sent messages cache (for retry). Default: 5m TTL, 0 (disabled). */
+  recentMessages?: CacheEntryConfig;
+  /** Message retry counter cache. Default: 5m TTL, 1000 entries. */
+  messageRetry?: CacheEntryConfig;
+}
+
+// ---------------------------------------------------------------------------
 // WhatsApp Client
 // ---------------------------------------------------------------------------
 
@@ -157,6 +217,8 @@ export interface WasmWhatsAppClient {
   connect(): Promise<void>;
   /** Disconnect from WhatsApp servers. */
   disconnect(): Promise<void>;
+  /** Enable or disable automatic reconnection (enabled by default). */
+  setAutoReconnect(enabled: boolean): void;
   /** Check if WebSocket is currently connected. */
   isConnected(): boolean;
   /** Check if the client has completed pairing. */
@@ -228,11 +290,107 @@ export interface WasmWhatsAppClient {
   groupInviteCode(jid: string): Promise<string>;
   /** Update a group setting. Setting: "locked", "announce", "membership_approval". */
   groupSettingUpdate(jid: string, setting: "locked" | "announce" | "membership_approval", value: boolean): Promise<void>;
+  /** Set disappearing messages timer (0 to disable). */
+  groupToggleEphemeral(jid: string, expiration: number): Promise<void>;
+  /** Revoke a group's invite link (returns new code). */
+  groupRevokeInvite(jid: string): Promise<string>;
+  /** Join a group using an invite code. Returns group JID. */
+  groupAcceptInvite(code: string): Promise<string | undefined>;
+  /** Get group info from an invite code (without joining). */
+  groupGetInviteInfo(code: string): Promise<GroupMetadataResult>;
+  /** Get list of pending join requests for a group. */
+  groupRequestParticipantsList(jid: string): Promise<Array<{ jid: string; request_time?: string }>>;
+  /** Approve or reject pending join requests. */
+  groupRequestParticipantsUpdate(jid: string, participants: string[], action: 'approve' | 'reject'): Promise<void>;
+
+  // ── Read receipts ──
+
+  /** Mark messages as read. */
+  readMessages(keys: Array<{ remoteJid: string; id: string; participant?: string }>): Promise<void>;
+
+  // ── Privacy ──
+
+  /** Fetch all privacy settings as a key-value map. */
+  fetchPrivacySettings(): Promise<Record<string, string>>;
+  /** Update a single privacy setting by category name and value. */
+  updatePrivacySetting(category: string, value: string): Promise<void>;
+  /** Set default disappearing messages duration (seconds). 0 to disable. */
+  updateDefaultDisappearingMode(duration: number): Promise<void>;
+
+  // ── Calls ──
+
+  /** Reject an incoming call. */
+  rejectCall(callId: string, callFrom: string): Promise<void>;
+
+  // ── User status ──
+
+  /** Fetch user status/about text for one or more JIDs. */
+  fetchStatus(jids: string[]): Promise<Array<{ jid: string; status?: string }>>;
+
+  // ── Group member add mode ──
+
+  /** Set who can add members: "admin_add" or "all_member_add". */
+  groupMemberAddMode(jid: string, mode: 'admin_add' | 'all_member_add'): Promise<void>;
+
+  // ── Business profile ──
+
+  /** Get business profile information for a JID. */
+  getBusinessProfile(jid: string): Promise<{
+    wid?: string;
+    description: string;
+    email?: string;
+    website: string[];
+    category?: string;
+    address?: string;
+    business_hours: {
+      timezone?: string;
+      business_config?: Array<{
+        day_of_week: string;
+        mode: string;
+        open_time?: string;
+        close_time?: string;
+      }>;
+    };
+  } | undefined>;
+
+  // ── Message history ──
+
+  /** Request on-demand message history from primary phone. Returns request message ID. */
+  fetchMessageHistory(count: number, chatJid: string, oldestMsgId: string, oldestMsgFromMe: boolean, oldestMsgTimestampMs: number): Promise<string>;
 
   // ── Media ──
 
   /** Get media connection info (auth token + upload hosts) for media upload/download. */
   getMediaConn(force: boolean): Promise<MediaConnResult>;
+
+  // ── Version ──
+
+  /** Override the WA Web version used for connection. */
+  setVersion(major: number, minor: number, patch: number): void;
+
+  // ── Device props ──
+
+  /**
+   * Set device properties (OS name, browser/platform type).
+   * Controls what device name is shown on the phone.
+   * @param os OS name (e.g. "Mac OS", "Windows", "Ubuntu")
+   * @param browser Browser name (e.g. "Chrome", "Firefox", "Safari", "Edge", "Desktop")
+   */
+  setDeviceProps(os: string, browser: string): Promise<void>;
+
+  // ── Media reupload ──
+
+  /**
+   * Request the server to re-upload expired media.
+   * Returns the new directPath on success, throws on failure.
+   */
+  requestMediaReupload(
+    msgId: string,
+    chatJid: string,
+    mediaKey: Uint8Array,
+    isFromMe: boolean,
+    participant?: string | null,
+  ): Promise<string>;
 
   // ── Contacts ──
 

@@ -1,31 +1,50 @@
+// Signal protocol primitives exposed to JS — only needed if JS handles
+// sessions directly. When using WasmWhatsAppClient (which handles Signal
+// internally), these are dead code and excluded by default to reduce WASM size.
+#[cfg(feature = "signal-js")]
 pub mod appstate;
+#[cfg(feature = "signal-js")]
+pub mod binary;
+#[cfg(feature = "signal-js")]
+pub mod group_cipher;
+#[cfg(feature = "signal-js")]
+pub mod group_types;
+#[cfg(feature = "signal-js")]
+pub mod key_helper;
+#[cfg(feature = "signal-js")]
+pub mod noise_session;
+#[cfg(feature = "signal-js")]
+pub mod protocol_address;
+#[cfg(feature = "signal-js")]
+pub mod sender_key_name;
+#[cfg(feature = "signal-js")]
+pub mod session_builder;
+#[cfg(feature = "signal-js")]
+pub mod session_cipher;
+#[cfg(feature = "signal-js")]
+pub mod session_record;
+#[cfg(feature = "signal-js")]
+pub mod storage_adapter;
+
 #[cfg(feature = "audio")]
 pub mod audio;
-pub mod binary;
+#[cfg(feature = "image")]
+pub mod image_utils;
+#[cfg(feature = "sticker")]
+pub mod sticker_metadata;
+
 pub mod camel_serializer;
 pub mod crypto;
 pub mod curve;
-pub mod group_cipher;
-pub mod group_types;
-#[cfg(feature = "image")]
-pub mod image_utils;
 pub mod js_backend;
+pub mod js_cache_store;
 pub mod js_http;
 pub mod js_time;
 pub mod js_transport;
-pub mod key_helper;
 pub mod logger;
-pub mod noise_session;
 pub mod proto;
-pub mod protocol_address;
+pub mod result_types;
 pub mod runtime;
-pub mod sender_key_name;
-pub mod session_builder;
-pub mod session_cipher;
-pub mod session_record;
-#[cfg(feature = "sticker")]
-pub mod sticker_metadata;
-pub mod storage_adapter;
 pub mod wasm_client;
 
 /// SAFETY: WASM is single-threaded — Send + Sync are trivially satisfied.
@@ -40,14 +59,17 @@ macro_rules! wasm_send_sync {
 }
 pub(crate) use wasm_send_sync;
 
-// Re-export WhatsApp protocol constants for JS usage
-use js_sys::Uint8Array;
 use serde::Serialize;
 use tsify_next::Tsify;
 use wasm_bindgen::prelude::*;
 
+#[cfg(feature = "signal-js")]
+use js_sys::Uint8Array;
+
 /// Returns the WhatsApp connection header (WA_CONN_HEADER).
 /// This is the 4-byte header sent at the start of a WebSocket connection.
+/// Only needed when JS handles the noise handshake directly.
+#[cfg(feature = "signal-js")]
 #[wasm_bindgen(js_name = getWAConnHeader)]
 pub fn get_wa_conn_header() -> Uint8Array {
     let result = Uint8Array::new_with_length(4);

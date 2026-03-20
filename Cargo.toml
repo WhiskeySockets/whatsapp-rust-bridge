@@ -34,6 +34,11 @@ crate-type = ["cdylib", "rlib"]
 
 [features]
 default = []
+# Expose Signal protocol primitives (SessionCipher, GroupCipher, NoiseSession,
+# etc.) to JS. Only needed if JS handles sessions directly — when using
+# WasmWhatsAppClient, all Signal work is done internally in Rust.
+# Disabling saves ~3-4MB of WASM code.
+signal-js = []
 audio = ["dep:symphonia"]
 image = ["dep:image"]
 sticker = ["dep:img-parts"]
@@ -53,7 +58,7 @@ curve25519-dalek = { version = "4.1.3", default-features = false, features = [
   "precomputed-tables",
 ] }
 futures = { version = "0.3", default-features = false, features = ["alloc", "async-await"] }
-getrandom = { version = "0.3.4", features = ["wasm_js"] }
+getrandom = { version = "0.4", features = ["wasm_js"] }
 # Ensure all getrandom usages (including via rand in whatsapp-rust) get wasm_js support
 # This doesn't modify whatsapp-rust — Cargo unifies features across the dependency graph
 hkdf = "0.12"
@@ -69,7 +74,7 @@ js-sys = "0.3"
 log = "0.4"
 md-5 = "0.10"
 prost = { version = "0.14.1", default-features = false }
-rand = { version = "0.9.2", default-features = false, features = ["std", "std_rng"] }
+rand = { version = "0.10", default-features = false, features = ["std", "std_rng"] }
 serde = { version = "1.0.228", default-features = false, features = ["derive", "alloc"] }
 serde-wasm-bindgen = "0.6.5"
 serde_bytes = "0.11"
@@ -85,12 +90,12 @@ symphonia = { version = "0.5.4", default-features = false, features = [
 tsify-next = { version = "0.5", default-features = false, features = ["js"] }
 uuid = { version = "1.18.1", default-features = false, features = ["v4", "js"] }
 
-wacore = { path = "../whatsapp-rust/wacore", features = ["js"] }
-wacore-appstate = { path = "../whatsapp-rust/wacore/appstate" }
-wacore-binary = { path = "../whatsapp-rust/wacore/binary", features = ["serde"] }
-wacore-libsignal = { path = "../whatsapp-rust/wacore/libsignal" }
-wacore-noise = { path = "../whatsapp-rust/wacore/noise" }
-waproto = { path = "../whatsapp-rust/waproto", features = ["serde-deserialize"] }
+wacore = { version = "0.4.0", features = ["js"] }
+wacore-appstate = "0.4.0"
+wacore-binary = { version = "0.4.0", features = ["serde"] }
+wacore-libsignal = "0.4.0"
+wacore-noise = "0.4.0"
+waproto = { version = "0.4.0", features = ["serde-deserialize"] }
 wasm-bindgen = "0.2.100"
 wasm-bindgen-futures = "0.4.55"
 web-sys = { version = "0.3", features = [
@@ -98,11 +103,21 @@ web-sys = { version = "0.3", features = [
   "ReadableStreamDefaultReader",
   "Window",
 ] }
-whatsapp-rust = { path = "../whatsapp-rust", default-features = false }
+whatsapp-rust = { version = "0.4.0", default-features = false }
 
 [profile.release]
 lto = "fat"
-opt-level = 3
+opt-level = "z"
 codegen-units = 1
 panic = "abort"
 strip = true
+
+# Optimized with function names for profiling: bun run build:profile
+[profile.profiling]
+inherits = "release"
+strip = false
+debug = 2
+lto = false
+
+[package.metadata.wasm-pack.profile.profiling]
+wasm-opt = false

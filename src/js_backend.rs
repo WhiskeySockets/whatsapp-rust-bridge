@@ -75,6 +75,9 @@ pub struct JsBackend {
     set_fn: js_sys::Function,
     delete_fn: js_sys::Function,
     next_device_id: AtomicI32,
+    /// In-memory cache of sent message keys — avoids O(n²) JSON re-serialization
+    /// on every store_sent_message call. Loaded lazily on first access.
+    sent_message_keys: async_lock::Mutex<Option<Vec<String>>>,
 }
 
 crate::wasm_send_sync!(JsBackend);
@@ -90,7 +93,28 @@ impl JsBackend {
             set_fn,
             delete_fn,
             next_device_id: AtomicI32::new(1),
+            sent_message_keys: async_lock::Mutex::new(None),
         }
+    }
+
+    /// Get or lazily load the sent message keys list.
+    async fn get_sent_keys(&self) -> Result<async_lock::MutexGuard<'_, Option<Vec<String>>>> {
+        let mut guard = self.sent_message_keys.lock().await;
+        if guard.is_none() {
+            let keys: Vec<String> = self
+                .js_get_json(STORE_META, "sent_message_keys")
+                .await?
+                .unwrap_or_default();
+            *guard = Some(keys);
+        }
+        Ok(guard)
+    }
+
+    /// Persist the in-memory key list to JS store.
+    /// Only called during cleanup/expiration — never on the send hot path.
+    async fn flush_sent_keys(&self, keys: &Vec<String>) -> Result<()> {
+        self.js_set_json(STORE_META, "sent_message_keys", keys)
+            .await
     }
 
     // ── JS call helpers ──────────────────────────────────────────────────
@@ -419,11 +443,11 @@ impl ProtocolStore for JsBackend {
 
     async fn put_lid_mapping(&self, entry: &LidPnMappingEntry) -> Result<()> {
         // Check if existing mapping has a different phone number (stale reverse entry)
-        if let Some(old_entry) = self.get_lid_mapping(&entry.lid).await? {
-            if old_entry.phone_number != entry.phone_number {
-                self.js_delete(STORE_LID_MAPPING, &format!("pn:{}", old_entry.phone_number))
-                    .await?;
-            }
+        if let Some(old_entry) = self.get_lid_mapping(&entry.lid).await?
+            && old_entry.phone_number != entry.phone_number
+        {
+            self.js_delete(STORE_LID_MAPPING, &format!("pn:{}", old_entry.phone_number))
+                .await?;
         }
         // Store the forward mapping (lid -> entry)
         self.js_set_json(STORE_LID_MAPPING, &format!("lid:{}", entry.lid), entry)
@@ -593,19 +617,16 @@ impl ProtocolStore for JsBackend {
     ) -> Result<()> {
         let key = format!("{chat_jid}:{message_id}");
         let now = wacore::time::now_secs();
-        // Store payload with timestamp prefix (8 bytes big-endian i64 + payload)
         let mut data = Vec::with_capacity(8 + payload.len());
         data.extend_from_slice(&now.to_be_bytes());
         data.extend_from_slice(payload);
         self.js_set(STORE_SENT_MESSAGE, &key, &data).await?;
-        // Track the key for expiration scanning
-        let mut keys: Vec<String> = self
-            .js_get_json(STORE_META, "sent_message_keys")
-            .await?
-            .unwrap_or_default();
-        keys.push(key);
-        self.js_set_json(STORE_META, "sent_message_keys", &keys)
-            .await
+
+        // Track key in memory only — no serialization on the hot path.
+        // The key list is persisted during delete_expired_sent_messages (periodic cleanup).
+        let mut guard = self.sent_message_keys.lock().await;
+        guard.get_or_insert_with(Vec::new).push(key);
+        Ok(())
     }
 
     async fn take_sent_message(&self, chat_jid: &str, message_id: &str) -> Result<Option<Vec<u8>>> {
@@ -613,14 +634,13 @@ impl ProtocolStore for JsBackend {
         match self.js_get(STORE_SENT_MESSAGE, &key).await? {
             Some(data) if data.len() > 8 => {
                 self.js_delete(STORE_SENT_MESSAGE, &key).await?;
-                // Remove from tracked keys
-                let mut keys: Vec<String> = self
-                    .js_get_json(STORE_META, "sent_message_keys")
-                    .await?
-                    .unwrap_or_default();
-                keys.retain(|k| k != &key);
-                self.js_set_json(STORE_META, "sent_message_keys", &keys)
-                    .await?;
+
+                // Remove from in-memory index (no disk flush — cleanup will reconcile)
+                let mut guard = self.sent_message_keys.lock().await;
+                if let Some(ref mut keys) = *guard {
+                    keys.retain(|k| k != &key);
+                }
+
                 // Skip 8-byte timestamp prefix
                 Ok(Some(data[8..].to_vec()))
             }
@@ -629,13 +649,15 @@ impl ProtocolStore for JsBackend {
     }
 
     async fn delete_expired_sent_messages(&self, cutoff_timestamp: i64) -> Result<u32> {
-        let keys: Vec<String> = self
-            .js_get_json(STORE_META, "sent_message_keys")
-            .await?
-            .unwrap_or_default();
+        let mut guard = self.get_sent_keys().await?;
+        let keys = match guard.as_mut() {
+            Some(k) => k,
+            None => return Ok(0),
+        };
+
         let mut deleted = 0u32;
-        let mut remaining_keys = Vec::new();
-        for key in keys {
+        let mut remaining = Vec::new();
+        for key in keys.drain(..) {
             if let Some(data) = self.js_get(STORE_SENT_MESSAGE, &key).await? {
                 if data.len() >= 8 {
                     let ts = i64::from_be_bytes(data[..8].try_into().unwrap_or([0; 8]));
@@ -645,11 +667,11 @@ impl ProtocolStore for JsBackend {
                         continue;
                     }
                 }
-                remaining_keys.push(key);
+                remaining.push(key);
             }
         }
-        self.js_set_json(STORE_META, "sent_message_keys", &remaining_keys)
-            .await?;
+        *keys = remaining;
+        self.flush_sent_keys(keys).await?;
         Ok(deleted)
     }
 }
@@ -662,11 +684,35 @@ impl ProtocolStore for JsBackend {
 #[cfg_attr(not(target_arch = "wasm32"), async_trait)]
 impl DeviceStore for JsBackend {
     async fn save(&self, device: &Device) -> Result<()> {
-        self.js_set_json(STORE_DEVICE, "device", device).await
+        self.js_set_json(STORE_DEVICE, "device", device).await?;
+
+        // `account` (AdvSignedDeviceIdentity) is #[serde(skip)] in Device,
+        // so we persist it separately as raw protobuf bytes — same approach
+        // as SQLite storage which uses a dedicated column.
+        if let Some(ref account) = device.account {
+            use prost::Message;
+            self.js_set(STORE_DEVICE, "account", &account.encode_to_vec())
+                .await?;
+        }
+
+        Ok(())
     }
 
     async fn load(&self) -> Result<Option<Device>> {
-        self.js_get_json(STORE_DEVICE, "device").await
+        let mut device: Option<Device> = self.js_get_json(STORE_DEVICE, "device").await?;
+
+        // Restore the #[serde(skip)] `account` field from its separate key.
+        if let Some(ref mut dev) = device
+            && let Some(bytes) = self.js_get(STORE_DEVICE, "account").await?
+        {
+            use prost::Message;
+            match waproto::whatsapp::AdvSignedDeviceIdentity::decode(bytes.as_slice()) {
+                Ok(account) => dev.account = Some(account),
+                Err(e) => log::warn!("Failed to decode stored account identity: {e}"),
+            }
+        }
+
+        Ok(device)
     }
 
     async fn exists(&self) -> Result<bool> {
