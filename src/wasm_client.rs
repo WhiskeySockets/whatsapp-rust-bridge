@@ -287,18 +287,21 @@ const DEFAULT_WA_WEB_VERSION: (u32, u32, u32) = (2, 3000, 1031424117);
 
 /// Initialize the WASM environment. Must be called once before creating clients.
 ///
-/// `log_level` accepts: "trace", "debug", "info", "warn", "error". Defaults to "warn".
+/// Accepts an optional JS logger (pino-compatible) to route all Rust logs through.
+/// If no logger is provided, falls back to console.log with "warn" level.
 #[wasm_bindgen(js_name = initWasmEngine, skip_typescript)]
-pub fn init_wasm_engine(log_level: Option<String>) {
+pub fn init_wasm_engine(logger: JsValue) {
     console_error_panic_hook::set_once();
-    let level = match log_level.as_deref() {
-        Some("trace") => log::Level::Trace,
-        Some("debug") => log::Level::Debug,
-        Some("info") => log::Level::Info,
-        Some("error") => log::Level::Error,
-        _ => log::Level::Warn,
-    };
-    let _ = console_log::init_with_level(level);
+
+    if !logger.is_undefined() && !logger.is_null() {
+        // Use the JS logger adapter — all Rust log::* calls go through pino
+        let js_logger: crate::logger::JsLogger = logger.unchecked_into();
+        let _ = crate::logger::set_logger(js_logger);
+    } else {
+        // No logger provided — fall back to console.log
+        let _ = console_log::init_with_level(log::Level::Warn);
+    }
+
     js_time::init_time_provider();
 }
 
@@ -1485,7 +1488,9 @@ fn parse_jid_and_msg(
     let to: Jid = jid
         .parse()
         .map_err(|e: wacore_binary::jid::JidError| js_err(e))?;
-    let msg = serde_wasm_bindgen::from_value(message)
+    // Convert camelCase keys to snake_case for prost struct field names
+    let snake_message = crate::proto::to_snake_case_js(&message);
+    let msg = serde_wasm_bindgen::from_value(snake_message)
         .map_err(|e| JsValue::from_str(&format!("invalid message: {e}")))?;
     Ok((to, msg))
 }

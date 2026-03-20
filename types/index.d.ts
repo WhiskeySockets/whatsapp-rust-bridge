@@ -400,9 +400,10 @@ export interface IsOnWhatsAppResult {
 // ---------------------------------------------------------------------------
 
 /** Initialize the WASM engine. Call once before creating clients.
- * @param logLevel Rust log level: "trace" | "debug" | "info" | "warn" | "error". Defaults to "warn".
+ * @param logger Optional pino-compatible logger. If provided, all Rust logs route through it.
+ *               If omitted, falls back to console.log with "warn" level.
  */
-export declare function initWasmEngine(logLevel?: string): void;
+export declare function initWasmEngine(logger?: { level: string; trace: Function; debug: Function; info: Function; warn: Function; error: Function }): void;
 
 /**
  * Create a full WhatsApp client running in WASM.

@@ -15,7 +15,7 @@ pub fn to_js_value<T: serde::Serialize>(val: &T) -> Result<JsValue, JsValue> {
 
 /// Recursively convert camelCase keys to snake_case on a JS object.
 /// Handles nested objects and arrays. Leaves non-objects unchanged.
-fn to_snake_case_js(val: &JsValue) -> JsValue {
+pub fn to_snake_case_js(val: &JsValue) -> JsValue {
     if val.is_null() || val.is_undefined() {
         return val.clone();
     }

@@ -56,7 +56,7 @@ import {
 } from "../pkg/whatsapp_rust_bridge.js";
 import type { WasmWhatsAppClient, WhatsAppEvent } from "../types/index.js";
 
-export const initWasmEngine: () => void = _initWasmEngine;
+export const initWasmEngine: (logger?: any) => void = _initWasmEngine;
 export const createWhatsAppClient: (
   transport: import("../types/index.js").JsTransportCallbacks,
   httpClient: import("../types/index.js").JsHttpClientConfig,
