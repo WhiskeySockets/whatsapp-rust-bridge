@@ -25,7 +25,9 @@ async function main() {
       console.log(`[event] ${event.type}`);
 
       if (event.type === "qr") {
-        console.log("\n📱 Scan QR code or wait for auto-pair (mock server)...\n");
+        console.log(
+          "\n📱 Scan QR code or wait for auto-pair (mock server)...\n",
+        );
       }
 
       if (event.type === "pair_success") {
@@ -37,7 +39,11 @@ async function main() {
         client.getJid().then((jid) => console.log(`   JID: ${jid}`));
         client.getLid().then((lid) => console.log(`   LID: ${lid}`));
       }
-    }
+
+      if (event.type === "message") {
+        console.log(`Message: ${JSON.stringify(event.data.message)}`);
+      }
+    },
   );
 
   console.log("Starting client...");

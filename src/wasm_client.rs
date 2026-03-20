@@ -453,6 +453,61 @@ impl WasmWhatsAppClient {
         Ok(JsValue::from_str(&message_id))
     }
 
+    // ── Message management ──────────────────────────────────────────────
+
+    /// Edit a previously sent message.
+    #[wasm_bindgen(js_name = editMessage, skip_typescript)]
+    pub async fn edit_message(
+        &self,
+        jid: &str,
+        message_id: &str,
+        new_content: JsValue,
+    ) -> Result<JsValue, JsValue> {
+        let to: Jid = jid
+            .parse()
+            .map_err(|e: wacore_binary::jid::JidError| JsValue::from_str(&format!("{e}")))?;
+        let msg: waproto::whatsapp::Message = serde_wasm_bindgen::from_value(new_content)
+            .map_err(|e| JsValue::from_str(&format!("invalid message: {e}")))?;
+
+        let new_id = self
+            .client
+            .edit_message(to, message_id, msg)
+            .await
+            .map_err(|e| JsValue::from_str(&format!("{e}")))?;
+
+        Ok(JsValue::from_str(&new_id))
+    }
+
+    /// Revoke (delete) a sent message.
+    #[wasm_bindgen(js_name = revokeMessage, skip_typescript)]
+    pub async fn revoke_message(
+        &self,
+        jid: &str,
+        message_id: &str,
+        participant: Option<String>,
+    ) -> Result<(), JsValue> {
+        let to: Jid = jid
+            .parse()
+            .map_err(|e: wacore_binary::jid::JidError| JsValue::from_str(&format!("{e}")))?;
+
+        let revoke_type = match participant {
+            Some(p) => {
+                let sender: Jid = p.parse().map_err(|e: wacore_binary::jid::JidError| {
+                    JsValue::from_str(&format!("invalid participant jid: {e}"))
+                })?;
+                whatsapp_rust::RevokeType::Admin {
+                    original_sender: sender,
+                }
+            }
+            None => whatsapp_rust::RevokeType::Sender,
+        };
+
+        self.client
+            .revoke_message(to, message_id, revoke_type)
+            .await
+            .map_err(|e| JsValue::from_str(&format!("{e}")))
+    }
+
     // ── Groups ───────────────────────────────────────────────────────────
 
     /// Get metadata for a group.
@@ -508,6 +563,207 @@ impl WasmWhatsAppClient {
         Ok(obj.into())
     }
 
+    /// Update a group's subject (name).
+    #[wasm_bindgen(js_name = groupUpdateSubject, skip_typescript)]
+    pub async fn group_update_subject(&self, jid: &str, subject: &str) -> Result<(), JsValue> {
+        let group_jid: Jid = jid
+            .parse()
+            .map_err(|e: wacore_binary::jid::JidError| JsValue::from_str(&format!("{e}")))?;
+
+        let group_subject = whatsapp_rust::features::GroupSubject::new(subject)
+            .map_err(|e| JsValue::from_str(&format!("{e}")))?;
+
+        self.client
+            .groups()
+            .set_subject(&group_jid, group_subject)
+            .await
+            .map_err(|e| JsValue::from_str(&format!("{e}")))
+    }
+
+    /// Update a group's description. Pass null/undefined to remove.
+    #[wasm_bindgen(js_name = groupUpdateDescription, skip_typescript)]
+    pub async fn group_update_description(
+        &self,
+        jid: &str,
+        description: Option<String>,
+    ) -> Result<(), JsValue> {
+        let group_jid: Jid = jid
+            .parse()
+            .map_err(|e: wacore_binary::jid::JidError| JsValue::from_str(&format!("{e}")))?;
+
+        let desc = match description {
+            Some(d) => Some(
+                whatsapp_rust::features::GroupDescription::new(&d)
+                    .map_err(|e| JsValue::from_str(&format!("{e}")))?,
+            ),
+            None => None,
+        };
+
+        self.client
+            .groups()
+            .set_description(&group_jid, desc, None)
+            .await
+            .map_err(|e| JsValue::from_str(&format!("{e}")))
+    }
+
+    /// Leave a group.
+    #[wasm_bindgen(js_name = groupLeave, skip_typescript)]
+    pub async fn group_leave(&self, jid: &str) -> Result<(), JsValue> {
+        let group_jid: Jid = jid
+            .parse()
+            .map_err(|e: wacore_binary::jid::JidError| JsValue::from_str(&format!("{e}")))?;
+
+        self.client
+            .groups()
+            .leave(&group_jid)
+            .await
+            .map_err(|e| JsValue::from_str(&format!("{e}")))
+    }
+
+    /// Update group participants (add, remove, promote, demote).
+    #[wasm_bindgen(js_name = groupParticipantsUpdate, skip_typescript)]
+    pub async fn group_participants_update(
+        &self,
+        jid: &str,
+        participants: Vec<String>,
+        action: &str,
+    ) -> Result<JsValue, JsValue> {
+        let group_jid: Jid = jid
+            .parse()
+            .map_err(|e: wacore_binary::jid::JidError| JsValue::from_str(&format!("{e}")))?;
+
+        let participant_jids: Vec<Jid> = participants
+            .iter()
+            .map(|p| {
+                p.parse()
+                    .unwrap_or_else(|_| Jid::new(p, wacore_binary::jid::DEFAULT_USER_SERVER))
+            })
+            .collect();
+
+        match action {
+            "add" => {
+                let result = self
+                    .client
+                    .groups()
+                    .add_participants(&group_jid, &participant_jids)
+                    .await
+                    .map_err(|e| JsValue::from_str(&format!("{e}")))?;
+                participant_change_to_js(&result)
+            }
+            "remove" => {
+                let result = self
+                    .client
+                    .groups()
+                    .remove_participants(&group_jid, &participant_jids)
+                    .await
+                    .map_err(|e| JsValue::from_str(&format!("{e}")))?;
+                participant_change_to_js(&result)
+            }
+            "promote" => {
+                self.client
+                    .groups()
+                    .promote_participants(&group_jid, &participant_jids)
+                    .await
+                    .map_err(|e| JsValue::from_str(&format!("{e}")))?;
+                Ok(JsValue::UNDEFINED)
+            }
+            "demote" => {
+                self.client
+                    .groups()
+                    .demote_participants(&group_jid, &participant_jids)
+                    .await
+                    .map_err(|e| JsValue::from_str(&format!("{e}")))?;
+                Ok(JsValue::UNDEFINED)
+            }
+            _ => Err(JsValue::from_str(
+                "action must be 'add', 'remove', 'promote', or 'demote'",
+            )),
+        }
+    }
+
+    /// Fetch all groups the user is participating in.
+    #[wasm_bindgen(js_name = groupFetchAllParticipating, skip_typescript)]
+    pub async fn group_fetch_all_participating(&self) -> Result<JsValue, JsValue> {
+        let groups = self
+            .client
+            .groups()
+            .get_participating()
+            .await
+            .map_err(|e| JsValue::from_str(&format!("{e}")))?;
+
+        // Convert HashMap<String, GroupMetadata> to a JS object
+        let obj = js_sys::Object::new();
+        for (key, metadata) in &groups {
+            let js_metadata = group_metadata_to_js(metadata)?;
+            js_sys::Reflect::set(&obj, &JsValue::from_str(key), &js_metadata)?;
+        }
+        Ok(obj.into())
+    }
+
+    /// Get the invite link for a group.
+    #[wasm_bindgen(js_name = groupInviteCode, skip_typescript)]
+    pub async fn group_invite_code(&self, jid: &str) -> Result<JsValue, JsValue> {
+        let group_jid: Jid = jid
+            .parse()
+            .map_err(|e: wacore_binary::jid::JidError| JsValue::from_str(&format!("{e}")))?;
+
+        let link = self
+            .client
+            .groups()
+            .get_invite_link(&group_jid, false)
+            .await
+            .map_err(|e| JsValue::from_str(&format!("{e}")))?;
+
+        Ok(JsValue::from_str(&link))
+    }
+
+    /// Update a group setting (locked, announce, membership_approval).
+    #[wasm_bindgen(js_name = groupSettingUpdate, skip_typescript)]
+    pub async fn group_setting_update(
+        &self,
+        jid: &str,
+        setting: &str,
+        value: bool,
+    ) -> Result<(), JsValue> {
+        let group_jid: Jid = jid
+            .parse()
+            .map_err(|e: wacore_binary::jid::JidError| JsValue::from_str(&format!("{e}")))?;
+
+        match setting {
+            "locked" => self
+                .client
+                .groups()
+                .set_locked(&group_jid, value)
+                .await
+                .map_err(|e| JsValue::from_str(&format!("{e}")))?,
+            "announce" => self
+                .client
+                .groups()
+                .set_announce(&group_jid, value)
+                .await
+                .map_err(|e| JsValue::from_str(&format!("{e}")))?,
+            "membership_approval" => {
+                let mode = if value {
+                    whatsapp_rust::MembershipApprovalMode::On
+                } else {
+                    whatsapp_rust::MembershipApprovalMode::Off
+                };
+                self.client
+                    .groups()
+                    .set_membership_approval(&group_jid, mode)
+                    .await
+                    .map_err(|e| JsValue::from_str(&format!("{e}")))?;
+            }
+            _ => {
+                return Err(JsValue::from_str(
+                    "setting must be 'locked', 'announce', or 'membership_approval'",
+                ));
+            }
+        }
+
+        Ok(())
+    }
+
     // ── Contacts ─────────────────────────────────────────────────────────
 
     /// Check if a phone number is registered on WhatsApp.
@@ -532,6 +788,87 @@ impl WasmWhatsAppClient {
         Ok(arr.into())
     }
 
+    /// Get the profile picture URL for a user or group.
+    ///
+    /// `picture_type` should be "preview" or "image".
+    #[wasm_bindgen(js_name = profilePictureUrl, skip_typescript)]
+    pub async fn profile_picture_url(
+        &self,
+        jid: &str,
+        picture_type: &str,
+    ) -> Result<JsValue, JsValue> {
+        let target: Jid = jid
+            .parse()
+            .map_err(|e: wacore_binary::jid::JidError| JsValue::from_str(&format!("{e}")))?;
+
+        let preview = match picture_type {
+            "preview" => true,
+            "image" => false,
+            _ => {
+                return Err(JsValue::from_str(
+                    "picture_type must be 'preview' or 'image'",
+                ));
+            }
+        };
+
+        let result = self
+            .client
+            .contacts()
+            .get_profile_picture(&target, preview)
+            .await
+            .map_err(|e| JsValue::from_str(&format!("{e}")))?;
+
+        match result {
+            Some(pic) => {
+                let obj = js_sys::Object::new();
+                js_sys::Reflect::set(&obj, &"id".into(), &pic.id.as_str().into())?;
+                js_sys::Reflect::set(&obj, &"url".into(), &pic.url.as_str().into())?;
+                set_optional_str(&obj, "directPath", &pic.direct_path)?;
+                set_optional_str(&obj, "hash", &pic.hash)?;
+                Ok(obj.into())
+            }
+            None => Ok(JsValue::NULL),
+        }
+    }
+
+    /// Fetch user info for one or more JIDs.
+    #[wasm_bindgen(js_name = fetchUserInfo, skip_typescript)]
+    pub async fn fetch_user_info(&self, jids: Vec<String>) -> Result<JsValue, JsValue> {
+        let parsed_jids: Vec<Jid> = jids
+            .iter()
+            .map(|j| {
+                j.parse::<Jid>()
+                    .map_err(|e| JsValue::from_str(&format!("invalid jid '{j}': {e}")))
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+
+        let result = self
+            .client
+            .contacts()
+            .get_user_info(&parsed_jids)
+            .await
+            .map_err(|e| JsValue::from_str(&format!("{e}")))?;
+
+        let obj = js_sys::Object::new();
+        for (jid, info) in &result {
+            let info_obj = js_sys::Object::new();
+            js_sys::Reflect::set(&info_obj, &"jid".into(), &info.jid.to_string().into())?;
+            js_sys::Reflect::set(
+                &info_obj,
+                &"lid".into(),
+                &match &info.lid {
+                    Some(l) => JsValue::from_str(&l.to_string()),
+                    None => JsValue::NULL,
+                },
+            )?;
+            set_optional_str(&info_obj, "status", &info.status)?;
+            set_optional_str(&info_obj, "pictureId", &info.picture_id)?;
+            js_sys::Reflect::set(&info_obj, &"isBusiness".into(), &info.is_business.into())?;
+            js_sys::Reflect::set(&obj, &JsValue::from_str(&jid.to_string()), &info_obj)?;
+        }
+        Ok(obj.into())
+    }
+
     // ── Profile ──────────────────────────────────────────────────────────
 
     /// Set the user's push name (display name).
@@ -542,6 +879,204 @@ impl WasmWhatsAppClient {
             .set_push_name(name)
             .await
             .map_err(|e| JsValue::from_str(&format!("{e}")))
+    }
+
+    /// Set the profile picture for the logged-in user.
+    #[wasm_bindgen(js_name = updateProfilePicture, skip_typescript)]
+    pub async fn update_profile_picture(&self, img_data: Vec<u8>) -> Result<JsValue, JsValue> {
+        let result = self
+            .client
+            .profile()
+            .set_profile_picture(img_data)
+            .await
+            .map_err(|e| JsValue::from_str(&format!("{e}")))?;
+
+        let obj = js_sys::Object::new();
+        js_sys::Reflect::set(&obj, &"id".into(), &result.id.as_str().into())?;
+        Ok(obj.into())
+    }
+
+    /// Remove the profile picture for the logged-in user.
+    #[wasm_bindgen(js_name = removeProfilePicture, skip_typescript)]
+    pub async fn remove_profile_picture(&self) -> Result<JsValue, JsValue> {
+        let result = self
+            .client
+            .profile()
+            .remove_profile_picture()
+            .await
+            .map_err(|e| JsValue::from_str(&format!("{e}")))?;
+
+        let obj = js_sys::Object::new();
+        js_sys::Reflect::set(&obj, &"id".into(), &result.id.as_str().into())?;
+        Ok(obj.into())
+    }
+
+    /// Update the user's status text (about).
+    #[wasm_bindgen(js_name = updateProfileStatus, skip_typescript)]
+    pub async fn update_profile_status(&self, status: &str) -> Result<(), JsValue> {
+        self.client
+            .profile()
+            .set_status_text(status)
+            .await
+            .map_err(|e| JsValue::from_str(&format!("{e}")))
+    }
+
+    // ── Blocking ──────────────────────────────────────────────────────────
+
+    /// Block or unblock a contact.
+    ///
+    /// `action` must be "block" or "unblock".
+    #[wasm_bindgen(js_name = updateBlockStatus, skip_typescript)]
+    pub async fn update_block_status(&self, jid: &str, action: &str) -> Result<(), JsValue> {
+        let target: Jid = jid
+            .parse()
+            .map_err(|e: wacore_binary::jid::JidError| JsValue::from_str(&format!("{e}")))?;
+
+        match action {
+            "block" => self
+                .client
+                .blocking()
+                .block(&target)
+                .await
+                .map_err(|e| JsValue::from_str(&format!("{e}")))?,
+            "unblock" => self
+                .client
+                .blocking()
+                .unblock(&target)
+                .await
+                .map_err(|e| JsValue::from_str(&format!("{e}")))?,
+            _ => {
+                return Err(JsValue::from_str("action must be 'block' or 'unblock'"));
+            }
+        }
+
+        Ok(())
+    }
+
+    /// Fetch the full blocklist.
+    #[wasm_bindgen(js_name = fetchBlocklist, skip_typescript)]
+    pub async fn fetch_blocklist(&self) -> Result<JsValue, JsValue> {
+        let entries = self
+            .client
+            .blocking()
+            .get_blocklist()
+            .await
+            .map_err(|e| JsValue::from_str(&format!("{e}")))?;
+
+        let arr = js_sys::Array::new();
+        for entry in &entries {
+            let obj = js_sys::Object::new();
+            js_sys::Reflect::set(&obj, &"jid".into(), &entry.jid.to_string().into())?;
+            set_optional_num(&obj, "timestamp", &entry.timestamp.map(|v| v as f64))?;
+            arr.push(&obj.into());
+        }
+        Ok(arr.into())
+    }
+
+    // ── Chat actions ──────────────────────────────────────────────────────
+
+    /// Pin or unpin a chat.
+    #[wasm_bindgen(js_name = pinChat, skip_typescript)]
+    pub async fn pin_chat(&self, jid: &str, pin: bool) -> Result<(), JsValue> {
+        let chat_jid: Jid = jid
+            .parse()
+            .map_err(|e: wacore_binary::jid::JidError| JsValue::from_str(&format!("{e}")))?;
+
+        if pin {
+            self.client
+                .chat_actions()
+                .pin_chat(&chat_jid)
+                .await
+                .map_err(|e| JsValue::from_str(&format!("{e}")))?;
+        } else {
+            self.client
+                .chat_actions()
+                .unpin_chat(&chat_jid)
+                .await
+                .map_err(|e| JsValue::from_str(&format!("{e}")))?;
+        }
+
+        Ok(())
+    }
+
+    /// Mute or unmute a chat.
+    ///
+    /// Pass a positive timestamp (ms) to mute until that time, or null/undefined to unmute.
+    #[wasm_bindgen(js_name = muteChat, skip_typescript)]
+    pub async fn mute_chat(&self, jid: &str, mute_until: Option<f64>) -> Result<(), JsValue> {
+        let chat_jid: Jid = jid
+            .parse()
+            .map_err(|e: wacore_binary::jid::JidError| JsValue::from_str(&format!("{e}")))?;
+
+        match mute_until {
+            Some(ts) => self
+                .client
+                .chat_actions()
+                .mute_chat_until(&chat_jid, ts as i64)
+                .await
+                .map_err(|e| JsValue::from_str(&format!("{e}")))?,
+            None => self
+                .client
+                .chat_actions()
+                .unmute_chat(&chat_jid)
+                .await
+                .map_err(|e| JsValue::from_str(&format!("{e}")))?,
+        }
+
+        Ok(())
+    }
+
+    /// Archive or unarchive a chat.
+    #[wasm_bindgen(js_name = archiveChat, skip_typescript)]
+    pub async fn archive_chat(&self, jid: &str, archive: bool) -> Result<(), JsValue> {
+        let chat_jid: Jid = jid
+            .parse()
+            .map_err(|e: wacore_binary::jid::JidError| JsValue::from_str(&format!("{e}")))?;
+
+        if archive {
+            self.client
+                .chat_actions()
+                .archive_chat(&chat_jid)
+                .await
+                .map_err(|e| JsValue::from_str(&format!("{e}")))?;
+        } else {
+            self.client
+                .chat_actions()
+                .unarchive_chat(&chat_jid)
+                .await
+                .map_err(|e| JsValue::from_str(&format!("{e}")))?;
+        }
+
+        Ok(())
+    }
+
+    /// Star or unstar a message.
+    #[wasm_bindgen(js_name = starMessage, skip_typescript)]
+    pub async fn star_message(
+        &self,
+        jid: &str,
+        message_id: &str,
+        star: bool,
+    ) -> Result<(), JsValue> {
+        let chat_jid: Jid = jid
+            .parse()
+            .map_err(|e: wacore_binary::jid::JidError| JsValue::from_str(&format!("{e}")))?;
+
+        if star {
+            self.client
+                .chat_actions()
+                .star_message(&chat_jid, None, message_id, true)
+                .await
+                .map_err(|e| JsValue::from_str(&format!("{e}")))?;
+        } else {
+            self.client
+                .chat_actions()
+                .unstar_message(&chat_jid, None, message_id, true)
+                .await
+                .map_err(|e| JsValue::from_str(&format!("{e}")))?;
+        }
+
+        Ok(())
     }
 
     // ── Presence ─────────────────────────────────────────────────────────
@@ -562,6 +1097,87 @@ impl WasmWhatsAppClient {
         self.client
             .presence()
             .set(presence_status)
+            .await
+            .map_err(|e| JsValue::from_str(&format!("{e}")))
+    }
+
+    /// Subscribe to a contact's presence updates.
+    #[wasm_bindgen(js_name = presenceSubscribe, skip_typescript)]
+    pub async fn presence_subscribe(&self, jid: &str) -> Result<(), JsValue> {
+        let target: Jid = jid
+            .parse()
+            .map_err(|e: wacore_binary::jid::JidError| JsValue::from_str(&format!("{e}")))?;
+
+        self.client
+            .presence()
+            .subscribe(&target)
+            .await
+            .map_err(|e| JsValue::from_str(&format!("{e}")))
+    }
+
+    // ── Newsletter ────────────────────────────────────────────────────────
+
+    /// Create a new newsletter (channel).
+    #[wasm_bindgen(js_name = newsletterCreate, skip_typescript)]
+    pub async fn newsletter_create(
+        &self,
+        name: &str,
+        description: Option<String>,
+    ) -> Result<JsValue, JsValue> {
+        let result = self
+            .client
+            .newsletter()
+            .create(name, description.as_deref())
+            .await
+            .map_err(|e| JsValue::from_str(&format!("{e}")))?;
+
+        newsletter_metadata_to_js(&result)
+    }
+
+    /// Fetch metadata for a newsletter by JID.
+    #[wasm_bindgen(js_name = newsletterMetadata, skip_typescript)]
+    pub async fn newsletter_metadata(&self, jid: &str) -> Result<JsValue, JsValue> {
+        let target: Jid = jid
+            .parse()
+            .map_err(|e: wacore_binary::jid::JidError| JsValue::from_str(&format!("{e}")))?;
+
+        let result = self
+            .client
+            .newsletter()
+            .get_metadata(&target)
+            .await
+            .map_err(|e| JsValue::from_str(&format!("{e}")))?;
+
+        newsletter_metadata_to_js(&result)
+    }
+
+    /// Subscribe (join) a newsletter.
+    #[wasm_bindgen(js_name = newsletterSubscribe, skip_typescript)]
+    pub async fn newsletter_subscribe(&self, jid: &str) -> Result<JsValue, JsValue> {
+        let target: Jid = jid
+            .parse()
+            .map_err(|e: wacore_binary::jid::JidError| JsValue::from_str(&format!("{e}")))?;
+
+        let result = self
+            .client
+            .newsletter()
+            .join(&target)
+            .await
+            .map_err(|e| JsValue::from_str(&format!("{e}")))?;
+
+        newsletter_metadata_to_js(&result)
+    }
+
+    /// Unsubscribe (leave) a newsletter.
+    #[wasm_bindgen(js_name = newsletterUnsubscribe, skip_typescript)]
+    pub async fn newsletter_unsubscribe(&self, jid: &str) -> Result<(), JsValue> {
+        let target: Jid = jid
+            .parse()
+            .map_err(|e: wacore_binary::jid::JidError| JsValue::from_str(&format!("{e}")))?;
+
+        self.client
+            .newsletter()
+            .leave(&target)
             .await
             .map_err(|e| JsValue::from_str(&format!("{e}")))
     }
@@ -755,4 +1371,53 @@ fn set_optional_num(obj: &js_sys::Object, key: &str, val: &Option<f64>) -> Resul
     };
     js_sys::Reflect::set(obj, &key.into(), &js_val)?;
     Ok(())
+}
+
+/// Convert Vec<ParticipantChangeResponse> to a JS array.
+fn participant_change_to_js(
+    responses: &[whatsapp_rust::features::ParticipantChangeResponse],
+) -> Result<JsValue, JsValue> {
+    let arr = js_sys::Array::new();
+    for r in responses {
+        let obj = js_sys::Object::new();
+        js_sys::Reflect::set(&obj, &"jid".into(), &r.jid.to_string().into())?;
+        set_optional_str(&obj, "status", &r.status)?;
+        set_optional_str(&obj, "error", &r.error)?;
+        arr.push(&obj.into());
+    }
+    Ok(arr.into())
+}
+
+/// Convert NewsletterMetadata to a JS object.
+fn newsletter_metadata_to_js(
+    meta: &whatsapp_rust::features::NewsletterMetadata,
+) -> Result<JsValue, JsValue> {
+    let obj = js_sys::Object::new();
+    js_sys::Reflect::set(&obj, &"jid".into(), &meta.jid.to_string().into())?;
+    js_sys::Reflect::set(&obj, &"name".into(), &meta.name.as_str().into())?;
+    set_optional_str(&obj, "description", &meta.description)?;
+    js_sys::Reflect::set(
+        &obj,
+        &"subscriberCount".into(),
+        &(meta.subscriber_count as f64).into(),
+    )?;
+    js_sys::Reflect::set(
+        &obj,
+        &"verification".into(),
+        &format!("{:?}", meta.verification).into(),
+    )?;
+    js_sys::Reflect::set(&obj, &"state".into(), &format!("{:?}", meta.state).into())?;
+    set_optional_str(&obj, "pictureUrl", &meta.picture_url)?;
+    set_optional_str(&obj, "previewUrl", &meta.preview_url)?;
+    set_optional_str(&obj, "inviteCode", &meta.invite_code)?;
+    js_sys::Reflect::set(
+        &obj,
+        &"role".into(),
+        &match &meta.role {
+            Some(r) => JsValue::from_str(&format!("{:?}", r)),
+            None => JsValue::NULL,
+        },
+    )?;
+    set_optional_num(&obj, "creationTime", &meta.creation_time.map(|v| v as f64))?;
+    Ok(obj.into())
 }

@@ -118,11 +118,11 @@ export function createHttp(): JsHttpClientConfig {
 /**
  * Wait for a specific event type to appear in an event array.
  */
-export function waitForEvent(
-  events: Event[],
+export function waitForEvent<T extends { type: string }>(
+  events: T[],
   type: string,
   timeoutMs = 30000
-): Promise<Event> {
+): Promise<T> {
   return new Promise((resolve, reject) => {
     const existing = events.find((e) => e.type === type);
     if (existing) {
@@ -141,6 +141,50 @@ export function waitForEvent(
         reject(
           new Error(
             `Timed out waiting for '${type}'. Got: ${events.map((e) => e.type).join(", ")}`
+          )
+        );
+      }
+    }, 100);
+  });
+}
+
+/**
+ * Wait for an event matching a custom predicate.
+ *
+ * @param startIndex Only scan events from this index onward (avoids re-matching old events).
+ */
+export function waitForEventMatching<T extends { type: string }>(
+  events: T[],
+  predicate: (e: T) => boolean,
+  timeoutMs = 30000,
+  startIndex = 0
+): Promise<T> {
+  return new Promise((resolve, reject) => {
+    const scan = () => {
+      for (let i = startIndex; i < events.length; i++) {
+        if (predicate(events[i])) return events[i];
+      }
+      return undefined;
+    };
+
+    const existing = scan();
+    if (existing) {
+      resolve(existing);
+      return;
+    }
+
+    const deadline = Date.now() + timeoutMs;
+    const interval = setInterval(() => {
+      const found = scan();
+      if (found) {
+        clearInterval(interval);
+        resolve(found);
+      } else if (Date.now() > deadline) {
+        clearInterval(interval);
+        const types = events.slice(startIndex).map((e) => e.type).join(", ");
+        reject(
+          new Error(
+            `Timed out waiting for matching event. Events since index ${startIndex}: ${types || "(none)"}`
           )
         );
       }

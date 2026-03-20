@@ -172,13 +172,133 @@ export interface WasmWhatsAppClient {
   /** Get the own LID (linked identity). */
   getLid(): Promise<string | undefined>;
 
+  // ── Message management ──
+
+  /** Edit a previously sent message. Returns new message ID. */
+  editMessage(jid: string, messageId: string, newContent: Record<string, unknown>): Promise<string>;
+  /** Revoke (delete) a message. Pass participant for admin revoke in groups. */
+  revokeMessage(jid: string, messageId: string, participant?: string | null): Promise<void>;
+
+  // ── Groups ──
+
+  /** Update a group's subject (name). */
+  groupUpdateSubject(jid: string, subject: string): Promise<void>;
+  /** Update a group's description. Pass null to remove. */
+  groupUpdateDescription(jid: string, description?: string | null): Promise<void>;
+  /** Leave a group. */
+  groupLeave(jid: string): Promise<void>;
+  /** Update group participants. Action: "add", "remove", "promote", "demote". */
+  groupParticipantsUpdate(jid: string, participants: string[], action: "add" | "remove" | "promote" | "demote"): Promise<ParticipantChangeResult[] | void>;
+  /** Fetch all groups the user is participating in. Returns map of JID → GroupMetadataResult. */
+  groupFetchAllParticipating(): Promise<Record<string, GroupMetadataResult>>;
+  /** Get the invite link/code for a group. */
+  groupInviteCode(jid: string): Promise<string>;
+  /** Update a group setting. Setting: "locked", "announce", "membership_approval". */
+  groupSettingUpdate(jid: string, setting: "locked" | "announce" | "membership_approval", value: boolean): Promise<void>;
+
+  // ── Contacts ──
+
+  /** Get profile picture URL. Type: "preview" (thumbnail) or "image" (full). */
+  profilePictureUrl(jid: string, type: "preview" | "image"): Promise<ProfilePictureResult | null>;
+  /** Fetch user info for one or more JIDs. */
+  fetchUserInfo(jids: string[]): Promise<Record<string, UserInfoResult>>;
+
+  // ── Profile ──
+
+  /** Set the user's display name. */
+  setPushName(name: string): Promise<void>;
+  /** Set profile picture. Accepts raw image bytes. */
+  updateProfilePicture(imgData: Uint8Array): Promise<{ id: string }>;
+  /** Remove profile picture. */
+  removeProfilePicture(): Promise<{ id: string }>;
+  /** Update status text (about). */
+  updateProfileStatus(status: string): Promise<void>;
+
+  // ── Blocking ──
+
+  /** Block or unblock a contact. */
+  updateBlockStatus(jid: string, action: "block" | "unblock"): Promise<void>;
+  /** Fetch the full blocklist. */
+  fetchBlocklist(): Promise<BlocklistResult[]>;
+
+  // ── Chat actions ──
+
+  /** Pin or unpin a chat. */
+  pinChat(jid: string, pin: boolean): Promise<void>;
+  /** Mute a chat until a timestamp (ms), or pass null to unmute. */
+  muteChat(jid: string, muteUntil?: number | null): Promise<void>;
+  /** Archive or unarchive a chat. */
+  archiveChat(jid: string, archive: boolean): Promise<void>;
+  /** Star or unstar a message. */
+  starMessage(jid: string, messageId: string, star: boolean): Promise<void>;
+
+  // ── Presence ──
+
   /** Send presence ("available" or "unavailable"). */
   sendPresence(status: "available" | "unavailable"): Promise<void>;
+  /** Subscribe to a contact's presence updates. */
+  presenceSubscribe(jid: string): Promise<void>;
   /** Send typing indicator. */
   sendChatState(jid: string, state: "composing" | "recording" | "paused"): Promise<void>;
 
+  // ── Newsletter ──
+
+  /** Create a new newsletter (channel). */
+  newsletterCreate(name: string, description?: string | null): Promise<NewsletterMetadataResult>;
+  /** Fetch newsletter metadata by JID. */
+  newsletterMetadata(jid: string): Promise<NewsletterMetadataResult>;
+  /** Subscribe (join) a newsletter. */
+  newsletterSubscribe(jid: string): Promise<NewsletterMetadataResult>;
+  /** Unsubscribe (leave) a newsletter. */
+  newsletterUnsubscribe(jid: string): Promise<void>;
+
   /** Free WASM resources. Call when done with the client. */
   free(): void;
+}
+
+/** Result from groupParticipantsUpdate (add/remove). */
+export interface ParticipantChangeResult {
+  jid: string;
+  status?: string | null;
+  error?: string | null;
+}
+
+/** Result from profilePictureUrl. */
+export interface ProfilePictureResult {
+  id: string;
+  url: string;
+  directPath?: string | null;
+  hash?: string | null;
+}
+
+/** Result from fetchUserInfo (per-JID). */
+export interface UserInfoResult {
+  jid: string;
+  lid?: string | null;
+  status?: string | null;
+  pictureId?: string | null;
+  isBusiness: boolean;
+}
+
+/** Result from fetchBlocklist. */
+export interface BlocklistResult {
+  jid: string;
+  timestamp?: number | null;
+}
+
+/** Result from newsletter methods. */
+export interface NewsletterMetadataResult {
+  jid: string;
+  name: string;
+  description?: string | null;
+  subscriberCount: number;
+  verification: string;
+  state: string;
+  pictureUrl?: string | null;
+  previewUrl?: string | null;
+  inviteCode?: string | null;
+  role?: string | null;
+  creationTime?: number | null;
 }
 
 /** Message content for sendMessage (snake_case to match prost serialization). */
