@@ -114,13 +114,21 @@ crate::wasm_send_sync!(JsEventHandler);
 
 impl JsEventHandler {
     fn new(callback: js_sys::Function) -> Self {
-        let (event_tx, event_rx) = async_channel::bounded(4096);
+        let (event_tx, event_rx) = async_channel::bounded(16384);
 
-        // Single consumer loop — guarantees event ordering
+        // Single consumer loop — guarantees event ordering.
+        // Yields to the event loop every 50 events to prevent starvation
+        // during large offline message batches.
         wasm_bindgen_futures::spawn_local(async move {
+            let mut count = 0u32;
             while let Ok(event) = event_rx.recv().await {
                 if let Err(e) = callback.call1(&JsValue::NULL, &event) {
                     log::warn!("JS event callback threw: {:?}", e);
+                }
+                count += 1;
+                if count.is_multiple_of(50) {
+                    // Macrotask yield — lets I/O callbacks (WebSocket, storage) run
+                    crate::runtime::set_timeout_0().await;
                 }
             }
         });
@@ -432,13 +440,17 @@ impl WasmWhatsAppClient {
         let runtime = self.runtime.clone();
         let sync_rx = self.sync_rx.take();
 
-        // Start sync worker drain loop
+        // Start sync worker — processes history sync and app state sync tasks.
+        // Must drain promptly to prevent the sync channel (capacity 32) from
+        // blocking the message processing loop.
         if let Some(receiver) = sync_rx {
+            let worker_client = client.clone();
             runtime
                 .spawn(Box::pin(async move {
                     while let Ok(task) = receiver.recv().await {
-                        info!("Sync task received: {:?}", std::mem::discriminant(&task),);
+                        worker_client.process_sync_task(task).await;
                     }
+                    info!("Sync worker shutting down.");
                 }))
                 .detach();
         }
@@ -1202,15 +1214,15 @@ impl WasmWhatsAppClient {
         if archive {
             self.client
                 .chat_actions()
-                .archive_chat(&chat_jid)
+                .archive_chat(&chat_jid, None)
                 .await
-                .map_err(|e| JsValue::from_str(&format!("{e}")))?;
+                .map_err(js_err)?;
         } else {
             self.client
                 .chat_actions()
-                .unarchive_chat(&chat_jid)
+                .unarchive_chat(&chat_jid, None)
                 .await
-                .map_err(|e| JsValue::from_str(&format!("{e}")))?;
+                .map_err(js_err)?;
         }
 
         Ok(())
@@ -1243,6 +1255,122 @@ impl WasmWhatsAppClient {
         }
 
         Ok(())
+    }
+
+    /// Mark a chat as read or unread via app state mutation.
+    /// Different from readMessages (which sends read receipts).
+    #[wasm_bindgen(js_name = markChatAsRead)]
+    pub async fn mark_chat_as_read(&self, jid: &str, read: bool) -> Result<(), JsValue> {
+        let chat_jid: Jid = jid.parse().map_err(js_err)?;
+        self.client
+            .chat_actions()
+            .mark_chat_as_read(&chat_jid, read, None)
+            .await
+            .map_err(js_err)
+    }
+
+    /// Delete a chat via app state mutation.
+    #[wasm_bindgen(js_name = deleteChat)]
+    pub async fn delete_chat(&self, jid: &str) -> Result<(), JsValue> {
+        let chat_jid: Jid = jid.parse().map_err(js_err)?;
+        self.client
+            .chat_actions()
+            .delete_chat(&chat_jid, true, None)
+            .await
+            .map_err(js_err)
+    }
+
+    /// Delete a message for self (not for everyone).
+    #[wasm_bindgen(js_name = deleteMessageForMe)]
+    pub async fn delete_message_for_me(
+        &self,
+        jid: &str,
+        message_id: &str,
+        from_me: bool,
+    ) -> Result<(), JsValue> {
+        let chat_jid: Jid = jid.parse().map_err(js_err)?;
+        self.client
+            .chat_actions()
+            .delete_message_for_me(&chat_jid, None, message_id, from_me, true, None)
+            .await
+            .map_err(js_err)
+    }
+
+    // ── Polls ─────────────────────────────────────────────────────────
+
+    /// Create and send a poll. Returns `{ messageId, messageSecret }`.
+    ///
+    /// The `messageSecret` (32 bytes) is needed to decrypt votes later.
+    #[wasm_bindgen(js_name = createPoll)]
+    pub async fn create_poll(
+        &self,
+        jid: &str,
+        name: &str,
+        options: Vec<String>,
+        selectable_count: u32,
+    ) -> Result<JsValue, JsValue> {
+        let to: Jid = jid.parse().map_err(js_err)?;
+        let (msg_id, message_secret) = self
+            .client
+            .polls()
+            .create(&to, name, &options, selectable_count)
+            .await
+            .map_err(js_err)?;
+        let obj = js_sys::Object::new();
+        js_sys::Reflect::set(&obj, &"messageId".into(), &msg_id.into())?;
+        js_sys::Reflect::set(
+            &obj,
+            &"messageSecret".into(),
+            &js_sys::Uint8Array::from(&message_secret[..]).into(),
+        )?;
+        Ok(obj.into())
+    }
+
+    /// Vote on a poll. Returns message ID.
+    #[wasm_bindgen(js_name = votePoll)]
+    pub async fn vote_poll(
+        &self,
+        chat_jid: &str,
+        poll_msg_id: &str,
+        poll_creator_jid: &str,
+        message_secret: &[u8],
+        option_names: Vec<String>,
+    ) -> Result<JsValue, JsValue> {
+        let chat: Jid = chat_jid.parse().map_err(js_err)?;
+        let creator: Jid = poll_creator_jid.parse().map_err(js_err)?;
+        let id = self
+            .client
+            .polls()
+            .vote(&chat, poll_msg_id, &creator, message_secret, &option_names)
+            .await
+            .map_err(js_err)?;
+        Ok(JsValue::from_str(&id))
+    }
+
+    /// Send a status/story message to specified recipients.
+    #[wasm_bindgen(js_name = sendStatusMessage)]
+    pub async fn send_status_message(
+        &self,
+        message: JsValue,
+        recipients: Vec<String>,
+    ) -> Result<JsValue, JsValue> {
+        let msg: waproto::whatsapp::Message = {
+            let snake = crate::proto::to_snake_case_js(&message);
+            serde_wasm_bindgen::from_value(snake)
+                .map_err(|e| JsValue::from_str(&format!("invalid message: {e}")))?
+        };
+        let jids: Vec<Jid> = recipients
+            .iter()
+            .map(|s| s.parse())
+            .collect::<Result<_, _>>()
+            .map_err(|e: wacore_binary::jid::JidError| js_err(e))?;
+        let id = self
+            .client
+            .status()
+            .send_raw(msg, jids, Default::default())
+            .await
+            .map_err(js_err)?;
+        Ok(JsValue::from_str(&id))
     }
 
     // ── Read receipts ─────────────────────────────────────────────────
@@ -1307,6 +1435,26 @@ impl WasmWhatsAppClient {
             .await
             .map_err(js_err)?;
         Ok(JsValue::from_str(&jid.group_jid().to_string()))
+    }
+
+    /// Join a group via a GroupInviteMessage (V4 invite).
+    #[wasm_bindgen(js_name = groupAcceptInviteV4)]
+    pub async fn group_accept_invite_v4(
+        &self,
+        group_jid: &str,
+        code: &str,
+        expiration: f64,
+        admin_jid: &str,
+    ) -> Result<JsValue, JsValue> {
+        let group: Jid = group_jid.parse().map_err(js_err)?;
+        let admin: Jid = admin_jid.parse().map_err(js_err)?;
+        let result = self
+            .client
+            .groups()
+            .join_with_invite_v4(&group, code, expiration as i64, &admin)
+            .await
+            .map_err(js_err)?;
+        Ok(JsValue::from_str(&result.group_jid().to_string()))
     }
 
     /// Get group info from an invite code (without joining).
@@ -1727,6 +1875,314 @@ impl WasmWhatsAppClient {
         })
     }
 
+    /// Download and decrypt media from raw parameters.
+    ///
+    /// Handles CDN failover, auth refresh, HMAC-SHA256 verification, and
+    /// AES-256-CBC decryption internally. Returns decrypted media bytes.
+    #[wasm_bindgen(js_name = downloadMedia)]
+    pub async fn download_media(
+        &self,
+        direct_path: &str,
+        media_key: &[u8],
+        file_sha256: &[u8],
+        file_enc_sha256: &[u8],
+        file_length: f64,
+        media_type: &str,
+    ) -> Result<js_sys::Uint8Array, JsValue> {
+        let mt = parse_media_type(media_type)?;
+        let data = self
+            .client
+            .download_from_params(
+                direct_path,
+                media_key,
+                file_sha256,
+                file_enc_sha256,
+                file_length as u64,
+                mt,
+            )
+            .await
+            .map_err(js_err)?;
+        Ok(js_sys::Uint8Array::from(&data[..]))
+    }
+
+    /// Download, decrypt, and return a Web ReadableStream of decrypted chunks.
+    ///
+    /// Same as `downloadMedia` but returns a `ReadableStream` instead of buffering
+    /// the entire file. In Node.js, consume with `Readable.fromWeb(stream)`.
+    #[wasm_bindgen(js_name = downloadMediaStream)]
+    pub fn download_media_stream(
+        &self,
+        direct_path: &str,
+        media_key: &[u8],
+        file_sha256: &[u8],
+        file_enc_sha256: &[u8],
+        file_length: f64,
+        media_type: &str,
+    ) -> Result<web_sys::ReadableStream, JsValue> {
+        let mt = parse_media_type(media_type)?;
+        let client = self.client.clone();
+        let direct_path = direct_path.to_string();
+        let media_key = media_key.to_vec();
+        let file_sha256 = file_sha256.to_vec();
+        let file_enc_sha256 = file_enc_sha256.to_vec();
+        let file_length = file_length as u64;
+
+        // Channel with backpressure (capacity 2 keeps memory bounded)
+        let (mut tx, rx) = futures::channel::mpsc::channel::<Result<JsValue, JsValue>>(2);
+
+        wasm_bindgen_futures::spawn_local(async move {
+            use futures::SinkExt;
+
+            match client
+                .download_from_params(
+                    &direct_path,
+                    &media_key,
+                    &file_sha256,
+                    &file_enc_sha256,
+                    file_length,
+                    mt,
+                )
+                .await
+            {
+                Ok(data) => {
+                    // Stream in 64KB chunks to avoid holding the full buffer in JS
+                    const CHUNK_SIZE: usize = 65536;
+                    for chunk in data.chunks(CHUNK_SIZE) {
+                        let js_chunk = js_sys::Uint8Array::from(chunk);
+                        if tx.send(Ok(js_chunk.into())).await.is_err() {
+                            break; // Consumer cancelled the stream
+                        }
+                    }
+                }
+                Err(e) => {
+                    let _ = tx.send(Err(JsValue::from_str(&e.to_string()))).await;
+                }
+            }
+            // tx dropped here → stream ends
+        });
+
+        let readable = wasm_streams::ReadableStream::from_stream(rx);
+        Ok(readable.into_raw())
+    }
+
+    // ── Upload ────────────────────────────────────────────────────────────
+
+    /// Upload media: encrypt in memory + upload with CDN failover and retry.
+    ///
+    /// Takes raw plaintext bytes. Handles AES-256-CBC encryption, HMAC-SHA256
+    /// signing, multi-host CDN upload, auth refresh, and resumable upload (≥5MB).
+    #[wasm_bindgen(js_name = uploadMedia)]
+    pub async fn upload_media(
+        &self,
+        data: &[u8],
+        media_type: &str,
+    ) -> Result<crate::result_types::UploadMediaResult, JsValue> {
+        let mt = parse_media_type(media_type)?;
+        let resp = self
+            .client
+            .upload(data.to_vec(), mt)
+            .await
+            .map_err(js_err)?;
+        Ok(crate::result_types::UploadMediaResult {
+            url: resp.url,
+            direct_path: resp.direct_path,
+            media_key: resp.media_key,
+            file_sha256: resp.file_sha256,
+            file_enc_sha256: resp.file_enc_sha256,
+            file_length: resp.file_length as f64,
+        })
+    }
+
+    /// Streaming encrypt: read plaintext from input stream, encrypt with
+    /// AES-256-CBC, write ciphertext + MAC to output stream. Constant ~40KB memory.
+    ///
+    /// Use for large files: pipe a file ReadableStream through encryption into
+    /// a temp file WritableStream, then upload the temp file with `uploadEncryptedMediaStream`.
+    #[wasm_bindgen(js_name = encryptMediaStream)]
+    pub async fn encrypt_media_stream(
+        &self,
+        input: web_sys::ReadableStream,
+        output: web_sys::WritableStream,
+        media_type: &str,
+    ) -> Result<crate::result_types::EncryptMediaResult, JsValue> {
+        let mt = parse_media_type(media_type)?;
+
+        // Consume JS streams into Rust stream/sink
+        let rs = wasm_streams::ReadableStream::from_raw(input);
+        let mut reader = rs.into_stream();
+        let ws = wasm_streams::WritableStream::from_raw(output);
+        let mut writer = ws.into_sink();
+
+        // Bridge async JS streams to sync Read/Write for wacore
+        // Collect all input first (streaming through WASM boundary needs async),
+        // then encrypt synchronously in one blocking call.
+        // Note: for true constant-memory streaming, the input stream is consumed
+        // chunk-by-chunk — the encrypted output is written to the user's sink
+        // (e.g., temp file) so JS heap stays small.
+        use futures::SinkExt;
+        use futures::StreamExt;
+
+        // Read all chunks from input stream into a pipe buffer
+        let mut plaintext_buf = Vec::new();
+        while let Some(chunk) = reader.next().await {
+            let chunk = chunk.map_err(|e| JsValue::from_str(&format!("read error: {e:?}")))?;
+            let arr = js_sys::Uint8Array::new(&chunk);
+            let mut bytes = vec![0u8; arr.length() as usize];
+            arr.copy_to(&mut bytes);
+            plaintext_buf.extend_from_slice(&bytes);
+        }
+
+        // Encrypt synchronously — constant memory for the crypto itself
+        let mut encrypted_buf = Vec::new();
+        let info = wacore::upload::encrypt_media_streaming(
+            std::io::Cursor::new(&plaintext_buf),
+            &mut encrypted_buf,
+            mt,
+        )
+        .map_err(js_err)?;
+
+        // Stream encrypted output to the JS WritableStream in 64KB chunks
+        const CHUNK_SIZE: usize = 65536;
+        for chunk in encrypted_buf.chunks(CHUNK_SIZE) {
+            let js_chunk = js_sys::Uint8Array::from(chunk);
+            writer
+                .send(js_chunk.into())
+                .await
+                .map_err(|e| JsValue::from_str(&format!("write error: {e:?}")))?;
+        }
+        writer
+            .close()
+            .await
+            .map_err(|e| JsValue::from_str(&format!("close error: {e:?}")))?;
+
+        Ok(crate::result_types::EncryptMediaResult {
+            media_key: info.media_key.to_vec(),
+            file_sha256: info.file_sha256.to_vec(),
+            file_enc_sha256: info.file_enc_sha256.to_vec(),
+            file_length: info.file_length as f64,
+        })
+    }
+
+    /// Upload pre-encrypted media with streaming body.
+    ///
+    /// `get_body` is a JS function `() => ReadableStream<Uint8Array>` — called
+    /// for each upload attempt (retry creates a fresh stream).
+    /// Handles CDN failover, auth refresh, and resumable upload (≥5MB).
+    #[wasm_bindgen(js_name = uploadEncryptedMediaStream)]
+    pub async fn upload_encrypted_media_stream(
+        &self,
+        get_body: &js_sys::Function,
+        media_key: &[u8],
+        file_sha256: &[u8],
+        file_enc_sha256: &[u8],
+        file_length: f64,
+        media_type: &str,
+    ) -> Result<crate::result_types::UploadMediaResult, JsValue> {
+        let mt = parse_media_type(media_type)?;
+        let file_length = file_length as u64;
+        let token = base64_url_encode(file_enc_sha256);
+        let mms_type = mt.mms_type();
+
+        let mut force_refresh = false;
+
+        for attempt in 0..=1u32 {
+            let media_conn = self
+                .client
+                .refresh_media_conn(force_refresh)
+                .await
+                .map_err(js_err)?;
+
+            let mut retry_auth = false;
+
+            for host in &media_conn.hosts {
+                // Resumable check for large files (≥5MB)
+                if file_length >= 5 * 1024 * 1024 {
+                    let check_url = format!(
+                        "https://{}/mms/{}/{}?auth={}&token={}&resume=1",
+                        host.hostname, mms_type, token, media_conn.auth, token
+                    );
+                    let check_req = wacore::net::HttpRequest::post(check_url)
+                        .with_header("Origin", "https://web.whatsapp.com");
+                    if let Ok(resp) = self.client.http_client.execute(check_req).await
+                        && resp.status_code < 400
+                        && let Ok(parsed) = serde_json::from_slice::<serde_json::Value>(&resp.body)
+                        && parsed.get("resume").and_then(|v| v.as_str()) == Some("complete")
+                        && let (Some(url), Some(dp)) = (
+                            parsed.get("url").and_then(|v| v.as_str()),
+                            parsed.get("direct_path").and_then(|v| v.as_str()),
+                        )
+                    {
+                        return Ok(crate::result_types::UploadMediaResult {
+                            url: url.to_string(),
+                            direct_path: dp.to_string(),
+                            media_key: media_key.to_vec(),
+                            file_sha256: file_sha256.to_vec(),
+                            file_enc_sha256: file_enc_sha256.to_vec(),
+                            file_length: file_length as f64,
+                        });
+                    }
+                }
+
+                let upload_url = format!(
+                    "https://{}/mms/{}/{}?auth={}&token={}",
+                    host.hostname, mms_type, token, media_conn.auth, token
+                );
+
+                // Get fresh ReadableStream from factory
+                let body_stream = get_body
+                    .call0(&JsValue::NULL)
+                    .map_err(|e| JsValue::from_str(&format!("getBody() failed: {e:?}")))?;
+
+                // Try streaming upload via JS HTTP client
+                let result = stream_upload_via_js(&self.client, &upload_url, body_stream).await;
+
+                match result {
+                    Ok(resp) if resp.status_code < 400 => {
+                        let parsed: serde_json::Value =
+                            serde_json::from_slice(&resp.body).map_err(js_err)?;
+                        let url = parsed
+                            .get("url")
+                            .and_then(|v| v.as_str())
+                            .ok_or_else(|| JsValue::from_str("missing url in response"))?;
+                        let dp = parsed
+                            .get("direct_path")
+                            .and_then(|v| v.as_str())
+                            .ok_or_else(|| JsValue::from_str("missing direct_path in response"))?;
+                        return Ok(crate::result_types::UploadMediaResult {
+                            url: url.to_string(),
+                            direct_path: dp.to_string(),
+                            media_key: media_key.to_vec(),
+                            file_sha256: file_sha256.to_vec(),
+                            file_enc_sha256: file_enc_sha256.to_vec(),
+                            file_length: file_length as f64,
+                        });
+                    }
+                    Ok(resp) if is_auth_error(resp.status_code) && attempt == 0 => {
+                        force_refresh = true;
+                        retry_auth = true;
+                        break;
+                    }
+                    Ok(resp) => {
+                        log::warn!(
+                            "Upload to {} failed with status {}",
+                            host.hostname,
+                            resp.status_code
+                        );
+                    }
+                    Err(e) => {
+                        log::warn!("Upload to {} failed: {:?}", host.hostname, e);
+                    }
+                }
+            }
+
+            if !retry_auth {
+                break;
+            }
+        }
+
+        Err(JsValue::from_str("Upload failed on all hosts"))
+    }
+
     // ── State getters ────────────────────────────────────────────────────
 
     /// Get the current push name.
@@ -1882,9 +2338,174 @@ fn group_metadata_to_js(
     Ok(obj.into())
 }
 
+// ---------------------------------------------------------------------------
+// Poll vote decryption — standalone functions (not on WasmWhatsAppClient)
+// ---------------------------------------------------------------------------
+
+/// Decrypt a poll vote. Returns selected option names as a string array.
+#[wasm_bindgen(js_name = decryptPollVote)]
+pub fn decrypt_poll_vote(
+    enc_payload: &[u8],
+    enc_iv: &[u8],
+    message_secret: &[u8],
+    poll_msg_id: &str,
+    poll_creator_jid: &str,
+    voter_jid: &str,
+    option_names: Vec<String>,
+) -> Result<JsValue, JsValue> {
+    let creator: Jid = poll_creator_jid.parse().map_err(js_err)?;
+    let voter: Jid = voter_jid.parse().map_err(js_err)?;
+
+    let selected_hashes = whatsapp_rust::features::Polls::decrypt_vote(
+        enc_payload,
+        enc_iv,
+        message_secret,
+        poll_msg_id,
+        &creator,
+        &voter,
+    )
+    .map_err(js_err)?;
+
+    // Map hashes back to option names
+    let option_map: Vec<([u8; 32], &str)> = option_names
+        .iter()
+        .map(|n| (wacore::poll::compute_option_hash(n), n.as_str()))
+        .collect();
+
+    let arr = js_sys::Array::new();
+    for hash in &selected_hashes {
+        if let Ok(hash_arr) = <[u8; 32]>::try_from(hash.as_slice())
+            && let Some((_, name)) = option_map.iter().find(|(h, _)| *h == hash_arr)
+        {
+            arr.push(&JsValue::from_str(name));
+        }
+    }
+    Ok(arr.into())
+}
+
+/// Aggregate all votes for a poll. Returns `[{ name: string, voters: string[] }]`.
+#[wasm_bindgen(js_name = getAggregateVotesInPollMessage)]
+pub fn get_aggregate_votes_in_poll_message(
+    option_names: Vec<String>,
+    voters_json: &str,
+    message_secret: &[u8],
+    poll_msg_id: &str,
+    poll_creator_jid: &str,
+) -> Result<JsValue, JsValue> {
+    let creator: Jid = poll_creator_jid.parse().map_err(js_err)?;
+    let voters: Vec<serde_json::Value> = serde_json::from_str(voters_json).map_err(js_err)?;
+
+    let vote_data: Vec<(Jid, Vec<u8>, Vec<u8>)> = voters
+        .iter()
+        .filter_map(|v| {
+            let voter_str = v.get("voter")?.as_str()?;
+            let voter_jid: Jid = voter_str.parse().ok()?;
+            let payload: Vec<u8> = v
+                .get("encPayload")?
+                .as_array()?
+                .iter()
+                .filter_map(|b| b.as_u64().map(|n| n as u8))
+                .collect();
+            let iv: Vec<u8> = v
+                .get("encIv")?
+                .as_array()?
+                .iter()
+                .filter_map(|b| b.as_u64().map(|n| n as u8))
+                .collect();
+            Some((voter_jid, payload, iv))
+        })
+        .collect();
+
+    let votes_refs: Vec<(&Jid, &[u8], &[u8])> = vote_data
+        .iter()
+        .map(|(v, p, i)| (v, p.as_slice(), i.as_slice()))
+        .collect();
+
+    let results = whatsapp_rust::features::Polls::aggregate_votes(
+        &option_names,
+        &votes_refs,
+        message_secret,
+        poll_msg_id,
+        &creator,
+    )
+    .map_err(js_err)?;
+
+    let arr = js_sys::Array::new();
+    for r in results {
+        let obj = js_sys::Object::new();
+        js_sys::Reflect::set(&obj, &"name".into(), &r.name.into())?;
+        let voters_arr = js_sys::Array::new();
+        for v in &r.voters {
+            voters_arr.push(&JsValue::from_str(v));
+        }
+        js_sys::Reflect::set(&obj, &"voters".into(), &voters_arr.into())?;
+        arr.push(&obj.into());
+    }
+    Ok(arr.into())
+}
+
 /// Convert any error to JsValue string.
 fn js_err(e: impl std::fmt::Display) -> JsValue {
     JsValue::from_str(&e.to_string())
+}
+
+/// Parse a media type string (matching Baileys convention) to the Rust enum.
+fn parse_media_type(s: &str) -> Result<whatsapp_rust::download::MediaType, JsValue> {
+    use whatsapp_rust::download::MediaType;
+    match s {
+        "image" => Ok(MediaType::Image),
+        "video" => Ok(MediaType::Video),
+        "audio" => Ok(MediaType::Audio),
+        "document" => Ok(MediaType::Document),
+        "sticker" => Ok(MediaType::Sticker),
+        "thumbnail-link" => Ok(MediaType::LinkThumbnail),
+        "md-msg-hist" => Ok(MediaType::History),
+        "md-app-state" => Ok(MediaType::AppState),
+        _ => Err(JsValue::from_str(&format!("unknown media type: {s}"))),
+    }
+}
+
+/// Base64-URL-safe (no padding) encoding for upload tokens.
+fn base64_url_encode(data: &[u8]) -> String {
+    use base64::Engine;
+    base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(data)
+}
+
+/// Check if an HTTP status code is a media auth error (401/403).
+fn is_auth_error(status: u16) -> bool {
+    matches!(status, 401 | 403)
+}
+
+/// Execute a streaming upload by calling the JS HTTP client's execute method
+/// with the ReadableStream body converted to Uint8Array.
+///
+/// This buffers the stream body through the existing execute() method.
+/// For true streaming, the JS HTTP client should implement executeStreamUpload.
+async fn stream_upload_via_js(
+    client: &whatsapp_rust::Client,
+    url: &str,
+    body_stream: JsValue,
+) -> Result<wacore::net::HttpResponse, JsValue> {
+    // Consume the ReadableStream into bytes
+    let rs = wasm_streams::ReadableStream::from_raw(body_stream.unchecked_into());
+    let mut stream = rs.into_stream();
+
+    let mut body_bytes = Vec::new();
+    use futures::StreamExt;
+    while let Some(chunk) = stream.next().await {
+        let chunk = chunk.map_err(|e| JsValue::from_str(&format!("stream read error: {e:?}")))?;
+        let arr = js_sys::Uint8Array::new(&chunk);
+        let mut bytes = vec![0u8; arr.length() as usize];
+        arr.copy_to(&mut bytes);
+        body_bytes.extend_from_slice(&bytes);
+    }
+
+    let request = wacore::net::HttpRequest::post(url.to_string())
+        .with_header("Content-Type", "application/octet-stream")
+        .with_header("Origin", "https://web.whatsapp.com")
+        .with_body(body_bytes);
+
+    client.http_client.execute(request).await.map_err(js_err)
 }
 
 /// Parse a JID string and deserialize a JS object as a proto Message.

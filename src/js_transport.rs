@@ -220,7 +220,7 @@ impl TransportFactory for JsTransportFactory {
         &self,
     ) -> Result<(Arc<dyn Transport>, Receiver<TransportEvent>), anyhow::Error> {
         log::debug!("JsTransportFactory::create_transport called");
-        let (event_tx, event_rx) = async_channel::bounded(256);
+        let (event_tx, event_rx) = async_channel::bounded(8192);
         let handle = create_js_handle(event_tx);
 
         log::debug!("Calling JS connect(handle)...");

@@ -29,16 +29,14 @@ wasm-opt = [
     "--strip-debug",
 ]
 
+[package.metadata.wasm-pack.profile.profiling]
+wasm-opt = false
+
 [lib]
 crate-type = ["cdylib", "rlib"]
 
 [features]
 default = []
-# Expose Signal protocol primitives (SessionCipher, GroupCipher, NoiseSession,
-# etc.) to JS. Only needed if JS handles sessions directly — when using
-# WasmWhatsAppClient, all Signal work is done internally in Rust.
-# Disabling saves ~3-4MB of WASM code.
-signal-js = []
 audio = ["dep:symphonia"]
 image = ["dep:image"]
 sticker = ["dep:img-parts"]
@@ -52,17 +50,10 @@ base64 = { version = "0.22.1", default-features = false, features = ["alloc"] }
 bytes = { version = "1.5", default-features = false }
 console_error_panic_hook = "0.1"
 console_log = { version = "1", features = ["color"] }
-curve25519-dalek = { version = "4.1.3", default-features = false, features = [
-  "alloc",
-  "digest",
-  "precomputed-tables",
-] }
 futures = { version = "0.3", default-features = false, features = ["alloc", "async-await"] }
 getrandom = { version = "0.4", features = ["wasm_js"] }
 # Ensure all getrandom usages (including via rand in whatsapp-rust) get wasm_js support
 # This doesn't modify whatsapp-rust — Cargo unifies features across the dependency graph
-hkdf = "0.12"
-hmac = "0.12"
 image = { version = "0.25.5", default-features = false, features = [
   "jpeg",
   "png",
@@ -72,38 +63,35 @@ image = { version = "0.25.5", default-features = false, features = [
 img-parts = { version = "0.4", default-features = false, optional = true }
 js-sys = "0.3"
 log = "0.4"
-md-5 = "0.10"
 prost = { version = "0.14.1", default-features = false }
-rand = { version = "0.10", default-features = false, features = ["std", "std_rng"] }
 serde = { version = "1.0.228", default-features = false, features = ["derive", "alloc"] }
 serde-wasm-bindgen = "0.6.5"
 serde_bytes = "0.11"
 serde_json = { version = "1.0", default-features = false, features = ["alloc"] }
-sha2 = "0.10"
-simd-adler32 = { version = "0.3.7", default-features = false, features = ["std"] }
 symphonia = { version = "0.5.4", default-features = false, features = [
   "mp3",
   "aac",
   "isomp4",
   "ogg",
 ], optional = true }
+talc = { version = "4.4", default-features = false, features = ["lock_api"] }
 tsify-next = { version = "0.5", default-features = false, features = ["js"] }
 uuid = { version = "1.18.1", default-features = false, features = ["v4", "js"] }
 
-wacore = { version = "0.4.0", features = ["js"] }
-wacore-appstate = "0.4.0"
-wacore-binary = { version = "0.4.0", features = ["serde"] }
-wacore-libsignal = "0.4.0"
-wacore-noise = "0.4.0"
-waproto = { version = "0.4.0", features = ["serde-deserialize"] }
+wacore = { path = "../whatsapp-rust/wacore", features = ["js"] }
+wacore-appstate = { path = "../whatsapp-rust/wacore/appstate" }
+wacore-binary = { path = "../whatsapp-rust/wacore/binary", features = ["serde"] }
+waproto = { path = "../whatsapp-rust/waproto", features = ["serde-deserialize"] }
 wasm-bindgen = "0.2.100"
 wasm-bindgen-futures = "0.4.55"
+wasm-streams = "0.5"
 web-sys = { version = "0.3", features = [
   "ReadableStream",
   "ReadableStreamDefaultReader",
+  "WritableStream",
   "Window",
 ] }
-whatsapp-rust = { version = "0.4.0", default-features = false }
+whatsapp-rust = { path = "../whatsapp-rust", default-features = false }
 
 [profile.release]
 lto = "fat"
@@ -118,6 +106,3 @@ inherits = "release"
 strip = false
 debug = 2
 lto = false
-
-[package.metadata.wasm-pack.profile.profiling]
-wasm-opt = false

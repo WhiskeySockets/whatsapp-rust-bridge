@@ -19,12 +19,10 @@ initSync({ module: bytes });
 export {
   encodeProto,
   decodeProto,
-  generateKeyPair,
-  calculateAgreement,
-  calculateSignature,
-  verifySignature,
-  md5,
-  hkdf,
+  getWasmMemoryBytes,
+  getEnabledFeatures,
+  decryptPollVote,
+  getAggregateVotesInPollMessage,
 } from "../pkg/whatsapp_rust_bridge.js";
 
 // initWasmEngine and createWhatsAppClient need explicit typing

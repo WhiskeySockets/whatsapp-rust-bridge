@@ -28,7 +28,7 @@ crate::wasm_send_sync!(WasmRuntime);
 /// a macrotask that runs in the NEXT event loop tick. This lets pending I/O
 /// (WebSocket data, storage callbacks) and other scheduled work run before
 /// the current task resumes.
-fn set_timeout_0() -> Pin<Box<dyn Future<Output = ()>>> {
+pub(crate) fn set_timeout_0() -> Pin<Box<dyn Future<Output = ()>>> {
     let promise = js_sys::Promise::new(&mut |resolve, _reject| {
         let global = js_sys::global();
         if let Ok(set_timeout) = js_sys::Reflect::get(&global, &"setTimeout".into())
@@ -76,12 +76,27 @@ impl Runtime for WasmRuntime {
     }
 
     fn spawn_blocking(&self, f: Box<dyn FnOnce() + 'static>) -> Pin<Box<dyn Future<Output = ()>>> {
+        // WASM is single-threaded: yield to event loop BEFORE running the
+        // blocking closure so pending I/O (WebSocket, storage) can complete.
+        // Then run the closure, then yield again to let results propagate.
         Box::pin(async move {
+            set_timeout_0().await; // yield before — let I/O callbacks run
             f();
+            set_timeout_0().await; // yield after — let event loop process results
         })
     }
 
     fn yield_now(&self) -> Option<Pin<Box<dyn Future<Output = ()>>>> {
+        // Always yield in WASM — the single-threaded event loop needs every
+        // opportunity to process pending I/O (WebSocket data, storage callbacks,
+        // timer callbacks). The caller already throttles (e.g., every 10 frames),
+        // but in WASM even that can be too infrequent during heavy offline processing.
         Some(set_timeout_0())
+    }
+
+    fn yield_frequency(&self) -> u32 {
+        // Yield every single frame in WASM. The default (10) is too infrequent
+        // for single-threaded execution — pending I/O starves between yields.
+        1
     }
 }

@@ -76,3 +76,39 @@ pub struct MediaConnResult {
     pub ttl: f64,
     pub hosts: Vec<MediaHost>,
 }
+
+/// Result from `uploadMedia`.
+#[derive(Serialize, Tsify)]
+#[tsify(into_wasm_abi)]
+#[serde(rename_all = "camelCase")]
+pub struct UploadMediaResult {
+    pub url: String,
+    pub direct_path: String,
+    #[tsify(type = "Uint8Array")]
+    #[serde(with = "serde_bytes")]
+    pub media_key: Vec<u8>,
+    #[tsify(type = "Uint8Array")]
+    #[serde(with = "serde_bytes")]
+    pub file_sha256: Vec<u8>,
+    #[tsify(type = "Uint8Array")]
+    #[serde(with = "serde_bytes")]
+    pub file_enc_sha256: Vec<u8>,
+    pub file_length: f64,
+}
+
+/// Result from `encryptMediaStream`.
+#[derive(Serialize, Tsify)]
+#[tsify(into_wasm_abi)]
+#[serde(rename_all = "camelCase")]
+pub struct EncryptMediaResult {
+    #[tsify(type = "Uint8Array")]
+    #[serde(with = "serde_bytes")]
+    pub media_key: Vec<u8>,
+    #[tsify(type = "Uint8Array")]
+    #[serde(with = "serde_bytes")]
+    pub file_sha256: Vec<u8>,
+    #[tsify(type = "Uint8Array")]
+    #[serde(with = "serde_bytes")]
+    pub file_enc_sha256: Vec<u8>,
+    pub file_length: f64,
+}

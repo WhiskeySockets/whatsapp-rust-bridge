@@ -296,6 +296,8 @@ export interface WasmWhatsAppClient {
   groupRevokeInvite(jid: string): Promise<string>;
   /** Join a group using an invite code. Returns group JID. */
   groupAcceptInvite(code: string): Promise<string | undefined>;
+  /** Join a group via a GroupInviteMessage (V4 invite). */
+  groupAcceptInviteV4(groupJid: string, code: string, expiration: number, adminJid: string): Promise<string | undefined>;
   /** Get group info from an invite code (without joining). */
   groupGetInviteInfo(code: string): Promise<GroupMetadataResult>;
   /** Get list of pending join requests for a group. */
@@ -363,6 +365,75 @@ export interface WasmWhatsAppClient {
   /** Get media connection info (auth token + upload hosts) for media upload/download. */
   getMediaConn(force: boolean): Promise<MediaConnResult>;
 
+  /**
+   * Download and decrypt media from raw parameters.
+   * Handles CDN failover, auth refresh, HMAC-SHA256 verification,
+   * and AES-256-CBC decryption internally.
+   * @param directPath Media direct path (e.g. "/v/t62.7118-24/...")
+   * @param mediaKey 32-byte media encryption key
+   * @param fileSha256 SHA-256 hash of the plaintext file
+   * @param fileEncSha256 SHA-256 hash of the encrypted file
+   * @param fileLength File length in bytes
+   * @param mediaType Media type: "image", "video", "audio", "document", "sticker", "thumbnail-link"
+   * @returns Decrypted media bytes
+   */
+  downloadMedia(
+    directPath: string,
+    mediaKey: Uint8Array,
+    fileSha256: Uint8Array,
+    fileEncSha256: Uint8Array,
+    fileLength: number,
+    mediaType: string,
+  ): Promise<Uint8Array>;
+
+  /**
+   * Download, decrypt, and return a Web ReadableStream of decrypted chunks.
+   * Same as downloadMedia but returns a stream. In Node.js, consume with
+   * `Readable.fromWeb(stream)` to get a Node.js Readable stream.
+   */
+  downloadMediaStream(
+    directPath: string,
+    mediaKey: Uint8Array,
+    fileSha256: Uint8Array,
+    fileEncSha256: Uint8Array,
+    fileLength: number,
+    mediaType: string,
+  ): ReadableStream<Uint8Array>;
+
+  // ── Upload ──
+
+  /**
+   * Upload media: encrypt in memory + upload with CDN failover and retry.
+   * Best for files < ~64MB. For larger files, use encryptMediaStream + uploadEncryptedMediaStream.
+   */
+  uploadMedia(data: Uint8Array, mediaType: string): Promise<UploadMediaResult>;
+
+  /**
+   * Streaming encrypt: read plaintext from input, encrypt with AES-256-CBC,
+   * write ciphertext + MAC to output. Constant ~40KB memory for crypto.
+   *
+   * Use for large files to avoid buffering the entire file in WASM memory.
+   */
+  encryptMediaStream(
+    input: ReadableStream<Uint8Array>,
+    output: WritableStream<Uint8Array>,
+    mediaType: string,
+  ): Promise<EncryptMediaResult>;
+
+  /**
+   * Upload pre-encrypted media with streaming body.
+   * getBody is called for each upload attempt (retry creates a fresh stream).
+   * Handles CDN failover, auth refresh, and resumable upload (≥5MB).
+   */
+  uploadEncryptedMediaStream(
+    getBody: () => ReadableStream<Uint8Array>,
+    mediaKey: Uint8Array,
+    fileSha256: Uint8Array,
+    fileEncSha256: Uint8Array,
+    fileLength: number,
+    mediaType: string,
+  ): Promise<UploadMediaResult>;
+
   // ── Version ──
 
   /** Override the WA Web version used for connection. */
@@ -427,6 +498,17 @@ export interface WasmWhatsAppClient {
   archiveChat(jid: string, archive: boolean): Promise<void>;
   /** Star or unstar a message. */
   starMessage(jid: string, messageId: string, star: boolean): Promise<void>;
+  /** Mark a chat as read/unread (syncs across devices via app state). */
+  markChatAsRead(jid: string, read: boolean): Promise<void>;
+  /** Delete a chat (syncs across devices via app state). */
+  deleteChat(jid: string): Promise<void>;
+  /** Delete a message for self (not for everyone). */
+  deleteMessageForMe(jid: string, messageId: string, fromMe: boolean): Promise<void>;
+
+  // ── Status/Stories ──
+
+  /** Send a status/story message to specified recipients. Returns message ID. */
+  sendStatusMessage(message: Record<string, unknown>, recipients: string[]): Promise<string>;
 
   // ── Presence ──
 
@@ -458,6 +540,24 @@ export interface MediaConnResult {
   ttl: number;
   hosts: Array<{ hostname: string; maxContentLengthBytes?: number }>;
   fetchDate: Date;
+}
+
+/** Result from uploadMedia / uploadEncryptedMediaStream. */
+export interface UploadMediaResult {
+  url: string;
+  directPath: string;
+  mediaKey: Uint8Array;
+  fileSha256: Uint8Array;
+  fileEncSha256: Uint8Array;
+  fileLength: number;
+}
+
+/** Result from encryptMediaStream. */
+export interface EncryptMediaResult {
+  mediaKey: Uint8Array;
+  fileSha256: Uint8Array;
+  fileEncSha256: Uint8Array;
+  fileLength: number;
 }
 
 /** Result from groupParticipantsUpdate (add/remove). */
@@ -590,36 +690,5 @@ export declare function decodeProto(typeName: string, data: Uint8Array): any;
 // Type-specific encode/decode removed — use encodeProto/decodeProto with a type name instead.
 // Example: encodeProto("Message", json) / decodeProto("Message", data)
 
-// ---------------------------------------------------------------------------
-// Low-level Signal protocol (for advanced use)
-// ---------------------------------------------------------------------------
-
-export { NoiseSession } from "../pkg/whatsapp_rust_bridge.js";
-export { SessionCipher } from "../pkg/whatsapp_rust_bridge.js";
-export { SessionBuilder } from "../pkg/whatsapp_rust_bridge.js";
-export { GroupCipher } from "../pkg/whatsapp_rust_bridge.js";
-export { GroupSessionBuilder } from "../pkg/whatsapp_rust_bridge.js";
-export { ProtocolAddress } from "../pkg/whatsapp_rust_bridge.js";
-export { SessionRecord } from "../pkg/whatsapp_rust_bridge.js";
-export { SenderKeyName } from "../pkg/whatsapp_rust_bridge.js";
-export { SenderKeyRecord } from "../pkg/whatsapp_rust_bridge.js";
-export { SenderKeyDistributionMessage } from "../pkg/whatsapp_rust_bridge.js";
-
-// Key generation
-export {
-  generateKeyPair,
-  calculateAgreement,
-  calculateSignature,
-  verifySignature,
-  generateSignedPreKey,
-  generatePreKey,
-  generateIdentityKeyPair,
-  generateRegistrationId,
-} from "../pkg/whatsapp_rust_bridge.js";
-
-// Binary encoding
-export { encodeNode, decodeNode } from "../pkg/whatsapp_rust_bridge.js";
-export { getWAConnHeader } from "../pkg/whatsapp_rust_bridge.js";
-
-// Crypto
-export { md5, hkdf } from "../pkg/whatsapp_rust_bridge.js";
+// Memory monitoring
+export { getWasmMemoryBytes } from "../pkg/whatsapp_rust_bridge.js";

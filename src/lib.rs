@@ -1,30 +1,7 @@
-// Signal protocol primitives exposed to JS — only needed if JS handles
-// sessions directly. When using WasmWhatsAppClient (which handles Signal
-// internally), these are dead code and excluded by default to reduce WASM size.
-#[cfg(feature = "signal-js")]
-pub mod appstate;
-#[cfg(feature = "signal-js")]
-pub mod binary;
-#[cfg(feature = "signal-js")]
-pub mod group_cipher;
-#[cfg(feature = "signal-js")]
-pub mod group_types;
-#[cfg(feature = "signal-js")]
-pub mod key_helper;
-#[cfg(feature = "signal-js")]
-pub mod noise_session;
-#[cfg(feature = "signal-js")]
-pub mod protocol_address;
-#[cfg(feature = "signal-js")]
-pub mod sender_key_name;
-#[cfg(feature = "signal-js")]
-pub mod session_builder;
-#[cfg(feature = "signal-js")]
-pub mod session_cipher;
-#[cfg(feature = "signal-js")]
-pub mod session_record;
-#[cfg(feature = "signal-js")]
-pub mod storage_adapter;
+// Talc allocator — ~2x faster than dlmalloc (default), ~63% smaller binary overhead.
+// Dynamic mode with grow-in-place for reduced fragmentation in long-running clients.
+#[global_allocator]
+static ALLOCATOR: talc::TalckWasm = unsafe { talc::TalckWasm::new_global() };
 
 #[cfg(feature = "audio")]
 pub mod audio;
@@ -34,8 +11,6 @@ pub mod image_utils;
 pub mod sticker_metadata;
 
 pub mod camel_serializer;
-pub mod crypto;
-pub mod curve;
 pub mod js_backend;
 pub mod js_cache_store;
 pub mod js_http;
@@ -63,20 +38,6 @@ use serde::Serialize;
 use tsify_next::Tsify;
 use wasm_bindgen::prelude::*;
 
-#[cfg(feature = "signal-js")]
-use js_sys::Uint8Array;
-
-/// Returns the WhatsApp connection header (WA_CONN_HEADER).
-/// This is the 4-byte header sent at the start of a WebSocket connection.
-/// Only needed when JS handles the noise handshake directly.
-#[cfg(feature = "signal-js")]
-#[wasm_bindgen(js_name = getWAConnHeader)]
-pub fn get_wa_conn_header() -> Uint8Array {
-    let result = Uint8Array::new_with_length(4);
-    result.copy_from(&wacore_binary::consts::WA_CONN_HEADER);
-    result
-}
-
 /// Enabled features in this build.
 /// Use this to check feature availability at runtime before calling feature-gated functions.
 #[derive(Debug, Clone, Serialize, Tsify)]
@@ -99,4 +60,17 @@ pub fn get_enabled_features() -> EnabledFeatures {
         image: cfg!(feature = "image"),
         sticker: cfg!(feature = "sticker"),
     }
+}
+
+/// Returns current WASM linear memory usage in bytes.
+///
+/// This is the total memory reserved by the WASM instance (pages × 64KB).
+/// Useful for monitoring memory pressure during media operations.
+///
+/// Note: this includes free space managed by the allocator — it's the
+/// total memory footprint, not the amount currently in use.
+#[wasm_bindgen(js_name = getWasmMemoryBytes)]
+pub fn get_wasm_memory_bytes() -> f64 {
+    let pages = core::arch::wasm32::memory_size::<0>();
+    (pages * 65536) as f64
 }

@@ -863,20 +863,19 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "32a66949e030da00e8c7d4434b251670a91556f4144941d37452769c25d58a53"
 
 [[package]]
+name = "lock_api"
+version = "0.4.14"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "224399e74b87b5f3557511d98dff8b14089b3dadafcab6bb93eab67d3aace965"
+dependencies = [
+ "scopeguard",
+]
+
+[[package]]
 name = "log"
 version = "0.4.29"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "5e5032e24019045c762d3c0f28f5b6b8bbf38563a65908389bf7978758920897"
-
-[[package]]
-name = "md-5"
-version = "0.10.6"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "d89e7ee0cfbedfc4da3340218492196241d89eefb6dab27de5df917a6d2e78cf"
-dependencies = [
- "cfg-if",
- "digest",
-]
 
 [[package]]
 name = "md5"
@@ -1477,6 +1476,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "talc"
+version = "4.4.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "a3ae828aa394de34c7de08f522d1b86bd1c182c668d27da69caadda00590f26d"
+dependencies = [
+ "lock_api",
+]
+
+[[package]]
 name = "tempfile"
 version = "3.27.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1610,9 +1618,7 @@ checksum = "0b928f33d975fc6ad9f86c8f283853ad26bdd5b10b7f1542aa2fa15e2289105a"
 
 [[package]]
 name = "wacore"
-version = "0.4.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "cf430d0f1d92ae529f9e065ba941a1e9a86cbfe27fa3c0b9491dd4ca5afcd420"
+version = "0.4.1"
 dependencies = [
  "aes",
  "aes-gcm",
@@ -1654,9 +1660,7 @@ dependencies = [
 
 [[package]]
 name = "wacore-appstate"
-version = "0.4.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "4ef7af9eba17b63703791fbbb26dd6a44c65963cb97b92158043aadb9a35d15a"
+version = "0.4.1"
 dependencies = [
  "anyhow",
  "bytemuck",
@@ -1676,9 +1680,7 @@ dependencies = [
 
 [[package]]
 name = "wacore-binary"
-version = "0.4.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "f2430dd5152773d05211de0f5ab6b1ef993a82bceafcf8ba03497cc3f305683c"
+version = "0.4.1"
 dependencies = [
  "flate2",
  "phf",
@@ -1689,9 +1691,7 @@ dependencies = [
 
 [[package]]
 name = "wacore-derive"
-version = "0.4.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "d7e38ae4c8526ad79a32f15c5e58c013e8c065ee4647f40eaaf1f93b8deac4b9"
+version = "0.4.1"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -1700,9 +1700,7 @@ dependencies = [
 
 [[package]]
 name = "wacore-libsignal"
-version = "0.4.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "75cff0ce27cda9251ea2218cb4ea178da0b517ba0e9f7991584990386cf3ae01"
+version = "0.4.1"
 dependencies = [
  "aes",
  "aes-gcm",
@@ -1718,7 +1716,6 @@ dependencies = [
  "hex",
  "hkdf",
  "hmac",
- "itertools",
  "log",
  "prost",
  "rand",
@@ -1734,9 +1731,7 @@ dependencies = [
 
 [[package]]
 name = "wacore-noise"
-version = "0.4.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "5625a930d3535a8a007612e1bc9338ee6225a362bf953b6ba012ed7370733deb"
+version = "0.4.1"
 dependencies = [
  "aes-gcm",
  "anyhow",
@@ -1754,9 +1749,7 @@ dependencies = [
 
 [[package]]
 name = "waproto"
-version = "0.4.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "6e0cd2e8d9883065fda9cc52453c812a07be4dcae68fda3329f5e4b8d780ae15"
+version = "0.4.1"
 dependencies = [
  "prost",
  "prost-build",
@@ -1863,6 +1856,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "wasm-streams"
+version = "0.5.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "9d1ec4f6517c9e11ae630e200b2b65d193279042e28edd4a2cda233e46670bbb"
+dependencies = [
+ "futures-util",
+ "js-sys",
+ "wasm-bindgen",
+ "wasm-bindgen-futures",
+ "web-sys",
+]
+
+[[package]]
 name = "wasmparser"
 version = "0.244.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1886,9 +1892,7 @@ dependencies = [
 
 [[package]]
 name = "whatsapp-rust"
-version = "0.4.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "bd7e152808b0251a047bf10e580a2305d40a8139adfc38e7812a2c3a11685e22"
+version = "0.4.1"
 dependencies = [
  "anyhow",
  "async-channel",
@@ -1925,35 +1929,28 @@ dependencies = [
  "bytes",
  "console_error_panic_hook",
  "console_log",
- "curve25519-dalek",
  "futures",
  "getrandom",
- "hkdf",
- "hmac",
  "image",
  "img-parts",
  "js-sys",
  "log",
- "md-5",
  "prost",
- "rand",
  "serde",
  "serde-wasm-bindgen",
  "serde_bytes",
  "serde_json",
- "sha2",
- "simd-adler32",
  "symphonia",
+ "talc",
  "tsify-next",
  "uuid",
  "wacore",
  "wacore-appstate",
  "wacore-binary",
- "wacore-libsignal",
- "wacore-noise",
  "waproto",
  "wasm-bindgen",
  "wasm-bindgen-futures",
+ "wasm-streams",
  "web-sys",
  "whatsapp-rust",
 ]
