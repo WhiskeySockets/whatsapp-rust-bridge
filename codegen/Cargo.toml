@@ -9,7 +9,7 @@ name = "gen-types"
 path = "src/main.rs"
 
 [dependencies]
-syn = { version = "2", features = ["full", "parsing", "visit"] }
-quote = "1"
 proc-macro2 = "1"
+quote = "1"
+syn = { version = "2", features = ["full", "parsing", "visit"] }
 walkdir = "2"

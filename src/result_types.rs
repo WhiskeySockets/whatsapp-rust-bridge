@@ -3,7 +3,7 @@
 //! Using `#[derive(Tsify, Serialize)]` auto-generates TypeScript types
 //! and eliminates manual `js_sys::Object` construction + `skip_typescript`.
 
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use tsify_next::Tsify;
 
 /// Result from `updateProfilePicture` or `removeProfilePicture`.
@@ -111,4 +111,29 @@ pub struct EncryptMediaResult {
     #[serde(with = "serde_bytes")]
     pub file_enc_sha256: Vec<u8>,
     pub file_length: f64,
+}
+
+/// A single voter entry for `getAggregateVotesInPollMessage`.
+#[derive(Deserialize, Tsify)]
+#[tsify(from_wasm_abi)]
+#[serde(rename_all = "camelCase")]
+pub struct PollVoterEntry {
+    pub voter: String,
+    #[tsify(type = "Uint8Array")]
+    #[serde(with = "serde_bytes")]
+    pub enc_payload: Vec<u8>,
+    #[tsify(type = "Uint8Array")]
+    #[serde(with = "serde_bytes")]
+    pub enc_iv: Vec<u8>,
+}
+
+/// A message key for `readMessages`.
+#[derive(Deserialize, Tsify)]
+#[tsify(from_wasm_abi)]
+#[serde(rename_all = "camelCase")]
+pub struct ReadMessageKey {
+    pub remote_jid: String,
+    pub id: String,
+    #[tsify(optional)]
+    pub participant: Option<String>,
 }

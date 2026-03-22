@@ -34,6 +34,23 @@ export type BlocklistAction = "block" | "unblock";
 
 export type BotEditType = "first" | "inner" | "last";
 
+export interface BusinessCategory {
+  id: string;
+  name: string;
+}
+
+export interface BusinessHours {
+  timezone?: string | null;
+  business_config?: BusinessHoursConfig[] | null;
+}
+
+export interface BusinessHoursConfig {
+  day_of_week: string;
+  mode: string;
+  open_time?: string | null;
+  close_time?: string | null;
+}
+
 /** Parsed `<notification type="business">` stanza. */
 export interface BusinessNotification {
   from: Jid;
@@ -50,6 +67,16 @@ export interface BusinessNotification {
 
 /** Business notification type based on child element. */
 export type BusinessNotificationType = "remove_jid" | "remove_hash" | "verified_name_jid" | "verified_name_hash" | "profile" | "profile_hash" | "product" | "collection" | "subscriptions" | "unknown";
+
+export interface BusinessProfile {
+  wid?: Jid | null;
+  description: string;
+  email?: string | null;
+  website: string[];
+  categories: BusinessCategory[];
+  address?: string | null;
+  business_hours: BusinessHours;
+}
 
 /** Business status update notification. */
 export interface BusinessStatusUpdate {
@@ -149,6 +176,25 @@ export interface ContactUpdated {
 }
 
 export type DecryptFailMode = "show" | "hide";
+
+export interface DeleteChatUpdate {
+  jid: Jid;
+  /** From the index, not the proto — DeleteChatAction only has messageRange. */
+  delete_media: boolean;
+  timestamp: number;
+  action: DeleteChatAction;
+  from_full_sync: boolean;
+}
+
+export interface DeleteMessageForMeUpdate {
+  chat_jid: Jid;
+  participant_jid?: Jid | null;
+  message_id: string;
+  from_me: boolean;
+  timestamp: number;
+  action: DeleteMessageForMeAction;
+  from_full_sync: boolean;
+}
 
 export interface Device {
   pn?: Jid | null;
@@ -312,6 +358,8 @@ export type Event =
   | { type: "archive_update"; data: ArchiveUpdate }
   | { type: "star_update"; data: StarUpdate }
   | { type: "mark_chat_as_read_update"; data: MarkChatAsReadUpdate }
+  | { type: "delete_chat_update"; data: DeleteChatUpdate }
+  | { type: "delete_message_for_me_update"; data: DeleteMessageForMeUpdate }
   | { type: "history_sync"; data: HistorySync }
   | { type: "offline_sync_preview"; data: OfflineSyncPreview }
   | { type: "offline_sync_completed"; data: OfflineSyncCompleted }
@@ -442,6 +490,11 @@ export type MemberLinkMode = "admin_link" | "all_member_link";
 
 /** Membership approval mode for join requests. */
 export type MembershipApprovalMode = "off" | "on";
+
+export interface MembershipRequest {
+  jid: Jid;
+  request_time?: number | null;
+}
 
 export interface MessageInfo {
   source: MessageSource;

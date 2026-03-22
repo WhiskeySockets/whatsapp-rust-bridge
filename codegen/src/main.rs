@@ -10,9 +10,55 @@ use std::path::{Path, PathBuf};
 use syn::{Attribute, Fields, GenericArgument, Item, PathArguments, Type, TypePath};
 use walkdir::WalkDir;
 
+/// Find whatsapp-rust source dir from Cargo's git cache by parsing Cargo.lock.
+/// Falls back to `../../whatsapp-rust/` for local development.
+fn find_whatsapp_rust_root() -> PathBuf {
+    // Try to find it in Cargo's git checkout cache
+    let lock_path = Path::new("../Cargo.lock");
+    if let Ok(lock_content) = std::fs::read_to_string(lock_path) {
+        // Find commit hash from: source = "git+https://...whatsapp-rust?...#<hash>"
+        for line in lock_content.lines() {
+            if line.contains("whatsapp-rust")
+                && line.contains("#")
+                && let Some(hash_start) = line.rfind('#')
+            {
+                let full_hash = line[hash_start + 1..].trim_end_matches('"');
+                // Cargo checkouts use first 7 chars of the commit hash as dir name
+                let short_hash = &full_hash[..7];
+
+                // Search for the checkout dir in ~/.cargo/git/checkouts/
+                let cargo_home = std::env::var("CARGO_HOME").unwrap_or_else(|_| {
+                    let home = std::env::var("HOME").expect("HOME not set");
+                    format!("{}/.cargo", home)
+                });
+                let checkouts = PathBuf::from(&cargo_home).join("git/checkouts");
+
+                if let Ok(entries) = std::fs::read_dir(&checkouts) {
+                    for entry in entries.flatten() {
+                        let name = entry.file_name();
+                        if name.to_string_lossy().starts_with("whatsapp-rust-") {
+                            let candidate = entry.path().join(short_hash);
+                            if candidate.exists() {
+                                eprintln!("Using Cargo git cache: {}", candidate.display());
+                                return candidate;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    // Fallback to local clone
+    let fallback = PathBuf::from("../../whatsapp-rust");
+    eprintln!("Using local path: {}", fallback.display());
+    fallback
+}
+
 fn main() {
-    let wacore_dir = Path::new("../../whatsapp-rust/wacore/src");
-    let src_dir = Path::new("../../whatsapp-rust/src");
+    let root = find_whatsapp_rust_root();
+    let wacore_dir = root.join("wacore/src");
+    let src_dir = root.join("src");
 
     let mut all_types = BTreeMap::new();
 
@@ -96,8 +142,8 @@ struct TsField {
 #[derive(Debug)]
 enum TsEnumVariant {
     Unit(String),
-    Tuple(String, String),          // name, inner_type
-    Struct(String, Vec<TsField>),   // name, fields
+    Tuple(String, String),        // name, inner_type
+    Struct(String, Vec<TsField>), // name, fields
 }
 
 impl TsTypeDef {
@@ -116,7 +162,7 @@ impl TsTypeDef {
                     let opt = if f.optional { "?" } else { "" };
                     out.push_str(&format!("  {}{}: {};\n", f.name, opt, f.ts_type));
                 }
-                out.push_str("}");
+                out.push('}');
                 out
             }
             TsTypeDef::Enum { variants, doc } => {
@@ -145,11 +191,7 @@ impl TsTypeDef {
                                     format!("{}{}: {}", f.name, opt, f.ts_type)
                                 })
                                 .collect();
-                            format!(
-                                "  | {{ type: \"{}\"; {} }}",
-                                snake,
-                                fs.join("; ")
-                            )
+                            format!("  | {{ type: \"{}\"; {} }}", snake, fs.join("; "))
                         }
                     })
                     .collect();
@@ -162,10 +204,8 @@ impl TsTypeDef {
                 if let Some(d) = doc {
                     out.push_str(&format!("/** {} */\n", d.trim()));
                 }
-                let parts: Vec<String> = variants
-                    .iter()
-                    .map(|(_, v)| format!("\"{}\"", v))
-                    .collect();
+                let parts: Vec<String> =
+                    variants.iter().map(|(_, v)| format!("\"{}\"", v)).collect();
                 out.push_str(&format!("export type {} = {};", name, parts.join(" | ")));
                 out
             }
@@ -193,7 +233,8 @@ fn parse_file(path: &Path, types: &mut BTreeMap<String, TsTypeDef>) {
                             .iter()
                             .filter(|f| is_pub(&f.vis))
                             .map(|f| {
-                                let field_name = f.ident.as_ref().unwrap().to_string().replace("r#", "");
+                                let field_name =
+                                    f.ident.as_ref().unwrap().to_string().replace("r#", "");
                                 let (ts_type, optional) = rust_type_to_ts(&f.ty);
                                 let serde_name = get_serde_rename(f);
                                 TsField {
@@ -224,15 +265,12 @@ fn parse_file(path: &Path, types: &mut BTreeMap<String, TsTypeDef>) {
                         .iter()
                         .map(|v| {
                             let name = v.ident.to_string();
-                            let value = get_str_attr(&v.attrs)
-                                .unwrap_or_else(|| to_snake_case(&name));
+                            let value =
+                                get_str_attr(&v.attrs).unwrap_or_else(|| to_snake_case(&name));
                             (name, value)
                         })
                         .collect();
-                    types.insert(
-                        e.ident.to_string(),
-                        TsTypeDef::StringEnum { variants, doc },
-                    );
+                    types.insert(e.ident.to_string(), TsTypeDef::StringEnum { variants, doc });
                     continue;
                 }
 
@@ -337,12 +375,11 @@ fn extract_doc(attrs: &[Attribute]) -> Option<String> {
         .iter()
         .filter(|a| a.path().is_ident("doc"))
         .filter_map(|a| {
-            if let syn::Meta::NameValue(nv) = &a.meta {
-                if let syn::Expr::Lit(lit) = &nv.value {
-                    if let syn::Lit::Str(s) = &lit.lit {
-                        return Some(s.value().trim().to_string());
-                    }
-                }
+            if let syn::Meta::NameValue(nv) = &a.meta
+                && let syn::Expr::Lit(lit) = &nv.value
+                && let syn::Lit::Str(s) = &lit.lit
+            {
+                return Some(s.value().trim().to_string());
             }
             None
         })
@@ -430,35 +467,35 @@ fn rust_type_to_ts(ty: &Type) -> (String, bool) {
 
                 // Option<T> → T | null (optional field)
                 "Option" => {
-                    if let PathArguments::AngleBracketed(args) = &last.arguments {
-                        if let Some(GenericArgument::Type(inner)) = args.args.first() {
-                            let (inner_ts, _) = rust_type_to_ts(inner);
-                            return (format!("{} | null", inner_ts), true);
-                        }
+                    if let PathArguments::AngleBracketed(args) = &last.arguments
+                        && let Some(GenericArgument::Type(inner)) = args.args.first()
+                    {
+                        let (inner_ts, _) = rust_type_to_ts(inner);
+                        return (format!("{} | null", inner_ts), true);
                     }
                     ("any".to_string(), true)
                 }
 
                 // Vec<u8> → Uint8Array, Vec<T> → T[]
                 "Vec" => {
-                    if let PathArguments::AngleBracketed(args) = &last.arguments {
-                        if let Some(GenericArgument::Type(inner)) = args.args.first() {
-                            if is_u8(inner) {
-                                return ("Uint8Array".to_string(), false);
-                            }
-                            let (inner_ts, _) = rust_type_to_ts(inner);
-                            return (format!("{}[]", inner_ts), false);
+                    if let PathArguments::AngleBracketed(args) = &last.arguments
+                        && let Some(GenericArgument::Type(inner)) = args.args.first()
+                    {
+                        if is_u8(inner) {
+                            return ("Uint8Array".to_string(), false);
                         }
+                        let (inner_ts, _) = rust_type_to_ts(inner);
+                        return (format!("{}[]", inner_ts), false);
                     }
                     ("any[]".to_string(), false)
                 }
 
                 // Box<T>, Arc<T>, Rc<T> → unwrap inner
                 "Box" | "Arc" | "Rc" => {
-                    if let PathArguments::AngleBracketed(args) = &last.arguments {
-                        if let Some(GenericArgument::Type(inner)) = args.args.first() {
-                            return rust_type_to_ts(inner);
-                        }
+                    if let PathArguments::AngleBracketed(args) = &last.arguments
+                        && let Some(GenericArgument::Type(inner)) = args.args.first()
+                    {
+                        return rust_type_to_ts(inner);
                     }
                     ("any".to_string(), false)
                 }
@@ -467,10 +504,8 @@ fn rust_type_to_ts(ty: &Type) -> (String, bool) {
                 "HashMap" | "BTreeMap" => {
                     if let PathArguments::AngleBracketed(args) = &last.arguments {
                         let mut iter = args.args.iter();
-                        if let (
-                            Some(GenericArgument::Type(k)),
-                            Some(GenericArgument::Type(v)),
-                        ) = (iter.next(), iter.next())
+                        if let (Some(GenericArgument::Type(k)), Some(GenericArgument::Type(v))) =
+                            (iter.next(), iter.next())
                         {
                             let (kt, _) = rust_type_to_ts(k);
                             let (vt, _) = rust_type_to_ts(v);
@@ -527,24 +562,6 @@ fn path_contains_wa(path: &syn::Path) -> bool {
     path.segments
         .iter()
         .any(|s| s.ident == "wa" || s.ident == "waproto")
-}
-
-fn to_camel_case(s: &str) -> String {
-    let mut result = String::with_capacity(s.len());
-    let mut capitalize_next = false;
-    for (i, c) in s.chars().enumerate() {
-        if c == '_' {
-            capitalize_next = true;
-        } else if capitalize_next {
-            result.push(c.to_ascii_uppercase());
-            capitalize_next = false;
-        } else if i == 0 {
-            result.push(c);
-        } else {
-            result.push(c);
-        }
-    }
-    result
 }
 
 fn to_snake_case(s: &str) -> String {

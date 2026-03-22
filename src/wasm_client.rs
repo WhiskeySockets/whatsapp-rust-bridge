@@ -51,6 +51,8 @@ export type WhatsAppEvent =
   | { type: 'archive_update'; data: ArchiveUpdate }
   | { type: 'star_update'; data: StarUpdate }
   | { type: 'mark_chat_as_read_update'; data: MarkChatAsReadUpdate }
+  | { type: 'delete_chat_update'; data: DeleteChatUpdate }
+  | { type: 'delete_message_for_me_update'; data: DeleteMessageForMeUpdate }
   | { type: 'history_sync'; data: Record<string, unknown> }
   | { type: 'offline_sync_preview'; data: OfflineSyncPreview }
   | { type: 'offline_sync_completed'; data: OfflineSyncCompleted }
@@ -186,6 +188,8 @@ fn event_to_js(event: &Event) -> Result<JsValue, JsValue> {
         ArchiveUpdate           => "archive_update",
         StarUpdate              => "star_update",
         MarkChatAsReadUpdate    => "mark_chat_as_read_update",
+        DeleteChatUpdate        => "delete_chat_update",
+        DeleteMessageForMeUpdate => "delete_message_for_me_update",
         HistorySync             => "history_sync",
         OfflineSyncPreview      => "offline_sync_preview",
         OfflineSyncCompleted    => "offline_sync_completed",
@@ -946,10 +950,10 @@ impl WasmWhatsAppClient {
             .map_err(js_err)?;
 
         Ok(result.map(|pic| crate::result_types::ProfilePictureInfo {
-            id: pic.id.clone(),
-            url: pic.url.clone(),
-            direct_path: pic.direct_path.clone(),
-            hash: pic.hash.clone(),
+            id: pic.id,
+            url: pic.url,
+            direct_path: pic.direct_path,
+            hash: pic.hash,
         }))
     }
 
@@ -1013,9 +1017,7 @@ impl WasmWhatsAppClient {
             .await
             .map_err(js_err)?;
 
-        Ok(crate::result_types::ProfilePictureResult {
-            id: result.id.clone(),
-        })
+        Ok(crate::result_types::ProfilePictureResult { id: result.id })
     }
 
     /// Remove the profile picture for the logged-in user.
@@ -1030,9 +1032,7 @@ impl WasmWhatsAppClient {
             .await
             .map_err(js_err)?;
 
-        Ok(crate::result_types::ProfilePictureResult {
-            id: result.id.clone(),
-        })
+        Ok(crate::result_types::ProfilePictureResult { id: result.id })
     }
 
     /// Update the user's status text (about).
@@ -1291,33 +1291,19 @@ impl WasmWhatsAppClient {
     // ── Read receipts ─────────────────────────────────────────────────
 
     /// Mark messages as read by sending read receipts.
-    ///
-    /// `keys` is an array of `{ remoteJid, id, participant? }` objects.
     #[wasm_bindgen(js_name = readMessages)]
-    pub async fn read_messages(&self, keys: JsValue) -> Result<(), JsValue> {
-        let arr = js_sys::Array::from(&keys);
-
+    pub async fn read_messages(
+        &self,
+        keys: Vec<crate::result_types::ReadMessageKey>,
+    ) -> Result<(), JsValue> {
         use std::collections::HashMap;
         let mut grouped: HashMap<(String, Option<String>), Vec<String>> = HashMap::new();
 
-        for i in 0..arr.length() {
-            let key = arr.get(i);
-            let remote_jid = js_sys::Reflect::get(&key, &"remoteJid".into())
-                .ok()
-                .and_then(|v| v.as_string())
-                .ok_or_else(|| JsValue::from_str("key.remoteJid is required"))?;
-            let id = js_sys::Reflect::get(&key, &"id".into())
-                .ok()
-                .and_then(|v| v.as_string())
-                .ok_or_else(|| JsValue::from_str("key.id is required"))?;
-            let participant = js_sys::Reflect::get(&key, &"participant".into())
-                .ok()
-                .and_then(|v| v.as_string());
-
+        for key in keys {
             grouped
-                .entry((remote_jid, participant))
+                .entry((key.remote_jid, key.participant))
                 .or_default()
-                .push(id);
+                .push(key.id);
         }
 
         for ((chat_jid_str, participant_str), ids) in grouped {
@@ -1886,7 +1872,6 @@ impl WasmWhatsAppClient {
         })
     }
 
-    /// Streaming encrypt: read plaintext from input stream, encrypt with
     /// True streaming encrypt via `MediaEncryptor`: processes plaintext chunk-by-chunk
     /// from JS ReadableStream, encrypts with AES-256-CBC, writes ciphertext to JS WritableStream.
     ///
@@ -2318,34 +2303,20 @@ pub fn decrypt_poll_vote(
 #[wasm_bindgen(js_name = getAggregateVotesInPollMessage)]
 pub fn get_aggregate_votes_in_poll_message(
     option_names: Vec<String>,
-    voters_json: &str,
+    voters: Vec<crate::result_types::PollVoterEntry>,
     message_secret: &[u8],
     poll_msg_id: &str,
     poll_creator_jid: &str,
 ) -> Result<JsValue, JsValue> {
     let creator = parse_jid(poll_creator_jid)?;
-    let voters: Vec<serde_json::Value> = serde_json::from_str(voters_json).map_err(js_err)?;
 
     let vote_data: Vec<(Jid, Vec<u8>, Vec<u8>)> = voters
-        .iter()
-        .filter_map(|v| {
-            let voter_str = v.get("voter")?.as_str()?;
-            let voter_jid: Jid = voter_str.parse().ok()?;
-            let payload: Vec<u8> = v
-                .get("encPayload")?
-                .as_array()?
-                .iter()
-                .filter_map(|b| b.as_u64().map(|n| n as u8))
-                .collect();
-            let iv: Vec<u8> = v
-                .get("encIv")?
-                .as_array()?
-                .iter()
-                .filter_map(|b| b.as_u64().map(|n| n as u8))
-                .collect();
-            Some((voter_jid, payload, iv))
+        .into_iter()
+        .map(|v| {
+            let jid: Jid = v.voter.parse().map_err(js_err)?;
+            Ok((jid, v.enc_payload, v.enc_iv))
         })
-        .collect();
+        .collect::<Result<_, JsValue>>()?;
 
     let votes_refs: Vec<(&Jid, &[u8], &[u8])> = vote_data
         .iter()
@@ -2412,28 +2383,26 @@ fn is_auth_error(status: u16) -> bool {
     matches!(status, 401 | 403)
 }
 
-/// Execute a streaming upload by calling the JS HTTP client's execute method
-/// with the ReadableStream body converted to Uint8Array.
+/// Consume a JS ReadableStream and upload via the HTTP client.
 ///
-/// This buffers the stream body through the existing execute() method.
-/// For true streaming, the JS HTTP client should implement executeStreamUpload.
+/// Buffers the stream into memory because `HttpClient::execute` takes `Vec<u8>`.
 async fn stream_upload_via_js(
     client: &whatsapp_rust::Client,
     url: &str,
     body_stream: JsValue,
 ) -> Result<wacore::net::HttpResponse, JsValue> {
-    // Consume the ReadableStream into bytes
+    use futures::StreamExt;
+
     let rs = wasm_streams::ReadableStream::from_raw(body_stream.unchecked_into());
     let mut stream = rs.into_stream();
 
     let mut body_bytes = Vec::new();
-    use futures::StreamExt;
     while let Some(chunk) = stream.next().await {
         let chunk = chunk.map_err(|e| JsValue::from_str(&format!("stream read error: {e:?}")))?;
         let arr = js_sys::Uint8Array::new(&chunk);
-        let mut bytes = vec![0u8; arr.length() as usize];
-        arr.copy_to(&mut bytes);
-        body_bytes.extend_from_slice(&bytes);
+        let start = body_bytes.len();
+        body_bytes.resize(start + arr.length() as usize, 0);
+        arr.copy_to(&mut body_bytes[start..]);
     }
 
     let request = wacore::net::HttpRequest::post(url.to_string())
@@ -2571,28 +2540,24 @@ fn build_cache_config(js: Option<&JsValue>) -> Result<whatsapp_rust::CacheConfig
         "group",
         &mut config.group_cache,
         &mut config.cache_stores.group_cache,
-        &global_store,
     )?;
     apply_cache_entry(
         js,
         "device",
         &mut config.device_cache,
         &mut config.cache_stores.device_cache,
-        &global_store,
     )?;
     apply_cache_entry(
         js,
         "deviceRegistry",
         &mut config.device_registry_cache,
         &mut config.cache_stores.device_registry_cache,
-        &global_store,
     )?;
     apply_cache_entry(
         js,
         "lidPn",
         &mut config.lid_pn_cache,
         &mut config.cache_stores.lid_pn_cache,
-        &global_store,
     )?;
     apply_cache_entry_simple(
         js,
@@ -2611,7 +2576,6 @@ fn apply_cache_entry(
     key: &str,
     entry: &mut whatsapp_rust::CacheEntryConfig,
     store_slot: &mut Option<std::sync::Arc<dyn whatsapp_rust::CacheStore>>,
-    _global_store: &Option<std::sync::Arc<dyn whatsapp_rust::CacheStore>>,
 ) -> Result<(), JsValue> {
     use crate::js_cache_store::JsCacheStoreAdapter;
     use std::sync::Arc;

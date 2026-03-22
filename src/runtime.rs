@@ -67,14 +67,12 @@ impl Runtime for WasmRuntime {
     fn sleep(&self, duration: Duration) -> Pin<Box<dyn Future<Output = ()>>> {
         let ms = duration.as_millis().min(i32::MAX as u128) as i32;
         let promise = js_sys::Promise::new(&mut |resolve, _reject| {
-            let global = js_sys::global();
-            if let Ok(set_timeout) = js_sys::Reflect::get(&global, &"setTimeout".into())
-                && let Ok(set_timeout_fn) = set_timeout.dyn_into::<js_sys::Function>()
-            {
+            let st = get_set_timeout();
+            if let Ok(set_timeout_fn) = st.clone().dyn_into::<js_sys::Function>() {
                 let _ = set_timeout_fn.call2(&JsValue::NULL, &resolve, &JsValue::from(ms));
-                return;
+            } else {
+                let _ = resolve.call0(&JsValue::NULL);
             }
-            let _ = resolve.call0(&JsValue::NULL);
         });
         let js_future = wasm_bindgen_futures::JsFuture::from(promise);
         Box::pin(async move {
