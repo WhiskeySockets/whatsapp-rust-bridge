@@ -1887,10 +1887,10 @@ impl WasmWhatsAppClient {
     }
 
     /// Streaming encrypt: read plaintext from input stream, encrypt with
-    /// AES-256-CBC, write ciphertext + MAC to output stream. Constant ~40KB memory.
+    /// True streaming encrypt via `MediaEncryptor`: processes plaintext chunk-by-chunk
+    /// from JS ReadableStream, encrypts with AES-256-CBC, writes ciphertext to JS WritableStream.
     ///
-    /// Use for large files: pipe a file ReadableStream through encryption into
-    /// a temp file WritableStream, then upload the temp file with `uploadEncryptedMediaStream`.
+    /// Peak memory: ~130KB (copy buffer + flush buffer + crypto state).
     #[wasm_bindgen(js_name = encryptMediaStream)]
     pub async fn encrypt_media_stream(
         &self,
@@ -1898,46 +1898,53 @@ impl WasmWhatsAppClient {
         output: web_sys::WritableStream,
         media_type: &str,
     ) -> Result<crate::result_types::EncryptMediaResult, JsValue> {
+        use futures::SinkExt;
+        use futures::StreamExt;
+        use wacore::upload::MediaEncryptor;
+
         let mt = parse_media_type(media_type)?;
 
-        // Consume JS streams into Rust stream/sink
         let rs = wasm_streams::ReadableStream::from_raw(input);
         let mut reader = rs.into_stream();
         let ws = wasm_streams::WritableStream::from_raw(output);
         let mut writer = ws.into_sink();
 
-        // Bridge async JS streams to sync Read/Write for wacore
-        // Collect all input first (streaming through WASM boundary needs async),
-        // then encrypt synchronously in one blocking call.
-        // Note: for true constant-memory streaming, the input stream is consumed
-        // chunk-by-chunk — the encrypted output is written to the user's sink
-        // (e.g., temp file) so JS heap stays small.
-        use futures::SinkExt;
-        use futures::StreamExt;
+        const FLUSH_THRESHOLD: usize = 65536;
 
-        // Read all chunks from input stream into a pipe buffer
-        let mut plaintext_buf = Vec::new();
-        while let Some(chunk) = reader.next().await {
-            let chunk = chunk.map_err(|e| JsValue::from_str(&format!("read error: {e:?}")))?;
+        let mut enc = MediaEncryptor::new(mt).map_err(js_err)?;
+        let mut out_buf = Vec::with_capacity(FLUSH_THRESHOLD + 16);
+        let mut copy_buf = vec![0u8; FLUSH_THRESHOLD];
+
+        while let Some(chunk_result) = reader.next().await {
+            let chunk =
+                chunk_result.map_err(|e| JsValue::from_str(&format!("read error: {e:?}")))?;
             let arr = js_sys::Uint8Array::new(&chunk);
-            let mut bytes = vec![0u8; arr.length() as usize];
-            arr.copy_to(&mut bytes);
-            plaintext_buf.extend_from_slice(&bytes);
+            let len = arr.length() as usize;
+            if len == 0 {
+                continue;
+            }
+
+            if len > copy_buf.len() {
+                copy_buf.resize(len, 0);
+            }
+            arr.copy_to(&mut copy_buf[..len]);
+
+            enc.update(&copy_buf[..len], &mut out_buf);
+
+            if out_buf.len() >= FLUSH_THRESHOLD {
+                let js_chunk = js_sys::Uint8Array::from(out_buf.as_slice());
+                writer
+                    .send(js_chunk.into())
+                    .await
+                    .map_err(|e| JsValue::from_str(&format!("write error: {e:?}")))?;
+                out_buf.clear();
+            }
         }
 
-        // Encrypt synchronously — constant memory for the crypto itself
-        let mut encrypted_buf = Vec::new();
-        let info = wacore::upload::encrypt_media_streaming(
-            std::io::Cursor::new(&plaintext_buf),
-            &mut encrypted_buf,
-            mt,
-        )
-        .map_err(js_err)?;
+        let info = enc.finalize(&mut out_buf).map_err(js_err)?;
 
-        // Stream encrypted output to the JS WritableStream in 64KB chunks
-        const CHUNK_SIZE: usize = 65536;
-        for chunk in encrypted_buf.chunks(CHUNK_SIZE) {
-            let js_chunk = js_sys::Uint8Array::from(chunk);
+        if !out_buf.is_empty() {
+            let js_chunk = js_sys::Uint8Array::from(out_buf.as_slice());
             writer
                 .send(js_chunk.into())
                 .await

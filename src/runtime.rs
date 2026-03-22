@@ -22,6 +22,16 @@ pub struct WasmRuntime;
 
 crate::wasm_send_sync!(WasmRuntime);
 
+/// Cached reference to `globalThis.setTimeout` — avoids `Reflect.get` on every yield.
+static SET_TIMEOUT_FN: std::sync::OnceLock<JsValue> = std::sync::OnceLock::new();
+
+fn get_set_timeout() -> &'static JsValue {
+    SET_TIMEOUT_FN.get_or_init(|| {
+        let global = js_sys::global();
+        js_sys::Reflect::get(&global, &"setTimeout".into()).unwrap_or(JsValue::UNDEFINED)
+    })
+}
+
 /// Yield to the JS event loop via `setTimeout(0)`.
 ///
 /// Unlike `Promise.resolve()` (microtask, same tick), `setTimeout(0)` creates
@@ -30,15 +40,12 @@ crate::wasm_send_sync!(WasmRuntime);
 /// the current task resumes.
 pub(crate) fn set_timeout_0() -> Pin<Box<dyn Future<Output = ()>>> {
     let promise = js_sys::Promise::new(&mut |resolve, _reject| {
-        let global = js_sys::global();
-        if let Ok(set_timeout) = js_sys::Reflect::get(&global, &"setTimeout".into())
-            && let Ok(set_timeout_fn) = set_timeout.dyn_into::<js_sys::Function>()
-        {
+        let st = get_set_timeout();
+        if let Ok(set_timeout_fn) = st.clone().dyn_into::<js_sys::Function>() {
             let _ = set_timeout_fn.call2(&JsValue::NULL, &resolve, &JsValue::from(0));
-            return;
+        } else {
+            let _ = resolve.call0(&JsValue::NULL);
         }
-        // Fallback: resolve immediately (environments without setTimeout)
-        let _ = resolve.call0(&JsValue::NULL);
     });
     let js_future = wasm_bindgen_futures::JsFuture::from(promise);
     Box::pin(async move {
