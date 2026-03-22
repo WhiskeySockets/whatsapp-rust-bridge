@@ -181,17 +181,14 @@ pub fn add_sticker_metadata(
 ) -> Result<Uint8Array, JsValue> {
     metadata.ensure_pack_id();
 
-    // Parse WebP - img_parts requires owned Bytes
     let mut webp = WebP::from_bytes(Bytes::copy_from_slice(webp_data))
         .map_err(|e| JsValue::from_str(&format!("Invalid WebP: {e}")))?;
 
-    // Build and set EXIF data
     let exif_data = metadata
         .build_exif()
         .map_err(|e| JsValue::from_str(&format!("Failed to serialize metadata: {e}")))?;
     webp.set_exif(Some(Bytes::from(exif_data)));
 
-    // Encode directly to Uint8Array
     let output = webp.encoder().bytes();
     Ok(Uint8Array::from(output.as_ref()))
 }
@@ -209,21 +206,16 @@ pub fn get_sticker_metadata(webp_data: &[u8]) -> Result<Option<StickerMetadata>,
         return Ok(None);
     };
 
-    // Verify this is WhatsApp sticker EXIF, not regular camera EXIF
     if !is_whatsapp_sticker_exif(&exif_bytes) {
         return Ok(None);
     }
 
-    // The EXIF data should have our header followed by JSON
     if exif_bytes.len() <= EXIF_HEADER.len() {
         return Ok(None);
     }
 
-    // Extract JSON from after the header
     let json_bytes = &exif_bytes[EXIF_HEADER.len()..];
 
-    // Try to parse as sticker metadata, return None if it fails
-    // (could be malformed or different format)
     let Ok(exif_meta) = serde_json::from_slice::<ExifStickerMetadataOwned>(json_bytes) else {
         return Ok(None);
     };

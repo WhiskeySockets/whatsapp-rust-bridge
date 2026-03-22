@@ -240,8 +240,6 @@ impl SignalStore for JsBackend {
     }
 
     async fn get_max_prekey_id(&self) -> Result<u32> {
-        // Read the stored max prekey ID from meta store.
-        // We maintain this as a counter that gets updated on each store_prekey call.
         match self.js_get(STORE_META, "max_prekey_id").await? {
             Some(bytes) => {
                 let s = String::from_utf8(bytes).unwrap_or_default();
@@ -259,7 +257,6 @@ impl SignalStore for JsBackend {
                 max_id = *id;
             }
         }
-        // Update the tracked max prekey ID
         self.js_set(STORE_META, "max_prekey_id", max_id.to_string().as_bytes())
             .await?;
         Ok(())
@@ -268,7 +265,6 @@ impl SignalStore for JsBackend {
     async fn store_signed_prekey(&self, id: u32, record: &[u8]) -> Result<()> {
         self.js_set(STORE_SIGNED_PREKEY, &id.to_string(), record)
             .await?;
-        // Track the ID in a list for load_all_signed_prekeys
         let mut ids = self.get_signed_prekey_ids().await?;
         if !ids.contains(&id) {
             ids.push(id);
@@ -295,7 +291,6 @@ impl SignalStore for JsBackend {
 
     async fn remove_signed_prekey(&self, id: u32) -> Result<()> {
         self.js_delete(STORE_SIGNED_PREKEY, &id.to_string()).await?;
-        // Remove from tracked IDs
         let mut ids = self.get_signed_prekey_ids().await?;
         ids.retain(|&i| i != id);
         self.js_set_json(STORE_META, "signed_prekey_ids", &ids)
@@ -316,16 +311,12 @@ impl SignalStore for JsBackend {
     }
 }
 
-// Helper for signed prekey ID tracking
 impl JsBackend {
     async fn get_signed_prekey_ids(&self) -> Result<Vec<u32>> {
-        match self
+        Ok(self
             .js_get_json::<Vec<u32>>(STORE_META, "signed_prekey_ids")
             .await?
-        {
-            Some(ids) => Ok(ids),
-            None => Ok(Vec::new()),
-        }
+            .unwrap_or_default())
     }
 }
 
@@ -344,7 +335,6 @@ impl AppSyncStore for JsBackend {
     async fn set_sync_key(&self, key_id: &[u8], key: AppStateSyncKey) -> Result<()> {
         let hex_id = to_hex(key_id);
         self.js_set_json(STORE_SYNC_KEY, &hex_id, &key).await?;
-        // Track latest sync key ID
         self.js_set(STORE_META, "latest_sync_key_id", key_id).await
     }
 
@@ -428,7 +418,6 @@ impl ProtocolStore for JsBackend {
     }
 
     async fn get_pn_mapping(&self, phone: &str) -> Result<Option<LidPnMappingEntry>> {
-        // First look up LID from the reverse index
         match self
             .js_get(STORE_LID_MAPPING, &format!("pn:{phone}"))
             .await?
@@ -442,24 +431,23 @@ impl ProtocolStore for JsBackend {
     }
 
     async fn put_lid_mapping(&self, entry: &LidPnMappingEntry) -> Result<()> {
-        // Check if existing mapping has a different phone number (stale reverse entry)
+        // Remove stale reverse entry if phone number changed
         if let Some(old_entry) = self.get_lid_mapping(&entry.lid).await?
             && old_entry.phone_number != entry.phone_number
         {
             self.js_delete(STORE_LID_MAPPING, &format!("pn:{}", old_entry.phone_number))
                 .await?;
         }
-        // Store the forward mapping (lid -> entry)
+        // Forward mapping (lid -> entry)
         self.js_set_json(STORE_LID_MAPPING, &format!("lid:{}", entry.lid), entry)
             .await?;
-        // Store the reverse mapping (pn -> lid)
+        // Reverse mapping (pn -> lid)
         self.js_set(
             STORE_LID_MAPPING,
             &format!("pn:{}", entry.phone_number),
             entry.lid.as_bytes(),
         )
         .await?;
-        // Track LID in list for get_all_lid_mappings
         let mut lids: Vec<String> = self
             .js_get_json(STORE_META, "lid_list")
             .await?
@@ -555,7 +543,6 @@ impl ProtocolStore for JsBackend {
 
     async fn put_tc_token(&self, jid: &str, entry: &TcTokenEntry) -> Result<()> {
         self.js_set_json(STORE_TC_TOKEN, jid, entry).await?;
-        // Track JID in list for get_all_tc_token_jids
         let mut jids: Vec<String> = self
             .js_get_json(STORE_META, "tc_token_jids")
             .await?
@@ -569,7 +556,6 @@ impl ProtocolStore for JsBackend {
 
     async fn delete_tc_token(&self, jid: &str) -> Result<()> {
         self.js_delete(STORE_TC_TOKEN, jid).await?;
-        // Remove from tracked JIDs
         let mut jids: Vec<String> = self
             .js_get_json(STORE_META, "tc_token_jids")
             .await?
@@ -766,11 +752,7 @@ async fn resolve_promise(value: JsValue) -> std::result::Result<JsValue, JsValue
 }
 
 fn js_err_to_store_err(context: &str, e: JsValue) -> wacore::store::error::StoreError {
-    let msg = if let Some(s) = e.as_string() {
-        s
-    } else {
-        format!("{:?}", e)
-    };
+    let msg = e.as_string().unwrap_or_else(|| format!("{e:?}"));
     wacore::store::error::StoreError::Database(format!("JS {context}: {msg}"))
 }
 

@@ -139,24 +139,11 @@ pub fn process_image(
 ) -> Result<ProcessImageResult, JsValue> {
     let img = load_image(&image_data)?;
 
-    // Resize if dimensions are specified
     let processed = match (options.width, options.height) {
-        (Some(w), Some(h)) => {
-            // Both dimensions specified - resize to exact size
-            img.resize_exact(w, h, FilterType::Triangle)
-        }
-        (Some(w), None) => {
-            // Only width specified - maintain aspect ratio
-            img.resize(w, u32::MAX, FilterType::Triangle)
-        }
-        (None, Some(h)) => {
-            // Only height specified - maintain aspect ratio
-            img.resize(u32::MAX, h, FilterType::Triangle)
-        }
-        (None, None) => {
-            // No resize, just format conversion
-            img
-        }
+        (Some(w), Some(h)) => img.resize_exact(w, h, FilterType::Triangle),
+        (Some(w), None) => img.resize(w, u32::MAX, FilterType::Triangle),
+        (None, Some(h)) => img.resize(u32::MAX, h, FilterType::Triangle),
+        (None, None) => img,
     };
 
     let (width, height) = processed.dimensions();

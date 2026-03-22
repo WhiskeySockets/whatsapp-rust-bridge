@@ -1618,7 +1618,9 @@ checksum = "0b928f33d975fc6ad9f86c8f283853ad26bdd5b10b7f1542aa2fa15e2289105a"
 
 [[package]]
 name = "wacore"
-version = "0.4.1"
+version = "0.4.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "eb64871526bd92e12a1b1efdc160d3453f45b6bbc852d3814bd7e5d228c32f1f"
 dependencies = [
  "aes",
  "aes-gcm",
@@ -1660,7 +1662,9 @@ dependencies = [
 
 [[package]]
 name = "wacore-appstate"
-version = "0.4.1"
+version = "0.4.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "c26c097a6e89a27ba5851a6ed4e1342f467725416729599be443605b91be71a7"
 dependencies = [
  "anyhow",
  "bytemuck",
@@ -1680,7 +1684,9 @@ dependencies = [
 
 [[package]]
 name = "wacore-binary"
-version = "0.4.1"
+version = "0.4.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "fa37bfa63ded3a310c6225caeac25c16efb16c384fba41cdea08b18a6b1f7799"
 dependencies = [
  "flate2",
  "phf",
@@ -1691,7 +1697,9 @@ dependencies = [
 
 [[package]]
 name = "wacore-derive"
-version = "0.4.1"
+version = "0.4.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "f033472f6d46ee0f22bf39576050df1a38c4094bc610c60dae90d42988775d45"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -1700,7 +1708,9 @@ dependencies = [
 
 [[package]]
 name = "wacore-libsignal"
-version = "0.4.1"
+version = "0.4.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "5005f1910f7efb80dc1b1e3c019f45ebe94b1e195697d0276e0e4373c0c370f8"
 dependencies = [
  "aes",
  "aes-gcm",
@@ -1731,7 +1741,9 @@ dependencies = [
 
 [[package]]
 name = "wacore-noise"
-version = "0.4.1"
+version = "0.4.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "ed5d4e5d3a465eadb3e8857b0a35f371838f5fb9fe989e493d5429a44884678e"
 dependencies = [
  "aes-gcm",
  "anyhow",
@@ -1749,7 +1761,9 @@ dependencies = [
 
 [[package]]
 name = "waproto"
-version = "0.4.1"
+version = "0.4.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "721cb8aa5f5032356b4bff0c9e00065a90d2b3e90fb3941c66083dadd2b57119"
 dependencies = [
  "prost",
  "prost-build",
@@ -1892,7 +1906,9 @@ dependencies = [
 
 [[package]]
 name = "whatsapp-rust"
-version = "0.4.1"
+version = "0.4.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "8d374315a5ef9c0419f499de752c4fe46ec1d9025064c3e690199449f1b7b2d4"
 dependencies = [
  "anyhow",
  "async-channel",

@@ -233,7 +233,6 @@ impl ser::SerializeSeq for SeqSerializer {
 
     fn serialize_element<T: Serialize + ?Sized>(&mut self, value: &T) -> Result<(), Error> {
         let js = value.serialize(CamelSerializer)?;
-        // Track if all elements are small integers (u8 range) → byte array
         if self.all_u8 {
             if let Some(n) = js.as_f64() {
                 let rounded = n as u8;
@@ -251,7 +250,6 @@ impl ser::SerializeSeq for SeqSerializer {
     }
 
     fn end(self) -> Result<JsValue, Error> {
-        // If all elements were u8, output as Uint8Array
         if self.all_u8 && !self.u8_buf.is_empty() {
             return Ok(Uint8Array::from(self.u8_buf.as_slice()).into());
         }
@@ -313,7 +311,6 @@ impl ser::SerializeStruct for StructSerializer {
         value: &T,
     ) -> Result<(), Error> {
         let js_val = value.serialize(CamelSerializer)?;
-        // Skip default values: null, empty arrays, empty strings, 0, false
         if should_skip(&js_val) {
             return Ok(());
         }

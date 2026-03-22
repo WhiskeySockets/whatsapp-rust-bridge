@@ -78,10 +78,10 @@ talc = { version = "4.4", default-features = false, features = ["lock_api"] }
 tsify-next = { version = "0.5", default-features = false, features = ["js"] }
 uuid = { version = "1.18.1", default-features = false, features = ["v4", "js"] }
 
-wacore = { path = "../whatsapp-rust/wacore", features = ["js"] }
-wacore-appstate = { path = "../whatsapp-rust/wacore/appstate" }
-wacore-binary = { path = "../whatsapp-rust/wacore/binary", features = ["serde"] }
-waproto = { path = "../whatsapp-rust/waproto", features = ["serde-deserialize"] }
+wacore = { version = "0.4.2", features = ["js"] }
+wacore-appstate = "0.4.2"
+wacore-binary = { version = "0.4.2", features = ["serde"] }
+waproto = { version = "0.4.2", features = ["serde-deserialize"] }
 wasm-bindgen = "0.2.100"
 wasm-bindgen-futures = "0.4.55"
 wasm-streams = "0.5"
@@ -91,7 +91,7 @@ web-sys = { version = "0.3", features = [
   "WritableStream",
   "Window",
 ] }
-whatsapp-rust = { path = "../whatsapp-rust", default-features = false }
+whatsapp-rust = { version = "0.4.2", default-features = false, features = ["debug-diagnostics"] }
 
 [profile.release]
 lto = "fat"

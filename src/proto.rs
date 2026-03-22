@@ -57,9 +57,7 @@ pub fn to_snake_case_js(val: &JsValue) -> JsValue {
 
             let snake_key = camel_to_snake(&key);
             let converted_value = if let Some(s) = value.as_string() {
-                // Detect base64 strings for known bytes fields → convert to Uint8Array
                 if !s.is_empty() && is_likely_bytes_field(&snake_key) && looks_like_base64(&s) {
-                    // Use js_sys::global atob or manual decode
                     match base64_decode(&s) {
                         Some(bytes) => js_sys::Uint8Array::from(bytes.as_slice()).into(),
                         None => JsValue::from_str(&s),
@@ -75,7 +73,7 @@ pub fn to_snake_case_js(val: &JsValue) -> JsValue {
         return result.into();
     }
 
-    // Truncate floats to integers for proto integer fields
+    // JS numbers may have fractional parts that proto integer fields reject
     if let Some(n) = val.as_f64()
         && n != n.trunc()
     {

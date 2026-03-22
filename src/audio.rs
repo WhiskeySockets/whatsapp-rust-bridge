@@ -28,13 +28,11 @@ pub fn generate_audio_waveform(audio_data: Vec<u8>) -> Result<Uint8Array, JsValu
         total_frames,
     } = prepare_decoder(audio_data)?;
 
-    // Pre-allocate bins for direct accumulation (sum, count)
     let mut bins = [(0.0f32, 0u32); WAVEFORM_SAMPLES];
 
-    // Calculate decimation parameters
     let estimated_samples = total_frames.unwrap_or(2_000_000);
 
-    // Balanced approach: moderate packet skipping for speed
+    // Moderate packet skipping for speed vs. accuracy
     let estimated_packets = (estimated_samples / 1152).max(64) as usize;
     let target_packets = 512;
     let packet_skip = (estimated_packets / target_packets).max(1);
@@ -272,9 +270,7 @@ fn compute_audio_duration(audio_data: Vec<u8>) -> Result<f64, JsValue> {
         return Err(JsValue::from_str("Audio buffer is empty"));
     }
 
-    // Use Symphonia to probe the format - it parses Xing/VBRI headers for MP3
-    let cursor = Cursor::new(audio_data);
-    let mss = MediaSourceStream::new(Box::new(cursor), Default::default());
+    let mss = MediaSourceStream::new(Box::new(Cursor::new(audio_data)), Default::default());
 
     let probed = symphonia::default::get_probe()
         .format(
@@ -392,7 +388,6 @@ impl DurationAccumulator {
 }
 
 async fn normalize_audio_input(input: JsValue) -> Result<Vec<u8>, JsValue> {
-    // Handle Uint8Array and ArrayBuffer (both can be wrapped with Uint8Array)
     if input.is_instance_of::<Uint8Array>() || input.is_instance_of::<ArrayBuffer>() {
         return Ok(copy_uint8_array(&Uint8Array::new(&input)));
     }
@@ -408,10 +403,7 @@ async fn normalize_audio_input(input: JsValue) -> Result<Vec<u8>, JsValue> {
 
 #[inline]
 fn copy_uint8_array(array: &Uint8Array) -> Vec<u8> {
-    let len = array.length() as usize;
-    let mut buffer = vec![0; len];
-    array.copy_to(&mut buffer);
-    buffer
+    array.to_vec()
 }
 
 async fn read_stream(stream: &ReadableStream) -> Result<Vec<u8>, JsValue> {
@@ -421,12 +413,10 @@ async fn read_stream(stream: &ReadableStream) -> Result<Vec<u8>, JsValue> {
 }
 
 async fn read_from_reader(reader: ReadableStreamDefaultReader) -> Result<Vec<u8>, JsValue> {
-    // Pre-allocate with reasonable initial capacity
-    let mut chunks: Vec<u8> = Vec::with_capacity(64 * 1024);
+    let mut buf: Vec<u8> = Vec::with_capacity(64 * 1024);
 
     loop {
-        let promise = reader.read();
-        let result = JsFuture::from(promise).await?;
+        let result = JsFuture::from(reader.read()).await?;
 
         let done = Reflect::get(&result, &JsValue::from_str("done"))?
             .as_bool()
@@ -437,17 +427,12 @@ async fn read_from_reader(reader: ReadableStreamDefaultReader) -> Result<Vec<u8>
 
         let value = Reflect::get(&result, &JsValue::from_str("value"))?;
         if !value.is_undefined() && !value.is_null() {
-            let chunk = Uint8Array::new(&value);
-            let chunk_len = chunk.length() as usize;
-            let prev_len = chunks.len();
-            chunks.reserve(chunk_len);
-            chunks.resize(prev_len + chunk_len, 0);
-            chunk.copy_to(&mut chunks[prev_len..]);
+            buf.extend_from_slice(&Uint8Array::new(&value).to_vec());
         }
     }
 
     reader.release_lock();
-    Ok(chunks)
+    Ok(buf)
 }
 
 struct DecoderContext {
@@ -458,17 +443,15 @@ struct DecoderContext {
 }
 
 fn prepare_decoder(audio_data: Vec<u8>) -> Result<DecoderContext, JsValue> {
-    // Feed the raw bytes into Symphonia via an in-memory cursor.
-    let cursor = Cursor::new(audio_data);
-    let mss = MediaSourceStream::new(Box::new(cursor), Default::default());
-
-    let hint = Hint::new();
-    let format_opts = FormatOptions::default();
-    let metadata_opts = MetadataOptions::default();
-    let decoder_opts = DecoderOptions::default();
+    let mss = MediaSourceStream::new(Box::new(Cursor::new(audio_data)), Default::default());
 
     let probed = symphonia::default::get_probe()
-        .format(&hint, mss, &format_opts, &metadata_opts)
+        .format(
+            &Hint::new(),
+            mss,
+            &FormatOptions::default(),
+            &MetadataOptions::default(),
+        )
         .map_err(|e| JsValue::from_str(&format!("Failed to probe audio format: {e}")))?;
 
     let format = probed.format;
@@ -479,12 +462,11 @@ fn prepare_decoder(audio_data: Vec<u8>) -> Result<DecoderContext, JsValue> {
         .find(|t| t.codec_params.codec != CODEC_TYPE_NULL)
         .ok_or_else(|| JsValue::from_str("No supported audio track found"))?;
 
-    let codec_params = track.codec_params.clone();
     let track_id = track.id;
     let total_frames = track.codec_params.n_frames;
 
     let decoder = symphonia::default::get_codecs()
-        .make(&codec_params, &decoder_opts)
+        .make(&track.codec_params.clone(), &DecoderOptions::default())
         .map_err(|e| JsValue::from_str(&format!("Failed to create decoder: {e}")))?;
 
     Ok(DecoderContext {
