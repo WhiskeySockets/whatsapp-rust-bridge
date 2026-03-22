@@ -15,7 +15,7 @@ const bytes = base64ToUint8Array(base64Wasm());
 
 initSync({ module: bytes });
 
-// Runtime exports from WASM — only the functions actually used by Baileys
+// Runtime exports from WASM
 export {
   encodeProto,
   decodeProto,
@@ -26,22 +26,22 @@ export {
 } from "../pkg/whatsapp_rust_bridge.js";
 
 // initWasmEngine and createWhatsAppClient need explicit typing
-// because the pkg exports have auto-generated types that conflict
-// with our hand-maintained WasmWhatsAppClient interface.
+// because they use skip_typescript in Rust for complex params.
 import {
   initWasmEngine as _initWasmEngine,
   createWhatsAppClient as _createWhatsAppClient,
 } from "../pkg/whatsapp_rust_bridge.js";
-import type { WasmWhatsAppClient, WhatsAppEvent } from "../types/index.js";
+import type { WhatsAppEvent, JsTransportCallbacks, JsHttpClientConfig, JsStoreCallbacks, CacheConfig } from "../pkg/whatsapp_rust_bridge.js";
+import type { WasmWhatsAppClient } from "../pkg/whatsapp_rust_bridge.js";
 
 export const initWasmEngine: (logger?: any) => void = _initWasmEngine;
 export const createWhatsAppClient: (
-  transport: import("../types/index.js").JsTransportCallbacks,
-  httpClient: import("../types/index.js").JsHttpClientConfig,
+  transport: JsTransportCallbacks,
+  httpClient: JsHttpClientConfig,
   onEvent?: ((event: WhatsAppEvent) => void) | null,
-  store?: import("../types/index.js").JsStoreCallbacks | null,
-  cache?: import("../types/index.js").CacheConfig | null,
+  store?: JsStoreCallbacks | null,
+  cache?: CacheConfig | null,
 ) => Promise<WasmWhatsAppClient> = _createWhatsAppClient as any;
 
-// Type exports from hand-maintained types (accurate, snake_case matching serde output)
-export type * from "../types/index.js";
+// All types come from pkg (Tsify types + generated wacore types via typescript_custom_section)
+export type * from "../pkg/whatsapp_rust_bridge.js";

@@ -8,7 +8,7 @@ import type {
   JsTransportHandle,
   JsHttpClientConfig,
   Event,
-} from "../types/index.js";
+} from "../pkg/whatsapp_rust_bridge.js";
 
 const MOCK_SERVER_URL =
   process.env.MOCK_SERVER_URL ?? "wss://127.0.0.1:8080/ws/chat";

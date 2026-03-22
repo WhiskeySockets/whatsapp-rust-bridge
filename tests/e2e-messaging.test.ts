@@ -15,7 +15,7 @@ import type {
   WasmWhatsAppClient,
   MessageInfo,
   Jid,
-} from "../types/index.js";
+} from "../pkg/whatsapp_rust_bridge.js";
 import {
   createTransport,
   createHttp,

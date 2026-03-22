@@ -36,9 +36,9 @@ pub struct ProfilePictureResult {
 }
 
 #[wasm_bindgen(js_name = extractImageThumb)]
-pub fn extract_image_thumb(image_data: &[u8], width: u32) -> Result<ImageThumbResult, JsValue> {
+pub fn extract_image_thumb(image_data: &[u8], width: u32) -> Result<ImageThumbResult, JsError> {
     if width == 0 {
-        return Err(JsValue::from_str("width must be greater than zero"));
+        return Err(JsError::new("width must be greater than zero"));
     }
 
     let img = load_image(image_data)?;
@@ -59,9 +59,9 @@ pub fn extract_image_thumb(image_data: &[u8], width: u32) -> Result<ImageThumbRe
 pub fn generate_profile_picture(
     image_data: &[u8],
     target_width: u32,
-) -> Result<ProfilePictureResult, JsValue> {
+) -> Result<ProfilePictureResult, JsError> {
     if target_width == 0 {
-        return Err(JsValue::from_str("target width must be greater than zero"));
+        return Err(JsError::new("target width must be greater than zero"));
     }
 
     let resized =
@@ -71,12 +71,12 @@ pub fn generate_profile_picture(
     Ok(ProfilePictureResult { img: jpeg })
 }
 
-fn load_image(image_data: &[u8]) -> Result<DynamicImage, JsValue> {
+fn load_image(image_data: &[u8]) -> Result<DynamicImage, JsError> {
     image::load_from_memory(image_data)
-        .map_err(|e| JsValue::from_str(&format!("Failed to load image: {e}")))
+        .map_err(|e| JsError::new(&format!("Failed to load image: {e}")))
 }
 
-fn encode_jpeg(image: &DynamicImage) -> Result<Vec<u8>, JsValue> {
+fn encode_jpeg(image: &DynamicImage) -> Result<Vec<u8>, JsError> {
     encode_jpeg_quality(image, JPEG_QUALITY)
 }
 
@@ -117,7 +117,7 @@ pub struct ProcessImageResult {
 
 /// Get image dimensions without full decoding
 #[wasm_bindgen(js_name = getImageDimensions)]
-pub fn get_image_dimensions(image_data: &[u8]) -> Result<ImageDimensions, JsValue> {
+pub fn get_image_dimensions(image_data: &[u8]) -> Result<ImageDimensions, JsError> {
     let img = load_image(image_data)?;
     let (width, height) = img.dimensions();
     Ok(ImageDimensions { width, height })
@@ -125,7 +125,7 @@ pub fn get_image_dimensions(image_data: &[u8]) -> Result<ImageDimensions, JsValu
 
 /// Convert any image to WebP format
 #[wasm_bindgen(js_name = convertToWebP)]
-pub fn convert_to_webp(image_data: Vec<u8>) -> Result<js_sys::Uint8Array, JsValue> {
+pub fn convert_to_webp(image_data: Vec<u8>) -> Result<js_sys::Uint8Array, JsError> {
     let img = load_image(&image_data)?;
     let webp = encode_format(&img, image::ImageFormat::WebP)?;
     Ok(js_sys::Uint8Array::from(webp.as_slice()))
@@ -136,7 +136,7 @@ pub fn convert_to_webp(image_data: Vec<u8>) -> Result<js_sys::Uint8Array, JsValu
 pub fn process_image(
     image_data: Vec<u8>,
     options: ProcessImageOptions,
-) -> Result<ProcessImageResult, JsValue> {
+) -> Result<ProcessImageResult, JsError> {
     let img = load_image(&image_data)?;
 
     let processed = match (options.width, options.height) {
@@ -162,19 +162,19 @@ pub fn process_image(
     })
 }
 
-fn encode_jpeg_quality(image: &DynamicImage, quality: u8) -> Result<Vec<u8>, JsValue> {
+fn encode_jpeg_quality(image: &DynamicImage, quality: u8) -> Result<Vec<u8>, JsError> {
     let mut buffer = Cursor::new(Vec::new());
     let mut encoder = JpegEncoder::new_with_quality(&mut buffer, quality);
     encoder
         .encode_image(image)
-        .map_err(|e| JsValue::from_str(&format!("Failed to encode JPEG: {e}")))?;
+        .map_err(|e| JsError::new(&format!("Failed to encode JPEG: {e}")))?;
     Ok(buffer.into_inner())
 }
 
-fn encode_format(image: &DynamicImage, format: image::ImageFormat) -> Result<Vec<u8>, JsValue> {
+fn encode_format(image: &DynamicImage, format: image::ImageFormat) -> Result<Vec<u8>, JsError> {
     let mut buffer = Vec::new();
     image
         .write_to(&mut Cursor::new(&mut buffer), format)
-        .map_err(|e| JsValue::from_str(&format!("Failed to encode image: {e}")))?;
+        .map_err(|e| JsError::new(&format!("Failed to encode image: {e}")))?;
     Ok(buffer)
 }

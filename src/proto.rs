@@ -134,30 +134,39 @@ macro_rules! proto_types {
         /// Generic protobuf encode: takes a type name and camelCase JS object, returns binary.
         /// Converts camelCase→snake_case and truncates floats in Rust before deserialization.
         #[wasm_bindgen(js_name = encodeProto)]
-        pub fn encode_proto(type_name: &str, json: JsValue) -> Result<Vec<u8>, JsValue> {
+        pub fn encode_proto(type_name: &str, json: JsValue) -> Result<Vec<u8>, JsError> {
             let snake = to_snake_case_js(&json);
             match type_name {
                 $($name => {
                     let msg: $type = serde_wasm_bindgen::from_value(snake)
-                        .map_err(|e| JsValue::from_str(&e.to_string()))?;
+                        .map_err(|e| JsError::new(&e.to_string()))?;
                     Ok(msg.encode_to_vec())
                 })*
-                _ => Err(JsValue::from_str(&format!("unknown proto type: {type_name}")))
+                _ => Err(JsError::new(&format!("unknown proto type: {type_name}")))
             }
         }
 
         /// Generic protobuf decode: takes a type name and binary, returns camelCase JS object.
         #[wasm_bindgen(js_name = decodeProto)]
-        pub fn decode_proto(type_name: &str, data: &[u8]) -> Result<JsValue, JsValue> {
+        pub fn decode_proto(type_name: &str, data: &[u8]) -> Result<JsValue, JsError> {
             match type_name {
                 $($name => {
                     let msg = <$type>::decode(data)
-                        .map_err(|e| JsValue::from_str(&e.to_string()))?;
-                    crate::camel_serializer::to_js_value_camel(&msg)
+                        .map_err(|e| JsError::new(&e.to_string()))?;
+                    crate::camel_serializer::to_js_value_camel(&msg).map_err(js_val_err)
                 })*
-                _ => Err(JsValue::from_str(&format!("unknown proto type: {type_name}")))
+                _ => Err(JsError::new(&format!("unknown proto type: {type_name}")))
             }
         }
+    }
+}
+
+/// Convert a JsValue error to JsError.
+fn js_val_err(e: JsValue) -> JsError {
+    if let Some(s) = e.as_string() {
+        JsError::new(&s)
+    } else {
+        JsError::new(&format!("{e:?}"))
     }
 }
 

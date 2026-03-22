@@ -20,53 +20,110 @@ use crate::runtime::WasmRuntime;
 // TypeScript type declarations
 // ---------------------------------------------------------------------------
 
-#[wasm_bindgen(typescript_custom_section)]
-const TS_EVENT: &str = r#"
-export type WhatsAppEvent =
-  | { type: 'connected'; data: Record<string, never> }
-  | { type: 'disconnected'; data: Record<string, never> }
-  | { type: 'qr'; data: { code: string; timeout: number } }
-  | { type: 'pairing_code'; data: { code: string; timeout: number } }
-  | { type: 'pair_success'; data: { id: string; lid: string; businessName: string; platform: string } }
-  | { type: 'pair_error'; data: { id: string; lid: string; businessName: string; platform: string; error: string } }
-  | { type: 'logged_out'; data: { onConnect: boolean; reason: string } }
-  | { type: 'message'; data: { message: Record<string, unknown>; info: MessageInfo } }
-  | { type: 'receipt'; data: Receipt }
-  | { type: 'undecryptable_message'; data: UndecryptableMessage }
-  | { type: 'notification'; data: Record<string, unknown> }
-  | { type: 'chat_presence'; data: ChatPresenceUpdate }
-  | { type: 'presence'; data: PresenceUpdate }
-  | { type: 'picture_update'; data: PictureUpdate }
-  | { type: 'user_about_update'; data: UserAboutUpdate }
-  | { type: 'contact_updated'; data: ContactUpdated }
-  | { type: 'contact_number_changed'; data: ContactNumberChanged }
-  | { type: 'contact_sync_requested'; data: ContactSyncRequested }
-  | { type: 'joined_group'; data: Record<string, unknown> }
-  | { type: 'group_update'; data: GroupUpdate }
-  | { type: 'contact_update'; data: ContactUpdate }
-  | { type: 'push_name_update'; data: PushNameUpdate }
-  | { type: 'self_push_name_updated'; data: SelfPushNameUpdated }
-  | { type: 'pin_update'; data: PinUpdate }
-  | { type: 'mute_update'; data: MuteUpdate }
-  | { type: 'archive_update'; data: ArchiveUpdate }
-  | { type: 'star_update'; data: StarUpdate }
-  | { type: 'mark_chat_as_read_update'; data: MarkChatAsReadUpdate }
-  | { type: 'delete_chat_update'; data: DeleteChatUpdate }
-  | { type: 'delete_message_for_me_update'; data: DeleteMessageForMeUpdate }
-  | { type: 'history_sync'; data: Record<string, unknown> }
-  | { type: 'offline_sync_preview'; data: OfflineSyncPreview }
-  | { type: 'offline_sync_completed'; data: OfflineSyncCompleted }
-  | { type: 'device_list_update'; data: DeviceListUpdate }
-  | { type: 'business_status_update'; data: BusinessStatusUpdate }
-  | { type: 'stream_replaced'; data: Record<string, never> }
-  | { type: 'temporary_ban'; data: TemporaryBan }
-  | { type: 'connect_failure'; data: ConnectFailure }
-  | { type: 'stream_error'; data: StreamError }
-  | { type: 'disappearing_mode_changed'; data: DisappearingModeChanged }
-  | { type: 'newsletter_live_update'; data: NewsletterLiveUpdate }
-  | { type: 'qr_scanned_without_multidevice'; data: Record<string, never> }
-  | { type: 'client_outdated'; data: Record<string, never> };
+// ---------------------------------------------------------------------------
+// Event definition — SINGLE SOURCE OF TRUTH
+// ---------------------------------------------------------------------------
+//
+// `bridge_events!` generates BOTH from one definition:
+//   1. The TypeScript `WhatsAppEvent` union type (typescript_custom_section)
+//   2. The `event_to_js` Rust dispatch function
+//
+// To add a new serializable event: add ONE line in `serialize { }`.
+// To add a new special event: add in `special { }` AND handle in `event_to_js_special`.
 
+/// Helper: generates one WhatsAppEvent TS union variant line.
+macro_rules! ev {
+    ($name:literal, $ts_type:literal) => {
+        concat!("  | { type: '", $name, "'; data: ", $ts_type, " }\n")
+    };
+}
+
+macro_rules! bridge_events {
+    (
+        serialize {
+            $( $variant:ident => $name:literal => $ts_type:literal ),* $(,)?
+        }
+        special {
+            $( $xname:literal => $xts:literal ),* $(,)?
+        }
+    ) => {
+        // Generate WhatsAppEvent TypeScript type
+        #[wasm_bindgen(typescript_custom_section)]
+        const _TS_WHATSAPP_EVENT: &str = concat!(
+            "export type WhatsAppEvent =\n",
+            $( ev!($name, $ts_type), )*
+            $( ev!($xname, $xts), )*
+            ";\n",
+        );
+
+        // Generate event_to_js dispatch
+        fn event_to_js(event: &Event) -> Result<JsValue, JsValue> {
+            let obj = js_sys::Object::new();
+            let (event_type, data) = match event {
+                $( Event::$variant(data) => ($name, crate::proto::to_js_value(data)?), )*
+                other => return event_to_js_special(other),
+            };
+            js_sys::Reflect::set(&obj, &"type".into(), &event_type.into())?;
+            js_sys::Reflect::set(&obj, &"data".into(), &data)?;
+            Ok(obj.into())
+        }
+    };
+}
+
+bridge_events! {
+    serialize {
+        // Variant              => "js_name"                       => "TsDataType"
+        Receipt                  => "receipt"                       => "Receipt",
+        UndecryptableMessage     => "undecryptable_message"         => "UndecryptableMessage",
+        Notification             => "notification"                  => "Record<string, unknown>",
+        ChatPresence             => "chat_presence"                 => "ChatPresenceUpdate",
+        Presence                 => "presence"                      => "PresenceUpdate",
+        PictureUpdate            => "picture_update"                => "PictureUpdate",
+        UserAboutUpdate          => "user_about_update"             => "UserAboutUpdate",
+        ContactUpdated           => "contact_updated"               => "ContactUpdated",
+        ContactNumberChanged     => "contact_number_changed"        => "ContactNumberChanged",
+        ContactSyncRequested     => "contact_sync_requested"        => "ContactSyncRequested",
+        GroupUpdate              => "group_update"                  => "GroupUpdate",
+        ContactUpdate            => "contact_update"                => "ContactUpdate",
+        PushNameUpdate           => "push_name_update"              => "PushNameUpdate",
+        SelfPushNameUpdated      => "self_push_name_updated"        => "SelfPushNameUpdated",
+        PinUpdate                => "pin_update"                    => "PinUpdate",
+        MuteUpdate               => "mute_update"                  => "MuteUpdate",
+        ArchiveUpdate            => "archive_update"                => "ArchiveUpdate",
+        StarUpdate               => "star_update"                   => "StarUpdate",
+        MarkChatAsReadUpdate     => "mark_chat_as_read_update"      => "MarkChatAsReadUpdate",
+        DeleteChatUpdate         => "delete_chat_update"            => "DeleteChatUpdate",
+        DeleteMessageForMeUpdate => "delete_message_for_me_update"  => "DeleteMessageForMeUpdate",
+        HistorySync              => "history_sync"                  => "Record<string, unknown>",
+        OfflineSyncPreview       => "offline_sync_preview"          => "OfflineSyncPreview",
+        OfflineSyncCompleted     => "offline_sync_completed"        => "OfflineSyncCompleted",
+        DeviceListUpdate         => "device_list_update"            => "DeviceListUpdate",
+        BusinessStatusUpdate     => "business_status_update"        => "BusinessStatusUpdate",
+        TemporaryBan             => "temporary_ban"                 => "TemporaryBan",
+        ConnectFailure           => "connect_failure"               => "ConnectFailure",
+        StreamError              => "stream_error"                  => "StreamError",
+        DisappearingModeChanged  => "disappearing_mode_changed"     => "DisappearingModeChanged",
+        NewsletterLiveUpdate     => "newsletter_live_update"        => "NewsletterLiveUpdate",
+    }
+    special {
+        // "js_name"                         => "TsDataType"
+        "connected"                       => "Record<string, never>",
+        "disconnected"                    => "Record<string, never>",
+        "qr"                              => "{ code: string; timeout: number }",
+        "pairing_code"                    => "{ code: string; timeout: number }",
+        "pair_success"                    => "{ id: string; lid: string; business_name: string; platform: string }",
+        "pair_error"                      => "{ id: string; lid: string; business_name: string; platform: string; error: string }",
+        "logged_out"                      => "{ on_connect: boolean; reason: string }",
+        "message"                         => "{ message: Record<string, unknown>; info: MessageInfo }",
+        "joined_group"                    => "Record<string, unknown>",
+        "stream_replaced"                 => "Record<string, never>",
+        "qr_scanned_without_multidevice"  => "Record<string, never>",
+        "client_outdated"                 => "Record<string, never>",
+    }
+}
+
+#[wasm_bindgen(typescript_custom_section)]
+const _TS_CLIENT_CONFIG: &str = r#"
 export interface WhatsAppClientConfig {
   transport: JsTransportCallbacks;
   httpClient: JsHttpClientConfig;
@@ -96,7 +153,44 @@ export function createWhatsAppClient(
   http_config: JsHttpClientConfig,
   on_event?: ((event: WhatsAppEvent) => void) | null,
   store?: JsStoreCallbacks | null,
+  cache_config?: CacheConfig | null,
 ): Promise<WasmWhatsAppClient>;
+
+/** Cache entry configuration. */
+export interface CacheEntryConfig {
+  ttlSecs?: number;
+  capacity?: number;
+  store?: JsCacheStore;
+}
+
+/** Custom cache backend. */
+export interface JsCacheStore {
+  get(namespace: string, key: string): Promise<Uint8Array | null>;
+  set(namespace: string, key: string, value: Uint8Array, ttlSecs?: number): Promise<void>;
+  delete(namespace: string, key: string): Promise<void>;
+  clear(namespace: string): Promise<void>;
+}
+
+/** Cache configuration — all fields optional. */
+export interface CacheConfig {
+  store?: JsCacheStore;
+  group?: CacheEntryConfig;
+  device?: CacheEntryConfig;
+  deviceRegistry?: CacheEntryConfig;
+  lidPn?: CacheEntryConfig;
+  retriedGroupMessages?: CacheEntryConfig;
+  recentMessages?: CacheEntryConfig;
+  messageRetry?: CacheEntryConfig;
+}
+
+// Augment WasmWhatsAppClient with methods that need skip_typescript
+// (Record returns can't be expressed by wasm-bindgen)
+interface WasmWhatsAppClient {
+  /** Fetch all groups the user is participating in. */
+  groupFetchAllParticipating(): Promise<Record<string, GroupMetadataResult>>;
+  /** Fetch user info for one or more JIDs. */
+  fetchUserInfo(jids: string[]): Promise<Record<string, UserInfoResult>>;
+}
 "#;
 
 // ---------------------------------------------------------------------------
@@ -150,61 +244,6 @@ impl EventHandler for JsEventHandler {
             Err(e) => log::warn!("Event serialization failed: {e:?}"),
         }
     }
-}
-
-/// Helper macro for Event variants whose payload is directly serializable
-/// via `crate::proto::to_js_value`.
-macro_rules! serialize_event {
-    ($event:expr, { $( $variant:ident => $name:literal ),* $(,)? }) => {
-        match $event {
-            $( Event::$variant(data) => ($name, crate::proto::to_js_value(data)?), )*
-            other => return event_to_js_special(other),
-        }
-    };
-}
-
-/// Convert a Rust Event to a JS object `{ type: string, data: any }`.
-fn event_to_js(event: &Event) -> Result<JsValue, JsValue> {
-    let obj = js_sys::Object::new();
-
-    // Common case: payload implements Serialize, just use to_js_value
-    let (event_type, data) = serialize_event!(event, {
-        Receipt                 => "receipt",
-        UndecryptableMessage    => "undecryptable_message",
-        Notification            => "notification",
-        ChatPresence            => "chat_presence",
-        Presence                => "presence",
-        PictureUpdate           => "picture_update",
-        UserAboutUpdate         => "user_about_update",
-        ContactUpdated          => "contact_updated",
-        ContactNumberChanged    => "contact_number_changed",
-        ContactSyncRequested    => "contact_sync_requested",
-        GroupUpdate             => "group_update",
-        ContactUpdate           => "contact_update",
-        PushNameUpdate          => "push_name_update",
-        SelfPushNameUpdated     => "self_push_name_updated",
-        PinUpdate               => "pin_update",
-        MuteUpdate              => "mute_update",
-        ArchiveUpdate           => "archive_update",
-        StarUpdate              => "star_update",
-        MarkChatAsReadUpdate    => "mark_chat_as_read_update",
-        DeleteChatUpdate        => "delete_chat_update",
-        DeleteMessageForMeUpdate => "delete_message_for_me_update",
-        HistorySync             => "history_sync",
-        OfflineSyncPreview      => "offline_sync_preview",
-        OfflineSyncCompleted    => "offline_sync_completed",
-        DeviceListUpdate        => "device_list_update",
-        BusinessStatusUpdate    => "business_status_update",
-        TemporaryBan            => "temporary_ban",
-        ConnectFailure          => "connect_failure",
-        StreamError             => "stream_error",
-        DisappearingModeChanged => "disappearing_mode_changed",
-        NewsletterLiveUpdate    => "newsletter_live_update",
-    });
-
-    js_sys::Reflect::set(&obj, &"type".into(), &event_type.into())?;
-    js_sys::Reflect::set(&obj, &"data".into(), &data)?;
-    Ok(obj.into())
 }
 
 /// Handles Event variants that need special serialization (no data, named
@@ -336,22 +375,22 @@ pub async fn create_whatsapp_client(
     on_event: Option<js_sys::Function>,
     store: Option<JsValue>,
     cache_config_js: Option<JsValue>,
-) -> Result<WasmWhatsAppClient, JsValue> {
+) -> Result<WasmWhatsAppClient, JsError> {
     let runtime = Arc::new(WasmRuntime) as Arc<dyn wacore::runtime::Runtime>;
     let backend = match store {
         Some(ref store_val) if !store_val.is_null() && !store_val.is_undefined() => {
             let get_fn = js_sys::Reflect::get(store_val, &"get".into())
-                .map_err(|_| JsValue::from_str("store.get is required"))?
+                .map_err(|_| JsError::new("store.get is required"))?
                 .dyn_into::<js_sys::Function>()
-                .map_err(|_| JsValue::from_str("store.get must be a function"))?;
+                .map_err(|_| JsError::new("store.get must be a function"))?;
             let set_fn = js_sys::Reflect::get(store_val, &"set".into())
-                .map_err(|_| JsValue::from_str("store.set is required"))?
+                .map_err(|_| JsError::new("store.set is required"))?
                 .dyn_into::<js_sys::Function>()
-                .map_err(|_| JsValue::from_str("store.set must be a function"))?;
+                .map_err(|_| JsError::new("store.set must be a function"))?;
             let delete_fn = js_sys::Reflect::get(store_val, &"delete".into())
-                .map_err(|_| JsValue::from_str("store.delete is required"))?
+                .map_err(|_| JsError::new("store.delete is required"))?
                 .dyn_into::<js_sys::Function>()
-                .map_err(|_| JsValue::from_str("store.delete must be a function"))?;
+                .map_err(|_| JsError::new("store.delete must be a function"))?;
             info!("Using JS-backed persistent storage");
             js_backend::new_js_backend(get_fn, set_fn, delete_fn)
         }
@@ -360,16 +399,17 @@ pub async fn create_whatsapp_client(
             js_backend::new_in_memory_backend()
         }
     };
-    let transport_factory = Arc::new(JsTransportFactory::from_js(transport_config)?)
-        as Arc<dyn wacore::net::TransportFactory>;
-    let http_client =
-        Arc::new(JsHttpClientAdapter::from_js(http_config)?) as Arc<dyn wacore::net::HttpClient>;
+    let transport_factory =
+        Arc::new(JsTransportFactory::from_js(transport_config).map_err(js_val_err)?)
+            as Arc<dyn wacore::net::TransportFactory>;
+    let http_client = Arc::new(JsHttpClientAdapter::from_js(http_config).map_err(js_val_err)?)
+        as Arc<dyn wacore::net::HttpClient>;
 
     let persistence_manager: Arc<whatsapp_rust::store::persistence_manager::PersistenceManager> =
         Arc::new(
             whatsapp_rust::store::persistence_manager::PersistenceManager::new(backend.clone())
                 .await
-                .map_err(|e| JsValue::from_str(&format!("create persistence manager: {e}")))?,
+                .map_err(|e| JsError::new(&format!("create persistence manager: {e}")))?,
         );
 
     // Start background saver — flushes dirty Device state to the backend
@@ -377,7 +417,7 @@ pub async fn create_whatsapp_client(
         .clone()
         .run_background_saver(runtime.clone(), std::time::Duration::from_secs(5));
 
-    let cache_config = build_cache_config(cache_config_js.as_ref())?;
+    let cache_config = build_cache_config(cache_config_js.as_ref()).map_err(js_val_err)?;
 
     let (client, sync_rx) = whatsapp_rust::Client::new_with_cache_config(
         runtime.clone(),
@@ -428,9 +468,9 @@ impl WasmWhatsAppClient {
     ///
     /// Not `async` to avoid holding a wasm-bindgen borrow on `self` that would
     /// prevent calling other methods (disconnect, etc.).
-    pub fn run(&mut self) -> Result<(), JsValue> {
+    pub fn run(&mut self) -> Result<(), JsError> {
         if self.sync_rx.is_none() {
-            return Err(JsValue::from_str("run() has already been called"));
+            return Err(JsError::new("run() has already been called"));
         }
         let client = self.client.clone();
         let runtime = self.runtime.clone();
@@ -462,7 +502,7 @@ impl WasmWhatsAppClient {
     }
 
     /// Connect to WhatsApp servers (single connection, no auto-reconnect).
-    pub async fn connect(&self) -> Result<(), JsValue> {
+    pub async fn connect(&self) -> Result<(), JsError> {
         self.client.connect().await.map_err(js_err)
     }
 
@@ -554,7 +594,7 @@ impl WasmWhatsAppClient {
         &self,
         phone_number: &str,
         custom_code: Option<String>,
-    ) -> Result<JsValue, JsValue> {
+    ) -> Result<String, JsError> {
         use whatsapp_rust::pair_code::PairCodeOptions;
         let options = PairCodeOptions {
             phone_number: phone_number.to_string(),
@@ -562,44 +602,44 @@ impl WasmWhatsAppClient {
             ..Default::default()
         };
         let code = self.client.pair_with_code(options).await.map_err(js_err)?;
-        Ok(JsValue::from_str(&code))
+        Ok(code)
     }
 
     // ── Sending messages ─────────────────────────────────────────────────
 
     /// Send an E2E encrypted message from a JS object.
     #[wasm_bindgen(js_name = sendMessage)]
-    pub async fn send_message(&self, jid: &str, message: JsValue) -> Result<JsValue, JsValue> {
+    pub async fn send_message(&self, jid: &str, message: JsValue) -> Result<String, JsError> {
         let (to, msg) = parse_jid_and_msg(jid, message)?;
         let id = self.client.send_message(to, msg).await.map_err(js_err)?;
-        Ok(JsValue::from_str(&id))
+        Ok(id)
     }
 
     /// Send a message from protobuf binary bytes.
     #[wasm_bindgen(js_name = sendMessageBytes)]
-    pub async fn send_message_bytes(&self, jid: &str, bytes: &[u8]) -> Result<JsValue, JsValue> {
+    pub async fn send_message_bytes(&self, jid: &str, bytes: &[u8]) -> Result<String, JsError> {
         let (to, msg) = parse_jid_and_msg_bytes(jid, bytes)?;
         let id = self.client.send_message(to, msg).await.map_err(js_err)?;
-        Ok(JsValue::from_str(&id))
+        Ok(id)
     }
 
     // ── Message management ──────────────────────────────────────────────
 
     /// Edit a previously sent message.
-    #[wasm_bindgen(js_name = editMessage, skip_typescript)]
+    #[wasm_bindgen(js_name = editMessage)]
     pub async fn edit_message(
         &self,
         jid: &str,
         message_id: &str,
         new_content: JsValue,
-    ) -> Result<JsValue, JsValue> {
+    ) -> Result<String, JsError> {
         let (to, msg) = parse_jid_and_msg(jid, new_content)?;
         let id = self
             .client
             .edit_message(to, message_id, msg)
             .await
             .map_err(js_err)?;
-        Ok(JsValue::from_str(&id))
+        Ok(id)
     }
 
     /// Edit a previously sent message from protobuf bytes.
@@ -609,7 +649,7 @@ impl WasmWhatsAppClient {
         jid: &str,
         message_id: &str,
         bytes: &[u8],
-    ) -> Result<String, JsValue> {
+    ) -> Result<String, JsError> {
         let (to, msg) = parse_jid_and_msg_bytes(jid, bytes)?;
         self.client
             .edit_message(to, message_id, msg)
@@ -624,7 +664,7 @@ impl WasmWhatsAppClient {
         jid: &str,
         message_id: &str,
         participant: Option<String>,
-    ) -> Result<(), JsValue> {
+    ) -> Result<(), JsError> {
         let to = parse_jid(jid)?;
 
         let revoke_type = match participant {
@@ -647,7 +687,10 @@ impl WasmWhatsAppClient {
 
     /// Get metadata for a group.
     #[wasm_bindgen(js_name = getGroupMetadata)]
-    pub async fn group_metadata(&self, jid: &str) -> Result<JsValue, JsValue> {
+    pub async fn group_metadata(
+        &self,
+        jid: &str,
+    ) -> Result<crate::result_types::GroupMetadataResult, JsError> {
         let group_jid = parse_jid(jid)?;
 
         let metadata = self
@@ -657,7 +700,7 @@ impl WasmWhatsAppClient {
             .await
             .map_err(js_err)?;
 
-        group_metadata_to_js(&metadata)
+        Ok(group_metadata_to_result(&metadata))
     }
 
     /// Create a new group.
@@ -668,7 +711,7 @@ impl WasmWhatsAppClient {
         &self,
         subject: &str,
         participants: Vec<String>,
-    ) -> Result<JsValue, JsValue> {
+    ) -> Result<crate::result_types::CreateGroupResult, JsError> {
         use whatsapp_rust::features::GroupParticipantOptions;
 
         let participant_options: Vec<GroupParticipantOptions> = participants
@@ -691,14 +734,14 @@ impl WasmWhatsAppClient {
             .await
             .map_err(js_err)?;
 
-        let obj = js_sys::Object::new();
-        js_sys::Reflect::set(&obj, &"gid".into(), &result.gid.to_string().into())?;
-        Ok(obj.into())
+        Ok(crate::result_types::CreateGroupResult {
+            gid: result.gid.to_string(),
+        })
     }
 
     /// Update a group's subject (name).
     #[wasm_bindgen(js_name = groupUpdateSubject)]
-    pub async fn group_update_subject(&self, jid: &str, subject: &str) -> Result<(), JsValue> {
+    pub async fn group_update_subject(&self, jid: &str, subject: &str) -> Result<(), JsError> {
         let group_jid = parse_jid(jid)?;
 
         let group_subject = whatsapp_rust::features::GroupSubject::new(subject).map_err(js_err)?;
@@ -716,7 +759,7 @@ impl WasmWhatsAppClient {
         &self,
         jid: &str,
         description: Option<String>,
-    ) -> Result<(), JsValue> {
+    ) -> Result<(), JsError> {
         let group_jid = parse_jid(jid)?;
 
         let desc = description
@@ -734,20 +777,21 @@ impl WasmWhatsAppClient {
 
     /// Leave a group.
     #[wasm_bindgen(js_name = groupLeave)]
-    pub async fn group_leave(&self, jid: &str) -> Result<(), JsValue> {
+    pub async fn group_leave(&self, jid: &str) -> Result<(), JsError> {
         let group_jid = parse_jid(jid)?;
 
         self.client.groups().leave(&group_jid).await.map_err(js_err)
     }
 
     /// Update group participants (add, remove, promote, demote).
-    #[wasm_bindgen(js_name = groupParticipantsUpdate, skip_typescript)]
+    #[wasm_bindgen(js_name = groupParticipantsUpdate)]
     pub async fn group_participants_update(
         &self,
         jid: &str,
         participants: Vec<String>,
-        action: &str,
-    ) -> Result<JsValue, JsValue> {
+        action: crate::result_types::GroupParticipantAction,
+    ) -> Result<Vec<crate::result_types::ParticipantChangeResult>, JsError> {
+        use crate::result_types::GroupParticipantAction;
         let group_jid = parse_jid(jid)?;
 
         let participant_jids: Vec<Jid> = participants
@@ -758,50 +802,59 @@ impl WasmWhatsAppClient {
             })
             .collect();
 
+        let to_results =
+            |responses: Vec<whatsapp_rust::features::ParticipantChangeResponse>| -> Vec<crate::result_types::ParticipantChangeResult> {
+                responses
+                    .iter()
+                    .map(|r| crate::result_types::ParticipantChangeResult {
+                        jid: r.jid.to_string(),
+                        status: r.status.clone(),
+                        error: r.error.clone(),
+                    })
+                    .collect()
+            };
+
         match action {
-            "add" => {
+            GroupParticipantAction::Add => {
                 let result = self
                     .client
                     .groups()
                     .add_participants(&group_jid, &participant_jids)
                     .await
                     .map_err(js_err)?;
-                participant_change_to_js(&result)
+                Ok(to_results(result))
             }
-            "remove" => {
+            GroupParticipantAction::Remove => {
                 let result = self
                     .client
                     .groups()
                     .remove_participants(&group_jid, &participant_jids)
                     .await
                     .map_err(js_err)?;
-                participant_change_to_js(&result)
+                Ok(to_results(result))
             }
-            "promote" => {
+            GroupParticipantAction::Promote => {
                 self.client
                     .groups()
                     .promote_participants(&group_jid, &participant_jids)
                     .await
                     .map_err(js_err)?;
-                Ok(JsValue::UNDEFINED)
+                Ok(Vec::new())
             }
-            "demote" => {
+            GroupParticipantAction::Demote => {
                 self.client
                     .groups()
                     .demote_participants(&group_jid, &participant_jids)
                     .await
                     .map_err(js_err)?;
-                Ok(JsValue::UNDEFINED)
+                Ok(Vec::new())
             }
-            _ => Err(JsValue::from_str(
-                "action must be 'add', 'remove', 'promote', or 'demote'",
-            )),
         }
     }
 
     /// Fetch all groups the user is participating in.
     #[wasm_bindgen(js_name = groupFetchAllParticipating, skip_typescript)]
-    pub async fn group_fetch_all_participating(&self) -> Result<JsValue, JsValue> {
+    pub async fn group_fetch_all_participating(&self) -> Result<JsValue, JsError> {
         let groups = self
             .client
             .groups()
@@ -811,15 +864,17 @@ impl WasmWhatsAppClient {
 
         let obj = js_sys::Object::new();
         for (key, metadata) in &groups {
-            let js_metadata = group_metadata_to_js(metadata)?;
-            js_sys::Reflect::set(&obj, &JsValue::from_str(key), &js_metadata)?;
+            let result = group_metadata_to_result(metadata);
+            let js_metadata = serde_wasm_bindgen::to_value(&result).map_err(js_err)?;
+            js_sys::Reflect::set(&obj, &JsValue::from_str(key), &js_metadata)
+                .map_err(js_val_err)?;
         }
         Ok(obj.into())
     }
 
     /// Get the invite link for a group.
     #[wasm_bindgen(js_name = groupInviteCode)]
-    pub async fn group_invite_code(&self, jid: &str) -> Result<String, JsValue> {
+    pub async fn group_invite_code(&self, jid: &str) -> Result<String, JsError> {
         let group_jid = parse_jid(jid)?;
 
         self.client
@@ -834,25 +889,26 @@ impl WasmWhatsAppClient {
     pub async fn group_setting_update(
         &self,
         jid: &str,
-        setting: &str,
+        setting: crate::result_types::GroupSetting,
         value: bool,
-    ) -> Result<(), JsValue> {
+    ) -> Result<(), JsError> {
+        use crate::result_types::GroupSetting;
         let group_jid = parse_jid(jid)?;
 
         match setting {
-            "locked" => self
+            GroupSetting::Locked => self
                 .client
                 .groups()
                 .set_locked(&group_jid, value)
                 .await
                 .map_err(js_err)?,
-            "announce" => self
+            GroupSetting::Announce => self
                 .client
                 .groups()
                 .set_announce(&group_jid, value)
                 .await
                 .map_err(js_err)?,
-            "membership_approval" => {
+            GroupSetting::MembershipApproval => {
                 let mode = if value {
                     whatsapp_rust::MembershipApprovalMode::On
                 } else {
@@ -864,11 +920,6 @@ impl WasmWhatsAppClient {
                     .await
                     .map_err(js_err)?;
             }
-            _ => {
-                return Err(JsValue::from_str(
-                    "setting must be 'locked', 'announce', or 'membership_approval'",
-                ));
-            }
         }
 
         Ok(())
@@ -876,7 +927,7 @@ impl WasmWhatsAppClient {
 
     /// Set disappearing messages timer for a group (0 to disable).
     #[wasm_bindgen(js_name = groupToggleEphemeral)]
-    pub async fn group_toggle_ephemeral(&self, jid: &str, expiration: u32) -> Result<(), JsValue> {
+    pub async fn group_toggle_ephemeral(&self, jid: &str, expiration: u32) -> Result<(), JsError> {
         let group_jid = parse_jid(jid)?;
         self.client
             .groups()
@@ -887,7 +938,7 @@ impl WasmWhatsAppClient {
 
     /// Revoke a group's invite link (generates new one).
     #[wasm_bindgen(js_name = groupRevokeInvite)]
-    pub async fn group_revoke_invite(&self, jid: &str) -> Result<String, JsValue> {
+    pub async fn group_revoke_invite(&self, jid: &str) -> Result<String, JsError> {
         let group_jid = parse_jid(jid)?;
         let new_code = self
             .client
@@ -904,7 +955,10 @@ impl WasmWhatsAppClient {
     ///
     /// Returns an array of `{ jid: string, isRegistered: boolean }`.
     #[wasm_bindgen(js_name = isOnWhatsApp)]
-    pub async fn is_on_whatsapp(&self, phone: &str) -> Result<JsValue, JsValue> {
+    pub async fn is_on_whatsapp(
+        &self,
+        phone: &str,
+    ) -> Result<Vec<crate::result_types::IsOnWhatsAppResult>, JsError> {
         let results = self
             .client
             .contacts()
@@ -912,14 +966,13 @@ impl WasmWhatsAppClient {
             .await
             .map_err(js_err)?;
 
-        let arr = js_sys::Array::new();
-        for r in &results {
-            let obj = js_sys::Object::new();
-            js_sys::Reflect::set(&obj, &"jid".into(), &r.jid.to_string().into())?;
-            js_sys::Reflect::set(&obj, &"isRegistered".into(), &r.is_registered.into())?;
-            arr.push(&obj.into());
-        }
-        Ok(arr.into())
+        Ok(results
+            .iter()
+            .map(|r| crate::result_types::IsOnWhatsAppResult {
+                jid: r.jid.to_string(),
+                is_registered: r.is_registered,
+            })
+            .collect())
     }
 
     /// Get the profile picture URL for a user or group.
@@ -929,17 +982,13 @@ impl WasmWhatsAppClient {
     pub async fn profile_picture_url(
         &self,
         jid: &str,
-        picture_type: &str,
-    ) -> Result<Option<crate::result_types::ProfilePictureInfo>, JsValue> {
+        picture_type: crate::result_types::PictureType,
+    ) -> Result<Option<crate::result_types::ProfilePictureInfo>, JsError> {
+        use crate::result_types::PictureType;
         let target = parse_jid(jid)?;
         let preview = match picture_type {
-            "preview" => true,
-            "image" => false,
-            _ => {
-                return Err(JsValue::from_str(
-                    "picture_type must be 'preview' or 'image'",
-                ));
-            }
+            PictureType::Preview => true,
+            PictureType::Image => false,
         };
 
         let result = self
@@ -959,7 +1008,7 @@ impl WasmWhatsAppClient {
 
     /// Fetch user info for one or more JIDs.
     #[wasm_bindgen(js_name = fetchUserInfo, skip_typescript)]
-    pub async fn fetch_user_info(&self, jids: Vec<String>) -> Result<JsValue, JsValue> {
+    pub async fn fetch_user_info(&self, jids: Vec<String>) -> Result<JsValue, JsError> {
         let parsed_jids: Vec<Jid> = jids
             .iter()
             .map(|j| parse_jid(j))
@@ -974,20 +1023,16 @@ impl WasmWhatsAppClient {
 
         let obj = js_sys::Object::new();
         for (jid, info) in &result {
-            let info_obj = js_sys::Object::new();
-            js_sys::Reflect::set(&info_obj, &"jid".into(), &info.jid.to_string().into())?;
-            js_sys::Reflect::set(
-                &info_obj,
-                &"lid".into(),
-                &match &info.lid {
-                    Some(l) => JsValue::from_str(&l.to_string()),
-                    None => JsValue::NULL,
-                },
-            )?;
-            set_optional_str(&info_obj, "status", &info.status)?;
-            set_optional_str(&info_obj, "pictureId", &info.picture_id)?;
-            js_sys::Reflect::set(&info_obj, &"isBusiness".into(), &info.is_business.into())?;
-            js_sys::Reflect::set(&obj, &JsValue::from_str(&jid.to_string()), &info_obj)?;
+            let entry = crate::result_types::UserInfoResult {
+                jid: info.jid.to_string(),
+                lid: info.lid.as_ref().map(|l| l.to_string()),
+                status: info.status.clone(),
+                picture_id: info.picture_id.clone(),
+                is_business: info.is_business,
+            };
+            let js_entry = serde_wasm_bindgen::to_value(&entry).map_err(js_err)?;
+            js_sys::Reflect::set(&obj, &JsValue::from_str(&jid.to_string()), &js_entry)
+                .map_err(js_val_err)?;
         }
         Ok(obj.into())
     }
@@ -996,7 +1041,7 @@ impl WasmWhatsAppClient {
 
     /// Set the user's push name (display name).
     #[wasm_bindgen(js_name = setPushName)]
-    pub async fn set_push_name(&self, name: &str) -> Result<(), JsValue> {
+    pub async fn set_push_name(&self, name: &str) -> Result<(), JsError> {
         self.client
             .profile()
             .set_push_name(name)
@@ -1009,7 +1054,7 @@ impl WasmWhatsAppClient {
     pub async fn update_profile_picture(
         &self,
         img_data: Vec<u8>,
-    ) -> Result<crate::result_types::ProfilePictureResult, JsValue> {
+    ) -> Result<crate::result_types::ProfilePictureResult, JsError> {
         let result = self
             .client
             .profile()
@@ -1024,7 +1069,7 @@ impl WasmWhatsAppClient {
     #[wasm_bindgen(js_name = removeProfilePicture)]
     pub async fn remove_profile_picture(
         &self,
-    ) -> Result<crate::result_types::ProfilePictureResult, JsValue> {
+    ) -> Result<crate::result_types::ProfilePictureResult, JsError> {
         let result = self
             .client
             .profile()
@@ -1037,7 +1082,7 @@ impl WasmWhatsAppClient {
 
     /// Update the user's status text (about).
     #[wasm_bindgen(js_name = updateProfileStatus)]
-    pub async fn update_profile_status(&self, status: &str) -> Result<(), JsValue> {
+    pub async fn update_profile_status(&self, status: &str) -> Result<(), JsError> {
         self.client
             .profile()
             .set_status_text(status)
@@ -1048,30 +1093,29 @@ impl WasmWhatsAppClient {
     // ── Blocking ──────────────────────────────────────────────────────────
 
     /// Block or unblock a contact.
-    ///
-    /// `action` must be "block" or "unblock".
     #[wasm_bindgen(js_name = updateBlockStatus)]
-    pub async fn update_block_status(&self, jid: &str, action: &str) -> Result<(), JsValue> {
+    pub async fn update_block_status(
+        &self,
+        jid: &str,
+        action: crate::result_types::BlockAction,
+    ) -> Result<(), JsError> {
+        use crate::result_types::BlockAction;
         let target = parse_jid(jid)?;
 
         match action {
-            "block" => self
+            BlockAction::Block => self
                 .client
                 .blocking()
                 .block(&target)
                 .await
                 .map_err(js_err)?,
-            "unblock" => self
+            BlockAction::Unblock => self
                 .client
                 .blocking()
                 .unblock(&target)
                 .await
                 .map_err(js_err)?,
-            _ => {
-                return Err(JsValue::from_str("action must be 'block' or 'unblock'"));
-            }
         }
-
         Ok(())
     }
 
@@ -1079,7 +1123,7 @@ impl WasmWhatsAppClient {
     #[wasm_bindgen(js_name = fetchBlocklist)]
     pub async fn fetch_blocklist(
         &self,
-    ) -> Result<Vec<crate::result_types::BlocklistEntryResult>, JsValue> {
+    ) -> Result<Vec<crate::result_types::BlocklistEntryResult>, JsError> {
         let entries = self
             .client
             .blocking()
@@ -1100,7 +1144,7 @@ impl WasmWhatsAppClient {
 
     /// Pin or unpin a chat.
     #[wasm_bindgen(js_name = pinChat)]
-    pub async fn pin_chat(&self, jid: &str, pin: bool) -> Result<(), JsValue> {
+    pub async fn pin_chat(&self, jid: &str, pin: bool) -> Result<(), JsError> {
         let chat_jid = parse_jid(jid)?;
 
         if pin {
@@ -1115,7 +1159,7 @@ impl WasmWhatsAppClient {
     ///
     /// Pass a positive timestamp (ms) to mute until that time, or null/undefined to unmute.
     #[wasm_bindgen(js_name = muteChat)]
-    pub async fn mute_chat(&self, jid: &str, mute_until: Option<f64>) -> Result<(), JsValue> {
+    pub async fn mute_chat(&self, jid: &str, mute_until: Option<f64>) -> Result<(), JsError> {
         let chat_jid = parse_jid(jid)?;
 
         match mute_until {
@@ -1132,7 +1176,7 @@ impl WasmWhatsAppClient {
 
     /// Archive or unarchive a chat.
     #[wasm_bindgen(js_name = archiveChat)]
-    pub async fn archive_chat(&self, jid: &str, archive: bool) -> Result<(), JsValue> {
+    pub async fn archive_chat(&self, jid: &str, archive: bool) -> Result<(), JsError> {
         let chat_jid = parse_jid(jid)?;
 
         if archive {
@@ -1156,7 +1200,7 @@ impl WasmWhatsAppClient {
         jid: &str,
         message_id: &str,
         star: bool,
-    ) -> Result<(), JsValue> {
+    ) -> Result<(), JsError> {
         let chat_jid = parse_jid(jid)?;
 
         if star {
@@ -1176,7 +1220,7 @@ impl WasmWhatsAppClient {
     /// Mark a chat as read or unread via app state mutation.
     /// Different from readMessages (which sends read receipts).
     #[wasm_bindgen(js_name = markChatAsRead)]
-    pub async fn mark_chat_as_read(&self, jid: &str, read: bool) -> Result<(), JsValue> {
+    pub async fn mark_chat_as_read(&self, jid: &str, read: bool) -> Result<(), JsError> {
         let chat_jid = parse_jid(jid)?;
         self.client
             .chat_actions()
@@ -1187,7 +1231,7 @@ impl WasmWhatsAppClient {
 
     /// Delete a chat via app state mutation.
     #[wasm_bindgen(js_name = deleteChat)]
-    pub async fn delete_chat(&self, jid: &str) -> Result<(), JsValue> {
+    pub async fn delete_chat(&self, jid: &str) -> Result<(), JsError> {
         let chat_jid = parse_jid(jid)?;
         self.client
             .chat_actions()
@@ -1203,7 +1247,7 @@ impl WasmWhatsAppClient {
         jid: &str,
         message_id: &str,
         from_me: bool,
-    ) -> Result<(), JsValue> {
+    ) -> Result<(), JsError> {
         let chat_jid = parse_jid(jid)?;
         self.client
             .chat_actions()
@@ -1224,7 +1268,7 @@ impl WasmWhatsAppClient {
         name: &str,
         options: Vec<String>,
         selectable_count: u32,
-    ) -> Result<JsValue, JsValue> {
+    ) -> Result<crate::result_types::CreatePollResult, JsError> {
         let to = parse_jid(jid)?;
         let (msg_id, message_secret) = self
             .client
@@ -1232,14 +1276,10 @@ impl WasmWhatsAppClient {
             .create(&to, name, &options, selectable_count)
             .await
             .map_err(js_err)?;
-        let obj = js_sys::Object::new();
-        js_sys::Reflect::set(&obj, &"messageId".into(), &msg_id.into())?;
-        js_sys::Reflect::set(
-            &obj,
-            &"messageSecret".into(),
-            &js_sys::Uint8Array::from(&message_secret[..]).into(),
-        )?;
-        Ok(obj.into())
+        Ok(crate::result_types::CreatePollResult {
+            message_id: msg_id,
+            message_secret: message_secret.to_vec(),
+        })
     }
 
     /// Vote on a poll. Returns message ID.
@@ -1251,7 +1291,7 @@ impl WasmWhatsAppClient {
         poll_creator_jid: &str,
         message_secret: &[u8],
         option_names: Vec<String>,
-    ) -> Result<JsValue, JsValue> {
+    ) -> Result<String, JsError> {
         let chat = parse_jid(chat_jid)?;
         let creator = parse_jid(poll_creator_jid)?;
         let id = self
@@ -1260,7 +1300,7 @@ impl WasmWhatsAppClient {
             .vote(&chat, poll_msg_id, &creator, message_secret, &option_names)
             .await
             .map_err(js_err)?;
-        Ok(JsValue::from_str(&id))
+        Ok(id)
     }
 
     /// Send a status/story message to specified recipients.
@@ -1269,11 +1309,11 @@ impl WasmWhatsAppClient {
         &self,
         message: JsValue,
         recipients: Vec<String>,
-    ) -> Result<JsValue, JsValue> {
+    ) -> Result<String, JsError> {
         let msg: waproto::whatsapp::Message = {
             let snake = crate::proto::to_snake_case_js(&message);
             serde_wasm_bindgen::from_value(snake)
-                .map_err(|e| JsValue::from_str(&format!("invalid message: {e}")))?
+                .map_err(|e| JsError::new(&format!("invalid message: {e}")))?
         };
         let jids: Vec<Jid> = recipients
             .iter()
@@ -1285,7 +1325,7 @@ impl WasmWhatsAppClient {
             .send_raw(msg, jids, Default::default())
             .await
             .map_err(js_err)?;
-        Ok(JsValue::from_str(&id))
+        Ok(id)
     }
 
     // ── Read receipts ─────────────────────────────────────────────────
@@ -1295,7 +1335,7 @@ impl WasmWhatsAppClient {
     pub async fn read_messages(
         &self,
         keys: Vec<crate::result_types::ReadMessageKey>,
-    ) -> Result<(), JsValue> {
+    ) -> Result<(), JsError> {
         use std::collections::HashMap;
         let mut grouped: HashMap<(String, Option<String>), Vec<String>> = HashMap::new();
 
@@ -1323,14 +1363,14 @@ impl WasmWhatsAppClient {
 
     /// Join a group using an invite code.
     #[wasm_bindgen(js_name = groupAcceptInvite)]
-    pub async fn group_accept_invite(&self, code: &str) -> Result<JsValue, JsValue> {
+    pub async fn group_accept_invite(&self, code: &str) -> Result<String, JsError> {
         let jid = self
             .client
             .groups()
             .join_with_invite_code(code)
             .await
             .map_err(js_err)?;
-        Ok(JsValue::from_str(&jid.group_jid().to_string()))
+        Ok(jid.group_jid().to_string())
     }
 
     /// Join a group via a GroupInviteMessage (V4 invite).
@@ -1341,7 +1381,7 @@ impl WasmWhatsAppClient {
         code: &str,
         expiration: f64,
         admin_jid: &str,
-    ) -> Result<JsValue, JsValue> {
+    ) -> Result<String, JsError> {
         let group = parse_jid(group_jid)?;
         let admin = parse_jid(admin_jid)?;
         let result = self
@@ -1350,25 +1390,31 @@ impl WasmWhatsAppClient {
             .join_with_invite_v4(&group, code, expiration as i64, &admin)
             .await
             .map_err(js_err)?;
-        Ok(JsValue::from_str(&result.group_jid().to_string()))
+        Ok(result.group_jid().to_string())
     }
 
     /// Get group info from an invite code (without joining).
     /// Returns the same shape as groupMetadata.
     #[wasm_bindgen(js_name = groupGetInviteInfo)]
-    pub async fn group_get_invite_info(&self, code: &str) -> Result<JsValue, JsValue> {
+    pub async fn group_get_invite_info(
+        &self,
+        code: &str,
+    ) -> Result<crate::result_types::GroupMetadataResult, JsError> {
         let metadata = self
             .client
             .groups()
             .get_invite_info(code)
             .await
             .map_err(js_err)?;
-        group_metadata_to_js(&metadata)
+        Ok(group_metadata_to_result(&metadata))
     }
 
     /// Get list of pending join requests for a group.
     #[wasm_bindgen(js_name = groupRequestParticipantsList)]
-    pub async fn group_request_participants_list(&self, jid: &str) -> Result<JsValue, JsValue> {
+    pub async fn group_request_participants_list(
+        &self,
+        jid: &str,
+    ) -> Result<Vec<crate::result_types::MembershipRequestResult>, JsError> {
         let group_jid = parse_jid(jid)?;
         let list = self
             .client
@@ -1376,8 +1422,13 @@ impl WasmWhatsAppClient {
             .get_membership_requests(&group_jid)
             .await
             .map_err(js_err)?;
-        // MembershipRequest derives Serialize
-        serde_wasm_bindgen::to_value(&list).map_err(js_err)
+        Ok(list
+            .iter()
+            .map(|r| crate::result_types::MembershipRequestResult {
+                jid: r.jid.to_string(),
+                request_time: r.request_time.map(|t| t as f64),
+            })
+            .collect())
     }
 
     /// Approve or reject pending join requests.
@@ -1386,54 +1437,51 @@ impl WasmWhatsAppClient {
         &self,
         jid: &str,
         participants: Vec<String>,
-        action: &str,
-    ) -> Result<JsValue, JsValue> {
+        action: crate::result_types::GroupRequestAction,
+    ) -> Result<(), JsError> {
+        use crate::result_types::GroupRequestAction;
         let group_jid = parse_jid(jid)?;
         let participant_jids: Vec<Jid> = participants
             .iter()
             .map(|s| parse_jid(s))
             .collect::<Result<Vec<_>, _>>()?;
 
-        let result = match action {
-            "approve" => {
+        match action {
+            GroupRequestAction::Approve => {
                 self.client
                     .groups()
                     .approve_membership_requests(&group_jid, &participant_jids)
                     .await
+                    .map_err(js_err)?;
             }
-            "reject" => {
+            GroupRequestAction::Reject => {
                 self.client
                     .groups()
                     .reject_membership_requests(&group_jid, &participant_jids)
                     .await
+                    .map_err(js_err)?;
             }
-            _ => return Err(JsValue::from_str("action must be 'approve' or 'reject'")),
-        };
-
-        result.map_err(js_err)?;
-        Ok(JsValue::undefined())
+        }
+        Ok(())
     }
 
     // ── Privacy settings ──────────────────────────────────────────────
 
     /// Fetch all privacy settings.
     #[wasm_bindgen(js_name = fetchPrivacySettings)]
-    pub async fn fetch_privacy_settings(&self) -> Result<JsValue, JsValue> {
+    pub async fn fetch_privacy_settings(&self) -> Result<JsValue, JsError> {
         let response = self.client.fetch_privacy_settings().await.map_err(js_err)?;
-        let obj = js_sys::Object::new();
-        for setting in &response.settings {
-            js_sys::Reflect::set(
-                &obj,
-                &setting.category.as_str().into(),
-                &setting.value.as_str().into(),
-            )?;
-        }
-        Ok(obj.into())
+        let map: std::collections::HashMap<&str, &str> = response
+            .settings
+            .iter()
+            .map(|s| (s.category.as_str(), s.value.as_str()))
+            .collect();
+        serde_wasm_bindgen::to_value(&map).map_err(js_err)
     }
 
     /// Update a single privacy setting.
     #[wasm_bindgen(js_name = updatePrivacySetting)]
-    pub async fn update_privacy_setting(&self, category: &str, value: &str) -> Result<(), JsValue> {
+    pub async fn update_privacy_setting(&self, category: &str, value: &str) -> Result<(), JsError> {
         self.client
             .set_privacy_setting(category, value)
             .await
@@ -1442,7 +1490,7 @@ impl WasmWhatsAppClient {
 
     /// Set default disappearing messages duration (seconds). 0 to disable.
     #[wasm_bindgen(js_name = updateDefaultDisappearingMode)]
-    pub async fn update_default_disappearing_mode(&self, duration: u32) -> Result<(), JsValue> {
+    pub async fn update_default_disappearing_mode(&self, duration: u32) -> Result<(), JsError> {
         self.client
             .set_default_disappearing_mode(duration)
             .await
@@ -1453,7 +1501,7 @@ impl WasmWhatsAppClient {
 
     /// Reject an incoming call.
     #[wasm_bindgen(js_name = rejectCall)]
-    pub async fn reject_call(&self, call_id: &str, call_from: &str) -> Result<(), JsValue> {
+    pub async fn reject_call(&self, call_id: &str, call_from: &str) -> Result<(), JsError> {
         let from_jid = parse_jid(call_from)?;
         self.client
             .reject_call(call_id, &from_jid)
@@ -1465,7 +1513,10 @@ impl WasmWhatsAppClient {
 
     /// Fetch user status/about text for one or more JIDs.
     #[wasm_bindgen(js_name = fetchStatus)]
-    pub async fn fetch_status(&self, jids: Vec<String>) -> Result<JsValue, JsValue> {
+    pub async fn fetch_status(
+        &self,
+        jids: Vec<String>,
+    ) -> Result<Vec<crate::result_types::FetchStatusResult>, JsError> {
         let jid_refs: Vec<&str> = jids.iter().map(|s| s.as_str()).collect();
         let infos = self
             .client
@@ -1473,33 +1524,30 @@ impl WasmWhatsAppClient {
             .get_info(&jid_refs)
             .await
             .map_err(js_err)?;
-        let arr = js_sys::Array::new();
-        for info in infos {
-            let obj = js_sys::Object::new();
-            js_sys::Reflect::set(&obj, &"jid".into(), &info.jid.to_string().into())?;
-            if let Some(status) = &info.status {
-                js_sys::Reflect::set(&obj, &"status".into(), &status.into())?;
-            }
-            arr.push(&obj.into());
-        }
-        Ok(arr.into())
+        Ok(infos
+            .iter()
+            .map(|info| crate::result_types::FetchStatusResult {
+                jid: info.jid.to_string(),
+                status: info.status.clone(),
+            })
+            .collect())
     }
 
     // ── Business profile ───────────────────────────────────────────────
 
     /// Get business profile information for a JID.
     #[wasm_bindgen(js_name = getBusinessProfile)]
-    pub async fn get_business_profile(&self, jid: &str) -> Result<JsValue, JsValue> {
+    pub async fn get_business_profile(
+        &self,
+        jid: &str,
+    ) -> Result<Option<crate::result_types::BusinessProfileResult>, JsError> {
         let target_jid = parse_jid(jid)?;
         let profile = self
             .client
             .execute(wacore::iq::business::BusinessProfileSpec::new(&target_jid))
             .await
             .map_err(js_err)?;
-        match profile {
-            Some(p) => serde_wasm_bindgen::to_value(&p).map_err(js_err),
-            None => Ok(JsValue::undefined()),
-        }
+        Ok(profile.map(|p| business_profile_to_result(&p)))
     }
 
     // ── Message history ──────────────────────────────────────────────────
@@ -1515,7 +1563,7 @@ impl WasmWhatsAppClient {
         oldest_msg_id: &str,
         oldest_msg_from_me: bool,
         oldest_msg_timestamp_ms: f64,
-    ) -> Result<JsValue, JsValue> {
+    ) -> Result<String, JsError> {
         let chat = parse_jid(chat_jid)?;
         let msg_id = self
             .client
@@ -1528,23 +1576,23 @@ impl WasmWhatsAppClient {
             )
             .await
             .map_err(js_err)?;
-        Ok(JsValue::from_str(&msg_id))
+        Ok(msg_id)
     }
 
     // ── Group member add mode ────────────────────────────────────────────
 
-    /// Set who can add members to a group: "admin_add" or "all_member_add".
+    /// Set who can add members to a group.
     #[wasm_bindgen(js_name = groupMemberAddMode)]
-    pub async fn group_member_add_mode(&self, jid: &str, mode: &str) -> Result<(), JsValue> {
+    pub async fn group_member_add_mode(
+        &self,
+        jid: &str,
+        mode: crate::result_types::MemberAddMode,
+    ) -> Result<(), JsError> {
+        use crate::result_types::MemberAddMode;
         let group_jid = parse_jid(jid)?;
         let add_mode = match mode {
-            "admin_add" => whatsapp_rust::features::MemberAddMode::AdminAdd,
-            "all_member_add" => whatsapp_rust::features::MemberAddMode::AllMemberAdd,
-            _ => {
-                return Err(JsValue::from_str(
-                    "mode must be 'admin_add' or 'all_member_add'",
-                ));
-            }
+            MemberAddMode::AdminAdd => whatsapp_rust::features::MemberAddMode::AdminAdd,
+            MemberAddMode::AllMemberAdd => whatsapp_rust::features::MemberAddMode::AllMemberAdd,
         };
         self.client
             .groups()
@@ -1557,15 +1605,14 @@ impl WasmWhatsAppClient {
 
     /// Send presence status ("available" or "unavailable").
     #[wasm_bindgen(js_name = sendPresence)]
-    pub async fn send_presence(&self, status: &str) -> Result<(), JsValue> {
+    pub async fn send_presence(
+        &self,
+        status: crate::result_types::PresenceStatus,
+    ) -> Result<(), JsError> {
+        use crate::result_types::PresenceStatus;
         let presence_status = match status {
-            "available" => whatsapp_rust::features::PresenceStatus::Available,
-            "unavailable" => whatsapp_rust::features::PresenceStatus::Unavailable,
-            _ => {
-                return Err(JsValue::from_str(
-                    "status must be 'available' or 'unavailable'",
-                ));
-            }
+            PresenceStatus::Available => whatsapp_rust::features::PresenceStatus::Available,
+            PresenceStatus::Unavailable => whatsapp_rust::features::PresenceStatus::Unavailable,
         };
 
         self.client
@@ -1577,7 +1624,7 @@ impl WasmWhatsAppClient {
 
     /// Subscribe to a contact's presence updates.
     #[wasm_bindgen(js_name = presenceSubscribe)]
-    pub async fn presence_subscribe(&self, jid: &str) -> Result<(), JsValue> {
+    pub async fn presence_subscribe(&self, jid: &str) -> Result<(), JsError> {
         let target = parse_jid(jid)?;
 
         self.client
@@ -1590,12 +1637,12 @@ impl WasmWhatsAppClient {
     // ── Newsletter ────────────────────────────────────────────────────────
 
     /// Create a new newsletter (channel).
-    #[wasm_bindgen(js_name = newsletterCreate, skip_typescript)]
+    #[wasm_bindgen(js_name = newsletterCreate)]
     pub async fn newsletter_create(
         &self,
         name: &str,
         description: Option<String>,
-    ) -> Result<JsValue, JsValue> {
+    ) -> Result<crate::result_types::NewsletterMetadataResult, JsError> {
         let result = self
             .client
             .newsletter()
@@ -1603,12 +1650,15 @@ impl WasmWhatsAppClient {
             .await
             .map_err(js_err)?;
 
-        newsletter_metadata_to_js(&result)
+        Ok(newsletter_metadata_to_result(&result))
     }
 
     /// Fetch metadata for a newsletter by JID.
-    #[wasm_bindgen(js_name = newsletterMetadata, skip_typescript)]
-    pub async fn newsletter_metadata(&self, jid: &str) -> Result<JsValue, JsValue> {
+    #[wasm_bindgen(js_name = newsletterMetadata)]
+    pub async fn newsletter_metadata(
+        &self,
+        jid: &str,
+    ) -> Result<crate::result_types::NewsletterMetadataResult, JsError> {
         let target = parse_jid(jid)?;
 
         let result = self
@@ -1618,12 +1668,15 @@ impl WasmWhatsAppClient {
             .await
             .map_err(js_err)?;
 
-        newsletter_metadata_to_js(&result)
+        Ok(newsletter_metadata_to_result(&result))
     }
 
     /// Subscribe (join) a newsletter.
-    #[wasm_bindgen(js_name = newsletterSubscribe, skip_typescript)]
-    pub async fn newsletter_subscribe(&self, jid: &str) -> Result<JsValue, JsValue> {
+    #[wasm_bindgen(js_name = newsletterSubscribe)]
+    pub async fn newsletter_subscribe(
+        &self,
+        jid: &str,
+    ) -> Result<crate::result_types::NewsletterMetadataResult, JsError> {
         let target = parse_jid(jid)?;
 
         let result = self
@@ -1633,12 +1686,12 @@ impl WasmWhatsAppClient {
             .await
             .map_err(js_err)?;
 
-        newsletter_metadata_to_js(&result)
+        Ok(newsletter_metadata_to_result(&result))
     }
 
     /// Unsubscribe (leave) a newsletter.
     #[wasm_bindgen(js_name = newsletterUnsubscribe)]
-    pub async fn newsletter_unsubscribe(&self, jid: &str) -> Result<(), JsValue> {
+    pub async fn newsletter_unsubscribe(&self, jid: &str) -> Result<(), JsError> {
         let target = parse_jid(jid)?;
 
         self.client
@@ -1654,7 +1707,7 @@ impl WasmWhatsAppClient {
     ///
     /// Returns the new `directPath` on success.
     /// Throws on failure (not found, decryption error, timeout, etc.).
-    #[wasm_bindgen(js_name = requestMediaReupload, skip_typescript)]
+    #[wasm_bindgen(js_name = requestMediaReupload)]
     pub async fn request_media_reupload(
         &self,
         msg_id: &str,
@@ -1662,7 +1715,7 @@ impl WasmWhatsAppClient {
         media_key: &[u8],
         is_from_me: bool,
         participant: Option<String>,
-    ) -> Result<JsValue, JsValue> {
+    ) -> Result<String, JsError> {
         let chat = parse_jid(chat_jid)?;
 
         let participant_jid = participant.as_deref().map(parse_jid).transpose()?;
@@ -1683,17 +1736,15 @@ impl WasmWhatsAppClient {
             .map_err(js_err)?;
 
         match result {
-            whatsapp_rust::MediaRetryResult::Success { direct_path } => {
-                Ok(JsValue::from_str(&direct_path))
-            }
+            whatsapp_rust::MediaRetryResult::Success { direct_path } => Ok(direct_path),
             whatsapp_rust::MediaRetryResult::NotFound => {
-                Err(JsValue::from_str("Media not found on server"))
+                Err(JsError::new("Media not found on server"))
             }
             whatsapp_rust::MediaRetryResult::DecryptionError => {
-                Err(JsValue::from_str("Media decryption error"))
+                Err(JsError::new("Media decryption error"))
             }
             whatsapp_rust::MediaRetryResult::GeneralError => {
-                Err(JsValue::from_str("Media reupload failed"))
+                Err(JsError::new("Media reupload failed"))
             }
         }
     }
@@ -1701,21 +1752,19 @@ impl WasmWhatsAppClient {
     // ── Chat state ───────────────────────────────────────────────────────
 
     /// Send a chat state update (typing indicator).
-    ///
-    /// `state` must be one of: "composing", "recording", "paused".
     #[wasm_bindgen(js_name = sendChatState)]
-    pub async fn send_chat_state(&self, jid: &str, state: &str) -> Result<(), JsValue> {
+    pub async fn send_chat_state(
+        &self,
+        jid: &str,
+        state: crate::result_types::ChatState,
+    ) -> Result<(), JsError> {
+        use crate::result_types::ChatState;
         let to = parse_jid(jid)?;
 
         let chat_state = match state {
-            "composing" => whatsapp_rust::features::ChatStateType::Composing,
-            "recording" => whatsapp_rust::features::ChatStateType::Recording,
-            "paused" => whatsapp_rust::features::ChatStateType::Paused,
-            _ => {
-                return Err(JsValue::from_str(
-                    "state must be 'composing', 'recording', or 'paused'",
-                ));
-            }
+            ChatState::Composing => whatsapp_rust::features::ChatStateType::Composing,
+            ChatState::Recording => whatsapp_rust::features::ChatStateType::Recording,
+            ChatState::Paused => whatsapp_rust::features::ChatStateType::Paused,
         };
 
         self.client
@@ -1734,7 +1783,7 @@ impl WasmWhatsAppClient {
     pub async fn get_media_conn(
         &self,
         force: bool,
-    ) -> Result<crate::result_types::MediaConnResult, JsValue> {
+    ) -> Result<crate::result_types::MediaConnResult, JsError> {
         let conn = self
             .client
             .refresh_media_conn(force)
@@ -1766,9 +1815,9 @@ impl WasmWhatsAppClient {
         file_sha256: &[u8],
         file_enc_sha256: &[u8],
         file_length: f64,
-        media_type: &str,
-    ) -> Result<js_sys::Uint8Array, JsValue> {
-        let mt = parse_media_type(media_type)?;
+        media_type: crate::result_types::MediaType,
+    ) -> Result<js_sys::Uint8Array, JsError> {
+        let mt: wacore::download::MediaType = media_type.into();
         let data = self
             .client
             .download_from_params(
@@ -1796,9 +1845,9 @@ impl WasmWhatsAppClient {
         file_sha256: &[u8],
         file_enc_sha256: &[u8],
         file_length: f64,
-        media_type: &str,
-    ) -> Result<web_sys::ReadableStream, JsValue> {
-        let mt = parse_media_type(media_type)?;
+        media_type: crate::result_types::MediaType,
+    ) -> Result<web_sys::ReadableStream, JsError> {
+        let mt: wacore::download::MediaType = media_type.into();
         let client = self.client.clone();
         let direct_path = direct_path.to_string();
         let media_key = media_key.to_vec();
@@ -1849,14 +1898,14 @@ impl WasmWhatsAppClient {
     /// Upload media: encrypt in memory + upload with CDN failover and retry.
     ///
     /// Takes raw plaintext bytes. Handles AES-256-CBC encryption, HMAC-SHA256
-    /// signing, multi-host CDN upload, auth refresh, and resumable upload (≥5MB).
+    /// signing, multi-host CDN upload, auth refresh, and resumable upload (>=5MB).
     #[wasm_bindgen(js_name = uploadMedia)]
     pub async fn upload_media(
         &self,
         data: &[u8],
-        media_type: &str,
-    ) -> Result<crate::result_types::UploadMediaResult, JsValue> {
-        let mt = parse_media_type(media_type)?;
+        media_type: crate::result_types::MediaType,
+    ) -> Result<crate::result_types::UploadMediaResult, JsError> {
+        let mt: wacore::download::MediaType = media_type.into();
         let resp = self
             .client
             .upload(data.to_vec(), mt)
@@ -1881,13 +1930,13 @@ impl WasmWhatsAppClient {
         &self,
         input: web_sys::ReadableStream,
         output: web_sys::WritableStream,
-        media_type: &str,
-    ) -> Result<crate::result_types::EncryptMediaResult, JsValue> {
+        media_type: crate::result_types::MediaType,
+    ) -> Result<crate::result_types::EncryptMediaResult, JsError> {
         use futures::SinkExt;
         use futures::StreamExt;
         use wacore::upload::MediaEncryptor;
 
-        let mt = parse_media_type(media_type)?;
+        let mt: wacore::download::MediaType = media_type.into();
 
         let rs = wasm_streams::ReadableStream::from_raw(input);
         let mut reader = rs.into_stream();
@@ -1901,8 +1950,7 @@ impl WasmWhatsAppClient {
         let mut copy_buf = vec![0u8; FLUSH_THRESHOLD];
 
         while let Some(chunk_result) = reader.next().await {
-            let chunk =
-                chunk_result.map_err(|e| JsValue::from_str(&format!("read error: {e:?}")))?;
+            let chunk = chunk_result.map_err(|e| JsError::new(&format!("read error: {e:?}")))?;
             let arr = js_sys::Uint8Array::new(&chunk);
             let len = arr.length() as usize;
             if len == 0 {
@@ -1921,7 +1969,7 @@ impl WasmWhatsAppClient {
                 writer
                     .send(js_chunk.into())
                     .await
-                    .map_err(|e| JsValue::from_str(&format!("write error: {e:?}")))?;
+                    .map_err(|e| JsError::new(&format!("write error: {e:?}")))?;
                 out_buf.clear();
             }
         }
@@ -1933,12 +1981,12 @@ impl WasmWhatsAppClient {
             writer
                 .send(js_chunk.into())
                 .await
-                .map_err(|e| JsValue::from_str(&format!("write error: {e:?}")))?;
+                .map_err(|e| JsError::new(&format!("write error: {e:?}")))?;
         }
         writer
             .close()
             .await
-            .map_err(|e| JsValue::from_str(&format!("close error: {e:?}")))?;
+            .map_err(|e| JsError::new(&format!("close error: {e:?}")))?;
 
         Ok(crate::result_types::EncryptMediaResult {
             media_key: info.media_key.to_vec(),
@@ -1952,7 +2000,7 @@ impl WasmWhatsAppClient {
     ///
     /// `get_body` is a JS function `() => ReadableStream<Uint8Array>` — called
     /// for each upload attempt (retry creates a fresh stream).
-    /// Handles CDN failover, auth refresh, and resumable upload (≥5MB).
+    /// Handles CDN failover, auth refresh, and resumable upload (>=5MB).
     #[wasm_bindgen(js_name = uploadEncryptedMediaStream)]
     pub async fn upload_encrypted_media_stream(
         &self,
@@ -1961,9 +2009,9 @@ impl WasmWhatsAppClient {
         file_sha256: &[u8],
         file_enc_sha256: &[u8],
         file_length: f64,
-        media_type: &str,
-    ) -> Result<crate::result_types::UploadMediaResult, JsValue> {
-        let mt = parse_media_type(media_type)?;
+        media_type: crate::result_types::MediaType,
+    ) -> Result<crate::result_types::UploadMediaResult, JsError> {
+        let mt: wacore::download::MediaType = media_type.into();
         let file_length = file_length as u64;
         let token = base64_url_encode(file_enc_sha256);
         let mms_type = mt.mms_type();
@@ -2016,7 +2064,7 @@ impl WasmWhatsAppClient {
                 // Get fresh ReadableStream from factory
                 let body_stream = get_body
                     .call0(&JsValue::NULL)
-                    .map_err(|e| JsValue::from_str(&format!("getBody() failed: {e:?}")))?;
+                    .map_err(|e| JsError::new(&format!("getBody() failed: {e:?}")))?;
 
                 // Try streaming upload via JS HTTP client
                 let result = stream_upload_via_js(&self.client, &upload_url, body_stream).await;
@@ -2028,11 +2076,11 @@ impl WasmWhatsAppClient {
                         let url = parsed
                             .get("url")
                             .and_then(|v| v.as_str())
-                            .ok_or_else(|| JsValue::from_str("missing url in response"))?;
+                            .ok_or_else(|| JsError::new("missing url in response"))?;
                         let dp = parsed
                             .get("direct_path")
                             .and_then(|v| v.as_str())
-                            .ok_or_else(|| JsValue::from_str("missing direct_path in response"))?;
+                            .ok_or_else(|| JsError::new("missing direct_path in response"))?;
                         return Ok(crate::result_types::UploadMediaResult {
                             url: url.to_string(),
                             direct_path: dp.to_string(),
@@ -2065,7 +2113,7 @@ impl WasmWhatsAppClient {
             }
         }
 
-        Err(JsValue::from_str("Upload failed on all hosts"))
+        Err(JsError::new("Upload failed on all hosts"))
     }
 
     // ── State getters ────────────────────────────────────────────────────
@@ -2101,35 +2149,32 @@ impl WasmWhatsAppClient {
 
     /// Returns a snapshot of internal memory diagnostics (cache sizes, session counts, etc.).
     #[wasm_bindgen(js_name = getMemoryDiagnostics)]
-    pub async fn get_memory_diagnostics(&self) -> JsValue {
+    pub async fn get_memory_diagnostics(&self) -> crate::result_types::MemoryDiagnosticsResult {
         let d = self.client.memory_diagnostics().await;
-        let obj = js_sys::Object::new();
-        let set = |k: &str, v: f64| {
-            let _ = js_sys::Reflect::set(&obj, &k.into(), &v.into());
-        };
-        set("groupCache", d.group_cache as f64);
-        set("deviceCache", d.device_cache as f64);
-        set("deviceRegistryCache", d.device_registry_cache as f64);
-        set("lidPnLidEntries", d.lid_pn_lid_entries as f64);
-        set("lidPnPnEntries", d.lid_pn_pn_entries as f64);
-        set("retriedGroupMessages", d.retried_group_messages as f64);
-        set("recentMessages", d.recent_messages as f64);
-        set("messageRetryCounts", d.message_retry_counts as f64);
-        set("pdoPendingRequests", d.pdo_pending_requests as f64);
-        set("sessionLocks", d.session_locks as f64);
-        set("messageQueues", d.message_queues as f64);
-        set("messageEnqueueLocks", d.message_enqueue_locks as f64);
-        set("responseWaiters", d.response_waiters as f64);
-        set("nodeWaiters", d.node_waiters as f64);
-        set("pendingRetries", d.pending_retries as f64);
-        set("presenceSubscriptions", d.presence_subscriptions as f64);
-        set("appStateKeyRequests", d.app_state_key_requests as f64);
-        set("appStateSyncing", d.app_state_syncing as f64);
-        set("signalCacheSessions", d.signal_cache_sessions as f64);
-        set("signalCacheIdentities", d.signal_cache_identities as f64);
-        set("signalCacheSenderKeys", d.signal_cache_sender_keys as f64);
-        set("chatstateHandlers", d.chatstate_handlers as f64);
-        obj.into()
+        crate::result_types::MemoryDiagnosticsResult {
+            group_cache: d.group_cache as f64,
+            device_cache: d.device_cache as f64,
+            device_registry_cache: d.device_registry_cache as f64,
+            lid_pn_lid_entries: d.lid_pn_lid_entries as f64,
+            lid_pn_pn_entries: d.lid_pn_pn_entries as f64,
+            retried_group_messages: d.retried_group_messages as f64,
+            recent_messages: d.recent_messages as f64,
+            message_retry_counts: d.message_retry_counts as f64,
+            pdo_pending_requests: d.pdo_pending_requests as f64,
+            session_locks: d.session_locks as f64,
+            message_queues: d.message_queues as f64,
+            message_enqueue_locks: d.message_enqueue_locks as f64,
+            response_waiters: d.response_waiters as f64,
+            node_waiters: d.node_waiters as f64,
+            pending_retries: d.pending_retries as f64,
+            presence_subscriptions: d.presence_subscriptions as f64,
+            app_state_key_requests: d.app_state_key_requests as f64,
+            app_state_syncing: d.app_state_syncing as f64,
+            signal_cache_sessions: d.signal_cache_sessions as f64,
+            signal_cache_identities: d.signal_cache_identities as f64,
+            signal_cache_sender_keys: d.signal_cache_sender_keys as f64,
+            chatstate_handlers: d.chatstate_handlers as f64,
+        }
     }
 }
 
@@ -2137,121 +2182,52 @@ impl WasmWhatsAppClient {
 // Helpers
 // ---------------------------------------------------------------------------
 
-/// Convert GroupMetadata to a JS object (GroupMetadata doesn't derive Serialize).
-fn group_metadata_to_js(
+/// Convert GroupMetadata to a typed result struct.
+fn group_metadata_to_result(
     metadata: &whatsapp_rust::features::GroupMetadata,
-) -> Result<JsValue, JsValue> {
-    let obj = js_sys::Object::new();
-    js_sys::Reflect::set(&obj, &"id".into(), &metadata.id.to_string().into())?;
-    js_sys::Reflect::set(&obj, &"subject".into(), &metadata.subject.as_str().into())?;
-
-    let parts = js_sys::Array::new();
-    for p in &metadata.participants {
-        let po = js_sys::Object::new();
-        js_sys::Reflect::set(&po, &"jid".into(), &p.jid.to_string().into())?;
-        js_sys::Reflect::set(
-            &po,
-            &"phoneNumber".into(),
-            &match &p.phone_number {
-                Some(pn) => JsValue::from_str(&pn.to_string()),
-                None => JsValue::NULL,
-            },
-        )?;
-        js_sys::Reflect::set(&po, &"isAdmin".into(), &p.is_admin.into())?;
-        parts.push(&po.into());
-    }
-    js_sys::Reflect::set(&obj, &"participants".into(), &parts.into())?;
-
-    js_sys::Reflect::set(
-        &obj,
-        &"addressingMode".into(),
-        &crate::proto::to_js_value(&metadata.addressing_mode)?,
-    )?;
-
-    set_optional_str(
-        &obj,
-        "creator",
-        &metadata.creator.as_ref().map(|j| j.to_string()),
-    )?;
-    set_optional_num(
-        &obj,
-        "creationTime",
-        &metadata.creation_time.map(|v| v as f64),
-    )?;
-    set_optional_num(
-        &obj,
-        "subjectTime",
-        &metadata.subject_time.map(|v| v as f64),
-    )?;
-    set_optional_str(
-        &obj,
-        "subjectOwner",
-        &metadata.subject_owner.as_ref().map(|j| j.to_string()),
-    )?;
-    set_optional_str(&obj, "description", &metadata.description)?;
-    set_optional_str(&obj, "descriptionId", &metadata.description_id)?;
-
-    js_sys::Reflect::set(&obj, &"isLocked".into(), &metadata.is_locked.into())?;
-    js_sys::Reflect::set(
-        &obj,
-        &"isAnnouncement".into(),
-        &metadata.is_announcement.into(),
-    )?;
-    js_sys::Reflect::set(
-        &obj,
-        &"ephemeralExpiration".into(),
-        &(metadata.ephemeral_expiration as f64).into(),
-    )?;
-    js_sys::Reflect::set(
-        &obj,
-        &"membershipApproval".into(),
-        &metadata.membership_approval.into(),
-    )?;
-    set_optional_str(
-        &obj,
-        "memberAddMode",
-        &metadata
+) -> crate::result_types::GroupMetadataResult {
+    use crate::result_types::{GroupMetadataResult, GroupParticipantInfo};
+    GroupMetadataResult {
+        id: metadata.id.to_string(),
+        subject: metadata.subject.to_string(),
+        participants: metadata
+            .participants
+            .iter()
+            .map(|p| GroupParticipantInfo {
+                jid: p.jid.to_string(),
+                phone_number: p.phone_number.as_ref().map(|pn| pn.to_string()),
+                is_admin: p.is_admin,
+            })
+            .collect(),
+        addressing_mode: serde_json::to_string(&metadata.addressing_mode)
+            .unwrap_or_default()
+            .trim_matches('"')
+            .to_string(),
+        creator: metadata.creator.as_ref().map(|j| j.to_string()),
+        creation_time: metadata.creation_time.map(|v| v as f64),
+        subject_time: metadata.subject_time.map(|v| v as f64),
+        subject_owner: metadata.subject_owner.as_ref().map(|j| j.to_string()),
+        description: metadata.description.clone(),
+        description_id: metadata.description_id.clone(),
+        is_locked: metadata.is_locked,
+        is_announcement: metadata.is_announcement,
+        ephemeral_expiration: metadata.ephemeral_expiration as f64,
+        membership_approval: metadata.membership_approval,
+        member_add_mode: metadata
             .member_add_mode
             .as_ref()
             .map(|m| format!("{:?}", m)),
-    )?;
-    set_optional_str(
-        &obj,
-        "memberLinkMode",
-        &metadata
+        member_link_mode: metadata
             .member_link_mode
             .as_ref()
             .map(|m| format!("{:?}", m)),
-    )?;
-    set_optional_num(&obj, "size", &metadata.size.map(|v| v as f64))?;
-
-    js_sys::Reflect::set(
-        &obj,
-        &"isParentGroup".into(),
-        &metadata.is_parent_group.into(),
-    )?;
-    set_optional_str(
-        &obj,
-        "parentGroupJid",
-        &metadata.parent_group_jid.as_ref().map(|j| j.to_string()),
-    )?;
-    js_sys::Reflect::set(
-        &obj,
-        &"isDefaultSubGroup".into(),
-        &metadata.is_default_sub_group.into(),
-    )?;
-    js_sys::Reflect::set(
-        &obj,
-        &"isGeneralChat".into(),
-        &metadata.is_general_chat.into(),
-    )?;
-    js_sys::Reflect::set(
-        &obj,
-        &"allowNonAdminSubGroupCreation".into(),
-        &metadata.allow_non_admin_sub_group_creation.into(),
-    )?;
-
-    Ok(obj.into())
+        size: metadata.size.map(|v| v as f64),
+        is_parent_group: metadata.is_parent_group,
+        parent_group_jid: metadata.parent_group_jid.as_ref().map(|j| j.to_string()),
+        is_default_sub_group: metadata.is_default_sub_group,
+        is_general_chat: metadata.is_general_chat,
+        allow_non_admin_sub_group_creation: metadata.allow_non_admin_sub_group_creation,
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -2268,7 +2244,7 @@ pub fn decrypt_poll_vote(
     poll_creator_jid: &str,
     voter_jid: &str,
     option_names: Vec<String>,
-) -> Result<JsValue, JsValue> {
+) -> Result<Vec<String>, JsError> {
     let creator = parse_jid(poll_creator_jid)?;
     let voter = parse_jid(voter_jid)?;
 
@@ -2288,15 +2264,15 @@ pub fn decrypt_poll_vote(
         .map(|n| (wacore::poll::compute_option_hash(n), n.as_str()))
         .collect();
 
-    let arr = js_sys::Array::new();
+    let mut result = Vec::new();
     for hash in &selected_hashes {
         if let Ok(hash_arr) = <[u8; 32]>::try_from(hash.as_slice())
             && let Some((_, name)) = option_map.iter().find(|(h, _)| *h == hash_arr)
         {
-            arr.push(&JsValue::from_str(name));
+            result.push(name.to_string());
         }
     }
-    Ok(arr.into())
+    Ok(result)
 }
 
 /// Aggregate all votes for a poll. Returns `[{ name: string, voters: string[] }]`.
@@ -2307,7 +2283,7 @@ pub fn get_aggregate_votes_in_poll_message(
     message_secret: &[u8],
     poll_msg_id: &str,
     poll_creator_jid: &str,
-) -> Result<JsValue, JsValue> {
+) -> Result<Vec<crate::result_types::PollAggregateResult>, JsError> {
     let creator = parse_jid(poll_creator_jid)?;
 
     let vote_data: Vec<(Jid, Vec<u8>, Vec<u8>)> = voters
@@ -2316,7 +2292,7 @@ pub fn get_aggregate_votes_in_poll_message(
             let jid: Jid = v.voter.parse().map_err(js_err)?;
             Ok((jid, v.enc_payload, v.enc_iv))
         })
-        .collect::<Result<_, JsValue>>()?;
+        .collect::<Result<_, JsError>>()?;
 
     let votes_refs: Vec<(&Jid, &[u8], &[u8])> = vote_data
         .iter()
@@ -2332,44 +2308,32 @@ pub fn get_aggregate_votes_in_poll_message(
     )
     .map_err(js_err)?;
 
-    let arr = js_sys::Array::new();
-    for r in results {
-        let obj = js_sys::Object::new();
-        js_sys::Reflect::set(&obj, &"name".into(), &r.name.into())?;
-        let voters_arr = js_sys::Array::new();
-        for v in &r.voters {
-            voters_arr.push(&JsValue::from_str(v));
-        }
-        js_sys::Reflect::set(&obj, &"voters".into(), &voters_arr.into())?;
-        arr.push(&obj.into());
-    }
-    Ok(arr.into())
+    Ok(results
+        .into_iter()
+        .map(|r| crate::result_types::PollAggregateResult {
+            name: r.name,
+            voters: r.voters,
+        })
+        .collect())
 }
 
-/// Convert any error to JsValue string.
-fn js_err(e: impl std::fmt::Display) -> JsValue {
-    JsValue::from_str(&e.to_string())
+/// Convert any error to a proper JS Error object.
+fn js_err(e: impl std::fmt::Display) -> JsError {
+    JsError::new(&e.to_string())
+}
+
+/// Convert a JsValue error (from Reflect::set, etc.) to JsError.
+fn js_val_err(e: JsValue) -> JsError {
+    if let Some(s) = e.as_string() {
+        JsError::new(&s)
+    } else {
+        JsError::new(&format!("{e:?}"))
+    }
 }
 
 /// Parse a JID string, returning a JS error on failure.
-fn parse_jid(jid: &str) -> Result<Jid, JsValue> {
+fn parse_jid(jid: &str) -> Result<Jid, JsError> {
     jid.parse().map_err(js_err)
-}
-
-/// Parse a media type string (matching Baileys convention) to the Rust enum.
-fn parse_media_type(s: &str) -> Result<whatsapp_rust::download::MediaType, JsValue> {
-    use whatsapp_rust::download::MediaType;
-    match s {
-        "image" => Ok(MediaType::Image),
-        "video" => Ok(MediaType::Video),
-        "audio" => Ok(MediaType::Audio),
-        "document" => Ok(MediaType::Document),
-        "sticker" => Ok(MediaType::Sticker),
-        "thumbnail-link" => Ok(MediaType::LinkThumbnail),
-        "md-msg-hist" => Ok(MediaType::History),
-        "md-app-state" => Ok(MediaType::AppState),
-        _ => Err(JsValue::from_str(&format!("unknown media type: {s}"))),
-    }
 }
 
 /// Base64-URL-safe (no padding) encoding for upload tokens.
@@ -2410,97 +2374,87 @@ async fn stream_upload_via_js(
         .with_header("Origin", "https://web.whatsapp.com")
         .with_body(body_bytes);
 
-    client.http_client.execute(request).await.map_err(js_err)
+    client
+        .http_client
+        .execute(request)
+        .await
+        .map_err(|e| JsValue::from(js_err(e)))
 }
 
 /// Parse a JID string and deserialize a JS object as a proto Message.
 fn parse_jid_and_msg(
     jid: &str,
     message: JsValue,
-) -> Result<(Jid, waproto::whatsapp::Message), JsValue> {
+) -> Result<(Jid, waproto::whatsapp::Message), JsError> {
     let to = parse_jid(jid)?;
     let snake_message = crate::proto::to_snake_case_js(&message);
     let msg = serde_wasm_bindgen::from_value(snake_message)
-        .map_err(|e| JsValue::from_str(&format!("invalid message: {e}")))?;
+        .map_err(|e| JsError::new(&format!("invalid message: {e}")))?;
     Ok((to, msg))
 }
 
 fn parse_jid_and_msg_bytes(
     jid: &str,
     bytes: &[u8],
-) -> Result<(Jid, waproto::whatsapp::Message), JsValue> {
+) -> Result<(Jid, waproto::whatsapp::Message), JsError> {
     use prost::Message;
     let to = parse_jid(jid)?;
     let msg = waproto::whatsapp::Message::decode(bytes)
-        .map_err(|e| JsValue::from_str(&format!("invalid message bytes: {e}")))?;
+        .map_err(|e| JsError::new(&format!("invalid message bytes: {e}")))?;
     Ok((to, msg))
 }
 
-fn set_optional_str(obj: &js_sys::Object, key: &str, val: &Option<String>) -> Result<(), JsValue> {
-    let js_val = match val {
-        Some(s) => JsValue::from_str(s),
-        None => JsValue::NULL,
-    };
-    js_sys::Reflect::set(obj, &key.into(), &js_val)?;
-    Ok(())
-}
-
-fn set_optional_num(obj: &js_sys::Object, key: &str, val: &Option<f64>) -> Result<(), JsValue> {
-    let js_val = match val {
-        Some(n) => JsValue::from_f64(*n),
-        None => JsValue::NULL,
-    };
-    js_sys::Reflect::set(obj, &key.into(), &js_val)?;
-    Ok(())
-}
-
-/// Convert Vec<ParticipantChangeResponse> to a JS array.
-fn participant_change_to_js(
-    responses: &[whatsapp_rust::features::ParticipantChangeResponse],
-) -> Result<JsValue, JsValue> {
-    let arr = js_sys::Array::new();
-    for r in responses {
-        let obj = js_sys::Object::new();
-        js_sys::Reflect::set(&obj, &"jid".into(), &r.jid.to_string().into())?;
-        set_optional_str(&obj, "status", &r.status)?;
-        set_optional_str(&obj, "error", &r.error)?;
-        arr.push(&obj.into());
-    }
-    Ok(arr.into())
-}
-
-/// Convert NewsletterMetadata to a JS object.
-fn newsletter_metadata_to_js(
+/// Convert NewsletterMetadata to a typed result struct.
+fn newsletter_metadata_to_result(
     meta: &whatsapp_rust::features::NewsletterMetadata,
-) -> Result<JsValue, JsValue> {
-    let obj = js_sys::Object::new();
-    js_sys::Reflect::set(&obj, &"jid".into(), &meta.jid.to_string().into())?;
-    js_sys::Reflect::set(&obj, &"name".into(), &meta.name.as_str().into())?;
-    set_optional_str(&obj, "description", &meta.description)?;
-    js_sys::Reflect::set(
-        &obj,
-        &"subscriberCount".into(),
-        &(meta.subscriber_count as f64).into(),
-    )?;
-    js_sys::Reflect::set(
-        &obj,
-        &"verification".into(),
-        &format!("{:?}", meta.verification).into(),
-    )?;
-    js_sys::Reflect::set(&obj, &"state".into(), &format!("{:?}", meta.state).into())?;
-    set_optional_str(&obj, "pictureUrl", &meta.picture_url)?;
-    set_optional_str(&obj, "previewUrl", &meta.preview_url)?;
-    set_optional_str(&obj, "inviteCode", &meta.invite_code)?;
-    js_sys::Reflect::set(
-        &obj,
-        &"role".into(),
-        &match &meta.role {
-            Some(r) => JsValue::from_str(&format!("{:?}", r)),
-            None => JsValue::NULL,
+) -> crate::result_types::NewsletterMetadataResult {
+    crate::result_types::NewsletterMetadataResult {
+        jid: meta.jid.to_string(),
+        name: meta.name.to_string(),
+        description: meta.description.clone(),
+        subscriber_count: meta.subscriber_count as f64,
+        verification: format!("{:?}", meta.verification),
+        state: format!("{:?}", meta.state),
+        picture_url: meta.picture_url.clone(),
+        preview_url: meta.preview_url.clone(),
+        invite_code: meta.invite_code.clone(),
+        role: meta.role.as_ref().map(|r| format!("{:?}", r)),
+        creation_time: meta.creation_time.map(|v| v as f64),
+    }
+}
+
+fn business_profile_to_result(
+    p: &wacore::iq::business::BusinessProfile,
+) -> crate::result_types::BusinessProfileResult {
+    crate::result_types::BusinessProfileResult {
+        wid: p.wid.as_ref().map(|j| j.to_string()),
+        description: p.description.clone(),
+        email: p.email.clone(),
+        website: p.website.clone(),
+        categories: p
+            .categories
+            .iter()
+            .map(|c| crate::result_types::BusinessCategoryResult {
+                id: c.id.clone(),
+                name: c.name.clone(),
+            })
+            .collect(),
+        address: p.address.clone(),
+        business_hours: crate::result_types::BusinessHoursResult {
+            timezone: p.business_hours.timezone.clone(),
+            business_config: p.business_hours.business_config.as_ref().map(|configs| {
+                configs
+                    .iter()
+                    .map(|c| crate::result_types::BusinessHoursConfigResult {
+                        day_of_week: c.day_of_week.clone(),
+                        mode: c.mode.clone(),
+                        open_time: c.open_time.clone(),
+                        close_time: c.close_time.clone(),
+                    })
+                    .collect()
+            }),
         },
-    )?;
-    set_optional_num(&obj, "creationTime", &meta.creation_time.map(|v| v as f64))?;
-    Ok(obj.into())
+    }
 }
 
 // ---------------------------------------------------------------------------

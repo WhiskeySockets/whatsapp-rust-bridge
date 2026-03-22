@@ -178,15 +178,15 @@ fn is_whatsapp_sticker_exif(exif_bytes: &[u8]) -> bool {
 pub fn add_sticker_metadata(
     webp_data: &[u8],
     mut metadata: StickerMetadata,
-) -> Result<Uint8Array, JsValue> {
+) -> Result<Uint8Array, JsError> {
     metadata.ensure_pack_id();
 
     let mut webp = WebP::from_bytes(Bytes::copy_from_slice(webp_data))
-        .map_err(|e| JsValue::from_str(&format!("Invalid WebP: {e}")))?;
+        .map_err(|e| JsError::new(&format!("Invalid WebP: {e}")))?;
 
     let exif_data = metadata
         .build_exif()
-        .map_err(|e| JsValue::from_str(&format!("Failed to serialize metadata: {e}")))?;
+        .map_err(|e| JsError::new(&format!("Failed to serialize metadata: {e}")))?;
     webp.set_exif(Some(Bytes::from(exif_data)));
 
     let output = webp.encoder().bytes();
@@ -198,9 +198,9 @@ pub fn add_sticker_metadata(
 /// Returns the metadata object if present, or undefined if no sticker metadata is found.
 /// Returns undefined (not an error) for WebP images with regular camera EXIF data.
 #[wasm_bindgen(js_name = getStickerMetadata)]
-pub fn get_sticker_metadata(webp_data: &[u8]) -> Result<Option<StickerMetadata>, JsValue> {
+pub fn get_sticker_metadata(webp_data: &[u8]) -> Result<Option<StickerMetadata>, JsError> {
     let webp = WebP::from_bytes(Bytes::copy_from_slice(webp_data))
-        .map_err(|e| JsValue::from_str(&format!("Invalid WebP: {e}")))?;
+        .map_err(|e| JsError::new(&format!("Invalid WebP: {e}")))?;
 
     let Some(exif_bytes) = webp.exif() else {
         return Ok(None);

@@ -16,9 +16,9 @@ use web_sys::{ReadableStream, ReadableStreamDefaultReader};
 const WAVEFORM_SAMPLES: usize = 64;
 
 #[wasm_bindgen(js_name = generateAudioWaveform)]
-pub fn generate_audio_waveform(audio_data: Vec<u8>) -> Result<Uint8Array, JsValue> {
+pub fn generate_audio_waveform(audio_data: Vec<u8>) -> Result<Uint8Array, JsError> {
     if audio_data.is_empty() {
-        return Err(JsValue::from_str("Audio buffer is empty"));
+        return Err(JsError::new("Audio buffer is empty"));
     }
 
     let DecoderContext {
@@ -56,7 +56,7 @@ pub fn generate_audio_waveform(audio_data: Vec<u8>) -> Result<Uint8Array, JsValu
                 continue;
             }
             Err(e) => {
-                return Err(JsValue::from_str(&format!("Audio decode error: {e}")));
+                return Err(JsError::new(&format!("Audio decode error: {e}")));
             }
         };
 
@@ -99,15 +99,13 @@ pub fn generate_audio_waveform(audio_data: Vec<u8>) -> Result<Uint8Array, JsValu
                 continue;
             }
             Err(e) => {
-                return Err(JsValue::from_str(&format!(
-                    "Failed to decode audio frame: {e}"
-                )));
+                return Err(JsError::new(&format!("Failed to decode audio frame: {e}")));
             }
         }
     }
 
     if total_samples_processed == 0 {
-        return Err(JsValue::from_str("No audio samples decoded"));
+        return Err(JsError::new("No audio samples decoded"));
     }
 
     // Convert bins to final waveform
@@ -250,7 +248,7 @@ fn finalize_waveform(bins: &[(f32, u32); WAVEFORM_SAMPLES]) -> Vec<u8> {
 }
 
 #[wasm_bindgen(js_name = getAudioDuration, skip_typescript)]
-pub async fn get_audio_duration(input: JsValue) -> Result<f64, JsValue> {
+pub async fn get_audio_duration(input: JsValue) -> Result<f64, JsError> {
     let audio_bytes = normalize_audio_input(input).await?;
     compute_audio_duration(audio_bytes)
 }
@@ -265,9 +263,9 @@ export type AudioDurationInput =
 export function getAudioDuration(input: AudioDurationInput): Promise<number>;
 "#;
 
-fn compute_audio_duration(audio_data: Vec<u8>) -> Result<f64, JsValue> {
+fn compute_audio_duration(audio_data: Vec<u8>) -> Result<f64, JsError> {
     if audio_data.is_empty() {
-        return Err(JsValue::from_str("Audio buffer is empty"));
+        return Err(JsError::new("Audio buffer is empty"));
     }
 
     let mss = MediaSourceStream::new(Box::new(Cursor::new(audio_data)), Default::default());
@@ -279,7 +277,7 @@ fn compute_audio_duration(audio_data: Vec<u8>) -> Result<f64, JsValue> {
             &FormatOptions::default(),
             &MetadataOptions::default(),
         )
-        .map_err(|e| JsValue::from_str(&format!("Failed to probe audio format: {e}")))?;
+        .map_err(|e| JsError::new(&format!("Failed to probe audio format: {e}")))?;
 
     let mut format = probed.format;
 
@@ -288,7 +286,7 @@ fn compute_audio_duration(audio_data: Vec<u8>) -> Result<f64, JsValue> {
         .iter()
         .find(|t| t.codec_params.codec != CODEC_TYPE_NULL)
         .cloned()
-        .ok_or_else(|| JsValue::from_str("No supported audio track found"))?;
+        .ok_or_else(|| JsError::new("No supported audio track found"))?;
 
     // Fast path: Use n_frames from track metadata
     // Works for: MP3 (Xing/VBRI headers or CBR estimate), WAV, FLAC, OGG, AAC, etc.
@@ -313,7 +311,7 @@ fn compute_audio_duration(audio_data: Vec<u8>) -> Result<f64, JsValue> {
             }
             Err(Error::ResetRequired) => continue,
             Err(e) => {
-                return Err(JsValue::from_str(&format!("Audio decode error: {e}")));
+                return Err(JsError::new(&format!("Audio decode error: {e}")));
             }
         };
 
@@ -326,14 +324,14 @@ fn compute_audio_duration(audio_data: Vec<u8>) -> Result<f64, JsValue> {
 
     let ticks = stats
         .elapsed_ticks()
-        .ok_or_else(|| JsValue::from_str("No audio samples decoded"))?;
+        .ok_or_else(|| JsError::new("No audio samples decoded"))?;
 
     convert_ticks_to_seconds(
         ticks,
         track.codec_params.time_base,
         track.codec_params.sample_rate,
     )
-    .ok_or_else(|| JsValue::from_str("Missing timing information for audio track"))
+    .ok_or_else(|| JsError::new("Missing timing information for audio track"))
 }
 
 fn duration_from_track_metadata(track: &Track) -> Option<f64> {
@@ -387,7 +385,7 @@ impl DurationAccumulator {
     }
 }
 
-async fn normalize_audio_input(input: JsValue) -> Result<Vec<u8>, JsValue> {
+async fn normalize_audio_input(input: JsValue) -> Result<Vec<u8>, JsError> {
     if input.is_instance_of::<Uint8Array>() || input.is_instance_of::<ArrayBuffer>() {
         return Ok(copy_uint8_array(&Uint8Array::new(&input)));
     }
@@ -396,7 +394,7 @@ async fn normalize_audio_input(input: JsValue) -> Result<Vec<u8>, JsValue> {
         return read_stream(input.unchecked_ref::<ReadableStream>()).await;
     }
 
-    Err(JsValue::from_str(
+    Err(JsError::new(
         "Unsupported input type. Expected Uint8Array, ArrayBuffer, or ReadableStream",
     ))
 }
@@ -406,26 +404,35 @@ fn copy_uint8_array(array: &Uint8Array) -> Vec<u8> {
     array.to_vec()
 }
 
-async fn read_stream(stream: &ReadableStream) -> Result<Vec<u8>, JsValue> {
+async fn read_stream(stream: &ReadableStream) -> Result<Vec<u8>, JsError> {
     let reader = stream.get_reader();
     let reader = reader.unchecked_into::<ReadableStreamDefaultReader>();
     read_from_reader(reader).await
 }
 
-async fn read_from_reader(reader: ReadableStreamDefaultReader) -> Result<Vec<u8>, JsValue> {
+fn js_val_err(e: JsValue) -> JsError {
+    if let Some(s) = e.as_string() {
+        JsError::new(&s)
+    } else {
+        JsError::new(&format!("{e:?}"))
+    }
+}
+
+async fn read_from_reader(reader: ReadableStreamDefaultReader) -> Result<Vec<u8>, JsError> {
     let mut buf: Vec<u8> = Vec::with_capacity(64 * 1024);
 
     loop {
-        let result = JsFuture::from(reader.read()).await?;
+        let result = JsFuture::from(reader.read()).await.map_err(js_val_err)?;
 
-        let done = Reflect::get(&result, &JsValue::from_str("done"))?
+        let done = Reflect::get(&result, &JsValue::from_str("done"))
+            .map_err(js_val_err)?
             .as_bool()
             .unwrap_or(false);
         if done {
             break;
         }
 
-        let value = Reflect::get(&result, &JsValue::from_str("value"))?;
+        let value = Reflect::get(&result, &JsValue::from_str("value")).map_err(js_val_err)?;
         if !value.is_undefined() && !value.is_null() {
             buf.extend_from_slice(&Uint8Array::new(&value).to_vec());
         }
@@ -442,7 +449,7 @@ struct DecoderContext {
     total_frames: Option<u64>,
 }
 
-fn prepare_decoder(audio_data: Vec<u8>) -> Result<DecoderContext, JsValue> {
+fn prepare_decoder(audio_data: Vec<u8>) -> Result<DecoderContext, JsError> {
     let mss = MediaSourceStream::new(Box::new(Cursor::new(audio_data)), Default::default());
 
     let probed = symphonia::default::get_probe()
@@ -452,7 +459,7 @@ fn prepare_decoder(audio_data: Vec<u8>) -> Result<DecoderContext, JsValue> {
             &FormatOptions::default(),
             &MetadataOptions::default(),
         )
-        .map_err(|e| JsValue::from_str(&format!("Failed to probe audio format: {e}")))?;
+        .map_err(|e| JsError::new(&format!("Failed to probe audio format: {e}")))?;
 
     let format = probed.format;
 
@@ -460,14 +467,14 @@ fn prepare_decoder(audio_data: Vec<u8>) -> Result<DecoderContext, JsValue> {
         .tracks()
         .iter()
         .find(|t| t.codec_params.codec != CODEC_TYPE_NULL)
-        .ok_or_else(|| JsValue::from_str("No supported audio track found"))?;
+        .ok_or_else(|| JsError::new("No supported audio track found"))?;
 
     let track_id = track.id;
     let total_frames = track.codec_params.n_frames;
 
     let decoder = symphonia::default::get_codecs()
         .make(&track.codec_params.clone(), &DecoderOptions::default())
-        .map_err(|e| JsValue::from_str(&format!("Failed to create decoder: {e}")))?;
+        .map_err(|e| JsError::new(&format!("Failed to create decoder: {e}")))?;
 
     Ok(DecoderContext {
         format,

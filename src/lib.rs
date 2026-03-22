@@ -11,6 +11,7 @@ pub mod image_utils;
 pub mod sticker_metadata;
 
 pub mod camel_serializer;
+mod generated_types;
 pub mod js_backend;
 pub mod js_cache_store;
 pub mod js_http;

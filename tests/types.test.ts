@@ -28,7 +28,7 @@ import type {
   WaMessage,
   GroupMetadataResult,
   IsOnWhatsAppResult,
-} from "../types/index.js";
+} from "../pkg/whatsapp_rust_bridge.js";
 
 describe("Generated TypeScript types", () => {
   test("WhatsAppEvent discriminated union is fully typed", () => {

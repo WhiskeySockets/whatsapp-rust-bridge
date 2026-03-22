@@ -10,25 +10,21 @@
     },
     "type": "module",
     "main": "./dist/index.js",
-    "types": "./types/index.d.ts",
+    "types": "./dist/index.d.ts",
     "files": [
         "dist/**/*",
-        "pkg/whatsapp_rust_bridge.d.ts",
-        "types/**/*"
+        "pkg/whatsapp_rust_bridge.d.ts"
     ],
     "exports": {
         ".": {
             "import": "./dist/index.js",
-            "types": "./types/index.d.ts"
-        },
-        "./types": {
-            "types": "./types/generated.d.ts"
+            "types": "./dist/index.d.ts"
         }
     },
     "scripts": {
         "bench": "bun run build && bun run benches/binary.ts && bun run benches/signal.ts && bun run benches/curve.ts && bun run benches/crypto.ts",
         "bench:node": "bun run build && node --expose-gc benches/binary.ts && node --expose-gc benches/signal.ts && node --expose-gc benches/curve.ts && node --expose-gc benches/crypto.ts",
-        "gen:types": "cd codegen && cargo run --target $(rustc -vV | grep host | cut -d' ' -f2) 2>/dev/null > ../types/generated.d.ts",
+        "gen:types": "cd codegen && cargo run --target $(rustc -vV | grep host | cut -d' ' -f2) 2>/dev/null > ../src/generated_types.rs",
         "build:wasm": "wasm-pack build --target web --out-dir pkg --no-pack",
         "build:wasm:dev": "wasm-pack build --target web --out-dir pkg --no-pack --dev",
         "build:ts": "bun build ts/index.ts --outfile dist/index.js",
