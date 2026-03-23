@@ -8,6 +8,10 @@ publish = false
 name = "gen-types"
 path = "src/main.rs"
 
+[[bin]]
+name = "gen-proto-types"
+path = "src/proto_gen.rs"
+
 [dependencies]
 proc-macro2 = "1"
 quote = "1"
