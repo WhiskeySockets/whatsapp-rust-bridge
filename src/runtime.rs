@@ -1,5 +1,8 @@
+use std::cell::RefCell;
+use std::collections::VecDeque;
 use std::future::Future;
 use std::pin::Pin;
+use std::task::{Context, Poll, Waker};
 use std::time::Duration;
 
 use async_trait::async_trait;
@@ -10,19 +13,13 @@ use wasm_bindgen::prelude::*;
 ///
 /// - `spawn` schedules tasks via `wasm_bindgen_futures::spawn_local`
 /// - `sleep` uses `setTimeout(ms)`
-/// - `yield_now` yields to the JS event loop via `setTimeout(0)` (macrotask)
+/// - `yield_now` yields via `MessageChannel` (zero-allocation macrotask)
 /// - `spawn_blocking` runs inline (WASM is single-threaded, no thread pool)
-///
-/// Cooperative yielding is handled at the call-site (e.g., whatsapp-rust's
-/// frame processing loop calls `yield_now()` every N frames) rather than
-/// adding a blanket delay to every `spawn`. This avoids unnecessary latency
-/// for tasks that don't need yielding while still preventing event loop
-/// starvation during heavy processing.
 pub struct WasmRuntime;
 
 crate::wasm_send_sync!(WasmRuntime);
 
-/// Cached reference to `globalThis.setTimeout` — avoids `Reflect.get` on every yield.
+/// Cached reference to `globalThis.setTimeout`.
 static SET_TIMEOUT_FN: std::sync::OnceLock<JsValue> = std::sync::OnceLock::new();
 
 fn get_set_timeout() -> &'static JsValue {
@@ -32,13 +29,122 @@ fn get_set_timeout() -> &'static JsValue {
     })
 }
 
-/// Yield to the JS event loop via `setTimeout(0)`.
+// ---------------------------------------------------------------------------
+// MessageChannel-based yielding
+// ---------------------------------------------------------------------------
+//
+// Instead of creating a new Promise + setTimeout per yield, we use a single
+// MessageChannel. `port1.postMessage()` schedules a macrotask that fires
+// `port2.onmessage`, which wakes the next pending waker. This eliminates:
+// - Promise allocation per yield
+// - setTimeout timer object per yield
+// - Closure allocation per yield
+// - JsFuture global handle per yield
+//
+// Cost per yield: one `postMessage(null)` call + one `Waker` (Rust-only, no JS).
+
+thread_local! {
+    static YIELD_WAKERS: RefCell<VecDeque<Waker>> = const { RefCell::new(VecDeque::new()) };
+    static MSG_POST_FN: RefCell<Option<(js_sys::Function, js_sys::Object)>> = const { RefCell::new(None) };
+}
+
+/// Initialize the MessageChannel yield mechanism. Called once at startup.
+fn ensure_msg_channel() {
+    MSG_POST_FN.with(|cached| {
+        if cached.borrow().is_some() {
+            return;
+        }
+
+        let global = js_sys::global();
+
+        let channel = js_sys::Reflect::get(&global, &"MessageChannel".into())
+            .ok()
+            .and_then(|mc| mc.dyn_into::<js_sys::Function>().ok())
+            .and_then(|ctor| js_sys::Reflect::construct(&ctor, &js_sys::Array::new()).ok());
+
+        let Some(channel) = channel else {
+            return;
+        };
+
+        let port1 = js_sys::Reflect::get(&channel, &"port1".into())
+            .ok()
+            .and_then(|p| p.dyn_into::<js_sys::Object>().ok());
+        let port2 = js_sys::Reflect::get(&channel, &"port2".into()).ok();
+
+        if let (Some(p1), Some(p2)) = (port1, port2) {
+            // port2.onmessage wakes the next pending yielder
+            let callback = Closure::wrap(Box::new(|| {
+                YIELD_WAKERS.with(|wakers| {
+                    if let Some(waker) = wakers.borrow_mut().pop_front() {
+                        waker.wake();
+                    }
+                });
+            }) as Box<dyn FnMut()>);
+
+            let _ =
+                js_sys::Reflect::set(&p2, &"onmessage".into(), callback.as_ref().unchecked_ref());
+            callback.forget();
+
+            // Cache port1.postMessage as a bound function
+            let post_fn = js_sys::Reflect::get(&p1, &"postMessage".into())
+                .ok()
+                .and_then(|f| f.dyn_into::<js_sys::Function>().ok());
+
+            if let Some(post_fn) = post_fn {
+                *cached.borrow_mut() = Some((post_fn, p1));
+            }
+        }
+    });
+}
+
+/// Zero-allocation yield to the JS event loop via MessageChannel.
 ///
-/// Unlike `Promise.resolve()` (microtask, same tick), `setTimeout(0)` creates
-/// a macrotask that runs in the NEXT event loop tick. This lets pending I/O
-/// (WebSocket data, storage callbacks) and other scheduled work run before
-/// the current task resumes.
+/// `port1.postMessage(null)` schedules a macrotask on `port2.onmessage`
+/// which wakes this future. No Promise, no setTimeout, no closure per call.
 pub(crate) fn set_timeout_0() -> Pin<Box<dyn Future<Output = ()>>> {
+    ensure_msg_channel();
+
+    // Try MessageChannel path
+    let has_channel = MSG_POST_FN.with(|cached| cached.borrow().is_some());
+
+    if has_channel {
+        Box::pin(MsgChannelYield { registered: false })
+    } else {
+        // Fallback: setTimeout(0) for environments without MessageChannel
+        set_timeout_yield()
+    }
+}
+
+/// Future that resolves when the MessageChannel fires.
+struct MsgChannelYield {
+    registered: bool,
+}
+
+impl Future for MsgChannelYield {
+    type Output = ();
+
+    fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<()> {
+        if self.registered {
+            // Woken by onmessage callback — we're done
+            Poll::Ready(())
+        } else {
+            // First poll: register waker and post message
+            self.registered = true;
+            YIELD_WAKERS.with(|wakers| {
+                wakers.borrow_mut().push_back(cx.waker().clone());
+            });
+            MSG_POST_FN.with(|cached| {
+                if let Some((ref post_fn, ref port1)) = *cached.borrow() {
+                    let _ = post_fn.call1(port1, &JsValue::NULL);
+                }
+            });
+            Poll::Pending
+        }
+    }
+}
+
+/// Fallback: yield via setTimeout(0) — used when MessageChannel is unavailable.
+fn set_timeout_yield() -> Pin<Box<dyn Future<Output = ()>>> {
     let promise = js_sys::Promise::new(&mut |resolve, _reject| {
         let st = get_set_timeout();
         if let Ok(set_timeout_fn) = st.clone().dyn_into::<js_sys::Function>() {
