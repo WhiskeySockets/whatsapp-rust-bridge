@@ -514,6 +514,19 @@ impl WasmWhatsAppClient {
         }
     }
 
+    /// Logout from WhatsApp — deregisters this companion device and disconnects.
+    ///
+    /// Sends `remove-companion-device` IQ to the server (best-effort),
+    /// then disconnects. Does NOT clear stored keys — the caller should
+    /// delete the store to fully clear credentials.
+    pub async fn logout(&self) -> Result<(), JsError> {
+        self.client.logout().await.map_err(js_err)?;
+        if let Err(e) = self.persistence_manager.flush().await {
+            log::warn!("Failed to flush state on logout: {e}");
+        }
+        Ok(())
+    }
+
     /// Enable or disable automatic reconnection on disconnect.
     /// Enabled by default. When disabled, the client will not attempt
     /// to reconnect after an unexpected disconnection.
@@ -620,6 +633,49 @@ impl WasmWhatsAppClient {
     pub async fn send_message_bytes(&self, jid: &str, bytes: &[u8]) -> Result<String, JsError> {
         let (to, msg) = parse_jid_and_msg_bytes(jid, bytes)?;
         let id = self.client.send_message(to, msg).await.map_err(js_err)?;
+        Ok(id)
+    }
+
+    /// Low-level message relay — sends a raw proto.IMessage with an optional
+    /// custom message ID. Use `sendMessage` for the high-level API.
+    #[wasm_bindgen(js_name = relayMessage)]
+    pub async fn relay_message(
+        &self,
+        jid: &str,
+        message: JsValue,
+        message_id: Option<String>,
+    ) -> Result<String, JsError> {
+        let (to, msg) = parse_jid_and_msg(jid, message)?;
+        let options = whatsapp_rust::SendOptions {
+            message_id,
+            ..Default::default()
+        };
+        let id = self
+            .client
+            .send_message_with_options(to, msg, options)
+            .await
+            .map_err(js_err)?;
+        Ok(id)
+    }
+
+    /// Low-level message relay from protobuf binary bytes.
+    #[wasm_bindgen(js_name = relayMessageBytes)]
+    pub async fn relay_message_bytes(
+        &self,
+        jid: &str,
+        bytes: &[u8],
+        message_id: Option<String>,
+    ) -> Result<String, JsError> {
+        let (to, msg) = parse_jid_and_msg_bytes(jid, bytes)?;
+        let options = whatsapp_rust::SendOptions {
+            message_id,
+            ..Default::default()
+        };
+        let id = self
+            .client
+            .send_message_with_options(to, msg, options)
+            .await
+            .map_err(js_err)?;
         Ok(id)
     }
 
