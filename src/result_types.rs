@@ -382,8 +382,8 @@ pub struct NewsletterMetadataResult {
 #[serde(rename_all = "camelCase")]
 pub struct MemoryDiagnosticsResult {
     pub group_cache: f64,
-    pub device_cache: f64,
     pub device_registry_cache: f64,
+    pub sender_key_device_cache: f64,
     pub lid_pn_lid_entries: f64,
     pub lid_pn_pn_entries: f64,
     pub retried_group_messages: f64,

@@ -1,3 +1,4 @@
+use crate::js_val_to_error as js_val_err;
 use js_sys::{ArrayBuffer, Reflect, Uint8Array};
 use std::io::Cursor;
 use symphonia::core::audio::{AudioBuffer, AudioBufferRef, SampleBuffer, Signal};
@@ -12,13 +13,15 @@ use wasm_bindgen::{JsCast, prelude::*};
 use wasm_bindgen_futures::JsFuture;
 use web_sys::{ReadableStream, ReadableStreamDefaultReader};
 
-/// WhatsApp uses 64 buckets for visual waveforms.
-const WAVEFORM_SAMPLES: usize = 64;
+// ---------------------------------------------------------------------------
+// Host-agnostic core functions (no JS types)
+// ---------------------------------------------------------------------------
 
-#[wasm_bindgen(js_name = generateAudioWaveform)]
-pub fn generate_audio_waveform(audio_data: Vec<u8>) -> Result<Uint8Array, JsError> {
+/// Generate a 64-bucket audio waveform from raw audio bytes.
+/// Each bucket is a value 0–100 representing relative amplitude.
+pub fn generate_waveform(audio_data: Vec<u8>) -> Result<Vec<u8>, String> {
     if audio_data.is_empty() {
-        return Err(JsError::new("Audio buffer is empty"));
+        return Err("Audio buffer is empty".into());
     }
 
     let DecoderContext {
@@ -29,10 +32,7 @@ pub fn generate_audio_waveform(audio_data: Vec<u8>) -> Result<Uint8Array, JsErro
     } = prepare_decoder(audio_data)?;
 
     let mut bins = [(0.0f32, 0u32); WAVEFORM_SAMPLES];
-
     let estimated_samples = total_frames.unwrap_or(2_000_000);
-
-    // Moderate packet skipping for speed vs. accuracy
     let estimated_packets = (estimated_samples / 1152).max(64) as usize;
     let target_packets = 512;
     let packet_skip = (estimated_packets / target_packets).max(1);
@@ -56,7 +56,7 @@ pub fn generate_audio_waveform(audio_data: Vec<u8>) -> Result<Uint8Array, JsErro
                 continue;
             }
             Err(e) => {
-                return Err(JsError::new(&format!("Audio decode error: {e}")));
+                return Err(format!("Audio decode error: {e}"));
             }
         };
 
@@ -64,13 +64,11 @@ pub fn generate_audio_waveform(audio_data: Vec<u8>) -> Result<Uint8Array, JsErro
             continue;
         }
 
-        // Skip packets for speed while maintaining even distribution
         packet_counter += 1;
         if packet_skip > 1 && !packet_counter.is_multiple_of(packet_skip) {
             continue;
         }
 
-        // Use packet timestamp for accurate position tracking
         let packet_start = packet.ts();
 
         match decoder.decode(&packet) {
@@ -99,17 +97,97 @@ pub fn generate_audio_waveform(audio_data: Vec<u8>) -> Result<Uint8Array, JsErro
                 continue;
             }
             Err(e) => {
-                return Err(JsError::new(&format!("Failed to decode audio frame: {e}")));
+                return Err(format!("Failed to decode audio frame: {e}"));
             }
         }
     }
 
     if total_samples_processed == 0 {
-        return Err(JsError::new("No audio samples decoded"));
+        return Err("No audio samples decoded".into());
     }
 
-    // Convert bins to final waveform
-    let waveform = finalize_waveform(&bins);
+    Ok(finalize_waveform(&bins))
+}
+
+/// Compute audio duration in seconds from raw audio bytes.
+pub fn compute_duration(audio_data: Vec<u8>) -> Result<f64, String> {
+    if audio_data.is_empty() {
+        return Err("Audio buffer is empty".into());
+    }
+
+    let mss = MediaSourceStream::new(Box::new(Cursor::new(audio_data)), Default::default());
+
+    let probed = symphonia::default::get_probe()
+        .format(
+            &Hint::new(),
+            mss,
+            &FormatOptions::default(),
+            &MetadataOptions::default(),
+        )
+        .map_err(|e| format!("Failed to probe audio format: {e}"))?;
+
+    let mut format = probed.format;
+
+    let track = format
+        .tracks()
+        .iter()
+        .find(|t| t.codec_params.codec != CODEC_TYPE_NULL)
+        .cloned()
+        .ok_or_else(|| "No supported audio track found".to_string())?;
+
+    if let Some(duration) = duration_from_track_metadata(&track) {
+        return Ok(duration);
+    }
+
+    let track_id = track.id;
+    let mut stats = DurationAccumulator::default();
+
+    loop {
+        let packet = match format.next_packet() {
+            Ok(packet) => packet,
+            Err(Error::IoError(ref e))
+                if matches!(
+                    e.kind(),
+                    std::io::ErrorKind::UnexpectedEof | std::io::ErrorKind::NotFound
+                ) =>
+            {
+                break;
+            }
+            Err(Error::ResetRequired) => continue,
+            Err(e) => {
+                return Err(format!("Audio decode error: {e}"));
+            }
+        };
+
+        if packet.track_id() != track_id {
+            continue;
+        }
+
+        stats.update(packet.ts(), packet.dur());
+    }
+
+    let ticks = stats
+        .elapsed_ticks()
+        .ok_or_else(|| "No audio samples decoded".to_string())?;
+
+    convert_ticks_to_seconds(
+        ticks,
+        track.codec_params.time_base,
+        track.codec_params.sample_rate,
+    )
+    .ok_or_else(|| "Missing timing information for audio track".to_string())
+}
+
+/// WhatsApp uses 64 buckets for visual waveforms.
+const WAVEFORM_SAMPLES: usize = 64;
+
+// ---------------------------------------------------------------------------
+// WASM wrappers (thin delegation to core functions)
+// ---------------------------------------------------------------------------
+
+#[wasm_bindgen(js_name = generateAudioWaveform)]
+pub fn generate_audio_waveform(audio_data: Vec<u8>) -> Result<Uint8Array, JsError> {
+    let waveform = generate_waveform(audio_data).map_err(|e| JsError::new(&e))?;
     Ok(Uint8Array::from(waveform.as_slice()))
 }
 
@@ -250,7 +328,7 @@ fn finalize_waveform(bins: &[(f32, u32); WAVEFORM_SAMPLES]) -> Vec<u8> {
 #[wasm_bindgen(js_name = getAudioDuration, skip_typescript)]
 pub async fn get_audio_duration(input: JsValue) -> Result<f64, JsError> {
     let audio_bytes = normalize_audio_input(input).await?;
-    compute_audio_duration(audio_bytes)
+    compute_duration(audio_bytes).map_err(|e| JsError::new(&e))
 }
 
 #[wasm_bindgen(typescript_custom_section)]
@@ -262,77 +340,6 @@ export type AudioDurationInput =
 
 export function getAudioDuration(input: AudioDurationInput): Promise<number>;
 "#;
-
-fn compute_audio_duration(audio_data: Vec<u8>) -> Result<f64, JsError> {
-    if audio_data.is_empty() {
-        return Err(JsError::new("Audio buffer is empty"));
-    }
-
-    let mss = MediaSourceStream::new(Box::new(Cursor::new(audio_data)), Default::default());
-
-    let probed = symphonia::default::get_probe()
-        .format(
-            &Hint::new(),
-            mss,
-            &FormatOptions::default(),
-            &MetadataOptions::default(),
-        )
-        .map_err(|e| JsError::new(&format!("Failed to probe audio format: {e}")))?;
-
-    let mut format = probed.format;
-
-    let track = format
-        .tracks()
-        .iter()
-        .find(|t| t.codec_params.codec != CODEC_TYPE_NULL)
-        .cloned()
-        .ok_or_else(|| JsError::new("No supported audio track found"))?;
-
-    // Fast path: Use n_frames from track metadata
-    // Works for: MP3 (Xing/VBRI headers or CBR estimate), WAV, FLAC, OGG, AAC, etc.
-    if let Some(duration) = duration_from_track_metadata(&track) {
-        return Ok(duration);
-    }
-
-    // Slow path: iterate packets (rare - only for formats without any duration metadata)
-    let track_id = track.id;
-    let mut stats = DurationAccumulator::default();
-
-    loop {
-        let packet = match format.next_packet() {
-            Ok(packet) => packet,
-            Err(Error::IoError(ref e))
-                if matches!(
-                    e.kind(),
-                    std::io::ErrorKind::UnexpectedEof | std::io::ErrorKind::NotFound
-                ) =>
-            {
-                break;
-            }
-            Err(Error::ResetRequired) => continue,
-            Err(e) => {
-                return Err(JsError::new(&format!("Audio decode error: {e}")));
-            }
-        };
-
-        if packet.track_id() != track_id {
-            continue;
-        }
-
-        stats.update(packet.ts(), packet.dur());
-    }
-
-    let ticks = stats
-        .elapsed_ticks()
-        .ok_or_else(|| JsError::new("No audio samples decoded"))?;
-
-    convert_ticks_to_seconds(
-        ticks,
-        track.codec_params.time_base,
-        track.codec_params.sample_rate,
-    )
-    .ok_or_else(|| JsError::new("Missing timing information for audio track"))
-}
 
 fn duration_from_track_metadata(track: &Track) -> Option<f64> {
     let codec_params = &track.codec_params;
@@ -410,14 +417,6 @@ async fn read_stream(stream: &ReadableStream) -> Result<Vec<u8>, JsError> {
     read_from_reader(reader).await
 }
 
-fn js_val_err(e: JsValue) -> JsError {
-    if let Some(s) = e.as_string() {
-        JsError::new(&s)
-    } else {
-        JsError::new(&format!("{e:?}"))
-    }
-}
-
 async fn read_from_reader(reader: ReadableStreamDefaultReader) -> Result<Vec<u8>, JsError> {
     let mut buf: Vec<u8> = Vec::with_capacity(64 * 1024);
 
@@ -449,7 +448,7 @@ struct DecoderContext {
     total_frames: Option<u64>,
 }
 
-fn prepare_decoder(audio_data: Vec<u8>) -> Result<DecoderContext, JsError> {
+fn prepare_decoder(audio_data: Vec<u8>) -> Result<DecoderContext, String> {
     let mss = MediaSourceStream::new(Box::new(Cursor::new(audio_data)), Default::default());
 
     let probed = symphonia::default::get_probe()
@@ -459,7 +458,7 @@ fn prepare_decoder(audio_data: Vec<u8>) -> Result<DecoderContext, JsError> {
             &FormatOptions::default(),
             &MetadataOptions::default(),
         )
-        .map_err(|e| JsError::new(&format!("Failed to probe audio format: {e}")))?;
+        .map_err(|e| format!("Failed to probe audio format: {e}"))?;
 
     let format = probed.format;
 
@@ -467,14 +466,14 @@ fn prepare_decoder(audio_data: Vec<u8>) -> Result<DecoderContext, JsError> {
         .tracks()
         .iter()
         .find(|t| t.codec_params.codec != CODEC_TYPE_NULL)
-        .ok_or_else(|| JsError::new("No supported audio track found"))?;
+        .ok_or_else(|| "No supported audio track found".to_string())?;
 
     let track_id = track.id;
     let total_frames = track.codec_params.n_frames;
 
     let decoder = symphonia::default::get_codecs()
         .make(&track.codec_params.clone(), &DecoderOptions::default())
-        .map_err(|e| JsError::new(&format!("Failed to create decoder: {e}")))?;
+        .map_err(|e| format!("Failed to create decoder: {e}"))?;
 
     Ok(DecoderContext {
         format,

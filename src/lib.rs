@@ -39,6 +39,15 @@ use serde::Serialize;
 use tsify_next::Tsify;
 use wasm_bindgen::prelude::*;
 
+/// Convert a JsValue error to JsError. Shared across WASM wrapper modules.
+pub(crate) fn js_val_to_error(e: JsValue) -> JsError {
+    if let Some(s) = e.as_string() {
+        JsError::new(&s)
+    } else {
+        JsError::new(&format!("{e:?}"))
+    }
+}
+
 /// Enabled features in this build.
 /// Use this to check feature availability at runtime before calling feature-gated functions.
 #[derive(Debug, Clone, Serialize, Tsify)]

@@ -193,9 +193,9 @@ dependencies = [
 
 [[package]]
 name = "cc"
-version = "1.2.57"
+version = "1.2.58"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "7a0dd1ca384932ff3641c8718a02769f1698e7563dc6974ffd03346116310423"
+checksum = "e1e928d4b69e3077709075a938a05ffbedfa53a84c8f766efbf8220bb1ff60e1"
 dependencies = [
  "find-msvc-tools",
  "shlex",
@@ -445,18 +445,18 @@ dependencies = [
 
 [[package]]
 name = "env_filter"
-version = "1.0.0"
+version = "1.0.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "7a1c3cc8e57274ec99de65301228b537f1e4eedc1b8e0f9411c6caac8ae7308f"
+checksum = "32e90c2accc4b07a8456ea0debdc2e7587bdd890680d71173a15d4ae604f6eef"
 dependencies = [
  "log",
 ]
 
 [[package]]
 name = "env_logger"
-version = "0.11.9"
+version = "0.11.10"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b2daee4ea451f429a58296525ddf28b45a3b64f1acf6587e2067437bb11e218d"
+checksum = "0621c04f2196ac3f488dd583365b9c09be011a4ab8b9f37248ffcc8f6198b56a"
 dependencies = [
  "env_filter",
  "log",
@@ -1344,9 +1344,9 @@ checksum = "0fda2ff0d084019ba4d7c6f371c95d8fd75ce3524c3cb8fb653a3023f6323e64"
 
 [[package]]
 name = "simd-adler32"
-version = "0.3.8"
+version = "0.3.9"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e320a6c5ad31d271ad523dcf3ad13e2767ad8b1cb8f047f75a8aeaf8da139da2"
+checksum = "703d5c7ef118737c72f1af64ad2f6f8c5e1921f818cdcb97b8fe6fc69bf66214"
 
 [[package]]
 name = "siphasher"
@@ -1601,9 +1601,9 @@ dependencies = [
 
 [[package]]
 name = "uuid"
-version = "1.22.0"
+version = "1.23.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "a68d3c8f01c0cfa54a75291d83601161799e4a89a39e0929f4b0354d88757a37"
+checksum = "5ac8b6f42ead25368cf5b098aeb3dc8a1a2c05a3eee8a9a1a68c640edbfc79d9"
 dependencies = [
  "getrandom",
  "js-sys",
@@ -1619,7 +1619,7 @@ checksum = "0b928f33d975fc6ad9f86c8f283853ad26bdd5b10b7f1542aa2fa15e2289105a"
 [[package]]
 name = "wacore"
 version = "0.5.0"
-source = "git+https://github.com/jlucaso1/whatsapp-rust?branch=main#21ca48cbff52cf706c4565fd59e09041ab12bf7b"
+source = "git+https://github.com/jlucaso1/whatsapp-rust?branch=main#320fe331603171a1cb21c88c8957c366590e08a7"
 dependencies = [
  "aes",
  "aes-gcm",
@@ -1662,7 +1662,7 @@ dependencies = [
 [[package]]
 name = "wacore-appstate"
 version = "0.5.0"
-source = "git+https://github.com/jlucaso1/whatsapp-rust?branch=main#21ca48cbff52cf706c4565fd59e09041ab12bf7b"
+source = "git+https://github.com/jlucaso1/whatsapp-rust?branch=main#320fe331603171a1cb21c88c8957c366590e08a7"
 dependencies = [
  "anyhow",
  "bytemuck",
@@ -1683,7 +1683,7 @@ dependencies = [
 [[package]]
 name = "wacore-binary"
 version = "0.5.0"
-source = "git+https://github.com/jlucaso1/whatsapp-rust?branch=main#21ca48cbff52cf706c4565fd59e09041ab12bf7b"
+source = "git+https://github.com/jlucaso1/whatsapp-rust?branch=main#320fe331603171a1cb21c88c8957c366590e08a7"
 dependencies = [
  "flate2",
  "phf",
@@ -1695,7 +1695,7 @@ dependencies = [
 [[package]]
 name = "wacore-derive"
 version = "0.5.0"
-source = "git+https://github.com/jlucaso1/whatsapp-rust?branch=main#21ca48cbff52cf706c4565fd59e09041ab12bf7b"
+source = "git+https://github.com/jlucaso1/whatsapp-rust?branch=main#320fe331603171a1cb21c88c8957c366590e08a7"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -1705,7 +1705,7 @@ dependencies = [
 [[package]]
 name = "wacore-libsignal"
 version = "0.5.0"
-source = "git+https://github.com/jlucaso1/whatsapp-rust?branch=main#21ca48cbff52cf706c4565fd59e09041ab12bf7b"
+source = "git+https://github.com/jlucaso1/whatsapp-rust?branch=main#320fe331603171a1cb21c88c8957c366590e08a7"
 dependencies = [
  "aes",
  "aes-gcm",
@@ -1737,7 +1737,7 @@ dependencies = [
 [[package]]
 name = "wacore-noise"
 version = "0.5.0"
-source = "git+https://github.com/jlucaso1/whatsapp-rust?branch=main#21ca48cbff52cf706c4565fd59e09041ab12bf7b"
+source = "git+https://github.com/jlucaso1/whatsapp-rust?branch=main#320fe331603171a1cb21c88c8957c366590e08a7"
 dependencies = [
  "aes-gcm",
  "anyhow",
@@ -1756,7 +1756,7 @@ dependencies = [
 [[package]]
 name = "waproto"
 version = "0.5.0"
-source = "git+https://github.com/jlucaso1/whatsapp-rust?branch=main#21ca48cbff52cf706c4565fd59e09041ab12bf7b"
+source = "git+https://github.com/jlucaso1/whatsapp-rust?branch=main#320fe331603171a1cb21c88c8957c366590e08a7"
 dependencies = [
  "prost",
  "prost-build",
@@ -1900,7 +1900,7 @@ dependencies = [
 [[package]]
 name = "whatsapp-rust"
 version = "0.5.0"
-source = "git+https://github.com/jlucaso1/whatsapp-rust?branch=main#21ca48cbff52cf706c4565fd59e09041ab12bf7b"
+source = "git+https://github.com/jlucaso1/whatsapp-rust?branch=main#320fe331603171a1cb21c88c8957c366590e08a7"
 dependencies = [
  "anyhow",
  "async-channel",
@@ -2171,9 +2171,9 @@ checksum = "cb8a0807f7c01457d0379ba880ba6322660448ddebc890ce29bb64da71fb40f9"
 
 [[package]]
 name = "zune-jpeg"
-version = "0.5.14"
+version = "0.5.15"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "0b7a1c0af6e5d8d1363f4994b7a091ccf963d8b694f7da5b0b9cceb82da2c0a6"
+checksum = "27bc9d5b815bc103f142aa054f561d9187d191692ec7c2d1e2b4737f8dbd7296"
 dependencies = [
  "zune-core",
 ]

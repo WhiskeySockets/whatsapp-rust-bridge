@@ -23,7 +23,6 @@ use wacore::store::InMemoryBackend;
 use wacore::store::error::Result;
 use wacore::store::traits::*;
 use wacore_appstate::processor::AppStateMutationMAC;
-use wacore_binary::jid::Jid;
 
 // ---------------------------------------------------------------------------
 // Store name constants
@@ -38,11 +37,10 @@ const STORE_SYNC_KEY: &str = "sync_key";
 const STORE_SYNC_VERSION: &str = "sync_version";
 const STORE_MUTATION_MAC: &str = "mutation_mac";
 const STORE_DEVICE: &str = "device";
-const STORE_SKDM: &str = "skdm";
+const STORE_SENDER_KEY_DEVICES: &str = "sender_key_devices";
 const STORE_LID_MAPPING: &str = "lid_mapping";
 const STORE_BASE_KEY: &str = "base_key";
 const STORE_DEVICE_LIST: &str = "device_list";
-const STORE_FORGET_MARKS: &str = "forget_marks";
 const STORE_TC_TOKEN: &str = "tc_token";
 const STORE_SENT_MESSAGE: &str = "sent_message";
 const STORE_META: &str = "meta";
@@ -387,27 +385,30 @@ impl AppSyncStore for JsBackend {
 #[cfg_attr(target_arch = "wasm32", async_trait(?Send))]
 #[cfg_attr(not(target_arch = "wasm32"), async_trait)]
 impl ProtocolStore for JsBackend {
-    // --- SKDM Tracking ---
+    // --- Sender Key Device Tracking ---
 
-    async fn get_skdm_recipients(&self, group_jid: &str) -> Result<Vec<Jid>> {
+    async fn get_sender_key_devices(&self, group_jid: &str) -> Result<Vec<(String, bool)>> {
         Ok(self
-            .js_get_json(STORE_SKDM, group_jid)
+            .js_get_json(STORE_SENDER_KEY_DEVICES, group_jid)
             .await?
             .unwrap_or_default())
     }
 
-    async fn add_skdm_recipients(&self, group_jid: &str, device_jids: &[Jid]) -> Result<()> {
-        let mut list: Vec<Jid> = self.get_skdm_recipients(group_jid).await?;
-        for jid in device_jids {
-            if !list.contains(jid) {
-                list.push(jid.clone());
+    async fn set_sender_key_status(&self, group_jid: &str, entries: &[(&str, bool)]) -> Result<()> {
+        let mut devices: Vec<(String, bool)> = self.get_sender_key_devices(group_jid).await?;
+        for &(jid, status) in entries {
+            if let Some(existing) = devices.iter_mut().find(|(j, _)| j == jid) {
+                existing.1 = status;
+            } else {
+                devices.push((jid.to_string(), status));
             }
         }
-        self.js_set_json(STORE_SKDM, group_jid, &list).await
+        self.js_set_json(STORE_SENDER_KEY_DEVICES, group_jid, &devices)
+            .await
     }
 
-    async fn clear_skdm_recipients(&self, group_jid: &str) -> Result<()> {
-        self.js_delete(STORE_SKDM, group_jid).await
+    async fn clear_sender_key_devices(&self, group_jid: &str) -> Result<()> {
+        self.js_delete(STORE_SENDER_KEY_DEVICES, group_jid).await
     }
 
     // --- LID-PN Mapping ---
@@ -507,32 +508,6 @@ impl ProtocolStore for JsBackend {
 
     async fn get_devices(&self, user: &str) -> Result<Option<DeviceListRecord>> {
         self.js_get_json(STORE_DEVICE_LIST, user).await
-    }
-
-    // --- Sender Key Status (Lazy Deletion) ---
-
-    async fn mark_forget_sender_key(&self, group_jid: &str, participant: &str) -> Result<()> {
-        let mut marks: Vec<String> = self
-            .js_get_json(STORE_FORGET_MARKS, group_jid)
-            .await?
-            .unwrap_or_default();
-        if !marks.contains(&participant.to_string()) {
-            marks.push(participant.to_string());
-            self.js_set_json(STORE_FORGET_MARKS, group_jid, &marks)
-                .await?;
-        }
-        Ok(())
-    }
-
-    async fn consume_forget_marks(&self, group_jid: &str) -> Result<Vec<String>> {
-        let marks: Vec<String> = self
-            .js_get_json(STORE_FORGET_MARKS, group_jid)
-            .await?
-            .unwrap_or_default();
-        if !marks.is_empty() {
-            self.js_delete(STORE_FORGET_MARKS, group_jid).await?;
-        }
-        Ok(marks)
     }
 
     // --- TcToken Storage ---

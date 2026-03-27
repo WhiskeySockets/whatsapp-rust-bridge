@@ -168,39 +168,29 @@ fn is_whatsapp_sticker_exif(exif_bytes: &[u8]) -> bool {
     )
 }
 
-/// Add sticker metadata to a WebP image.
-///
-/// Embeds WhatsApp-compatible sticker metadata (pack name, author, emojis, etc.)
-/// into a WebP image using the EXIF chunk format.
-///
-/// Works with both static and animated WebP images.
-#[wasm_bindgen(js_name = addStickerMetadata)]
-pub fn add_sticker_metadata(
-    webp_data: &[u8],
-    mut metadata: StickerMetadata,
-) -> Result<Uint8Array, JsError> {
+// ---------------------------------------------------------------------------
+// Host-agnostic core functions (no JS types)
+// ---------------------------------------------------------------------------
+
+/// Add sticker metadata to a WebP image, returning the modified bytes.
+pub fn add_metadata(webp_data: &[u8], mut metadata: StickerMetadata) -> Result<Vec<u8>, String> {
     metadata.ensure_pack_id();
 
     let mut webp = WebP::from_bytes(Bytes::copy_from_slice(webp_data))
-        .map_err(|e| JsError::new(&format!("Invalid WebP: {e}")))?;
+        .map_err(|e| format!("Invalid WebP: {e}"))?;
 
     let exif_data = metadata
         .build_exif()
-        .map_err(|e| JsError::new(&format!("Failed to serialize metadata: {e}")))?;
+        .map_err(|e| format!("Failed to serialize metadata: {e}"))?;
     webp.set_exif(Some(Bytes::from(exif_data)));
 
-    let output = webp.encoder().bytes();
-    Ok(Uint8Array::from(output.as_ref()))
+    Ok(webp.encoder().bytes().to_vec())
 }
 
-/// Extract sticker metadata from a WebP image.
-///
-/// Returns the metadata object if present, or undefined if no sticker metadata is found.
-/// Returns undefined (not an error) for WebP images with regular camera EXIF data.
-#[wasm_bindgen(js_name = getStickerMetadata)]
-pub fn get_sticker_metadata(webp_data: &[u8]) -> Result<Option<StickerMetadata>, JsError> {
+/// Extract sticker metadata from a WebP image, if present.
+pub fn get_metadata(webp_data: &[u8]) -> Result<Option<StickerMetadata>, String> {
     let webp = WebP::from_bytes(Bytes::copy_from_slice(webp_data))
-        .map_err(|e| JsError::new(&format!("Invalid WebP: {e}")))?;
+        .map_err(|e| format!("Invalid WebP: {e}"))?;
 
     let Some(exif_bytes) = webp.exif() else {
         return Ok(None);
@@ -221,4 +211,24 @@ pub fn get_sticker_metadata(webp_data: &[u8]) -> Result<Option<StickerMetadata>,
     };
 
     Ok(Some(StickerMetadata::from(exif_meta)))
+}
+
+// ---------------------------------------------------------------------------
+// WASM wrappers (thin delegation to core functions)
+// ---------------------------------------------------------------------------
+
+/// Add sticker metadata to a WebP image.
+#[wasm_bindgen(js_name = addStickerMetadata)]
+pub fn add_sticker_metadata(
+    webp_data: &[u8],
+    metadata: StickerMetadata,
+) -> Result<Uint8Array, JsError> {
+    let output = add_metadata(webp_data, metadata).map_err(|e| JsError::new(&e))?;
+    Ok(Uint8Array::from(output.as_slice()))
+}
+
+/// Extract sticker metadata from a WebP image.
+#[wasm_bindgen(js_name = getStickerMetadata)]
+pub fn get_sticker_metadata(webp_data: &[u8]) -> Result<Option<StickerMetadata>, JsError> {
+    get_metadata(webp_data).map_err(|e| JsError::new(&e))
 }

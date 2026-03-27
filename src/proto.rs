@@ -1,3 +1,4 @@
+use crate::js_val_to_error as js_val_err;
 use base64::Engine;
 use prost::Message;
 use wasm_bindgen::prelude::*;
@@ -131,6 +132,39 @@ fn camel_to_snake(s: &str) -> String {
 
 macro_rules! proto_types {
     ($($name:literal => $type:ty),* $(,)?) => {
+        // -------------------------------------------------------------------
+        // Host-agnostic core: JSON bytes ↔ protobuf bytes
+        // -------------------------------------------------------------------
+
+        /// Encode protobuf from JSON bytes (snake_case keys) to protobuf binary.
+        pub fn encode_proto_from_json(type_name: &str, json_bytes: &[u8]) -> Result<Vec<u8>, String> {
+            match type_name {
+                $($name => {
+                    let msg: $type = serde_json::from_slice(json_bytes)
+                        .map_err(|e| e.to_string())?;
+                    Ok(msg.encode_to_vec())
+                })*
+                _ => Err(format!("unknown proto type: {type_name}"))
+            }
+        }
+
+        /// Decode protobuf binary to JSON bytes (camelCase keys, base64 for bytes).
+        pub fn decode_proto_to_json(type_name: &str, data: &[u8]) -> Result<Vec<u8>, String> {
+            match type_name {
+                $($name => {
+                    let msg = <$type>::decode(data)
+                        .map_err(|e| e.to_string())?;
+                    let json_val = crate::camel_serializer::to_json_value_camel(&msg)?;
+                    serde_json::to_vec(&json_val).map_err(|e| e.to_string())
+                })*
+                _ => Err(format!("unknown proto type: {type_name}"))
+            }
+        }
+
+        // -------------------------------------------------------------------
+        // WASM wrappers (thin delegation, JS-specific conversion)
+        // -------------------------------------------------------------------
+
         /// Generic protobuf encode: takes a type name and camelCase JS object, returns binary.
         /// Converts camelCase→snake_case and truncates floats in Rust before deserialization.
         #[wasm_bindgen(js_name = encodeProto)]
@@ -158,15 +192,6 @@ macro_rules! proto_types {
                 _ => Err(JsError::new(&format!("unknown proto type: {type_name}")))
             }
         }
-    }
-}
-
-/// Convert a JsValue error to JsError.
-fn js_val_err(e: JsValue) -> JsError {
-    if let Some(s) = e.as_string() {
-        JsError::new(&s)
-    } else {
-        JsError::new(&format!("{e:?}"))
     }
 }
 

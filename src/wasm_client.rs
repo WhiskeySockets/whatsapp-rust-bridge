@@ -14,6 +14,7 @@ use crate::js_backend;
 use crate::js_http::JsHttpClientAdapter;
 use crate::js_time;
 use crate::js_transport::JsTransportFactory;
+use crate::js_val_to_error as js_val_err;
 use crate::runtime::WasmRuntime;
 
 // ---------------------------------------------------------------------------
@@ -56,7 +57,7 @@ macro_rules! bridge_events {
             ";\n",
         );
 
-        // Generate event_to_js dispatch
+        // Generate event_to_js dispatch (JS-specific, existing path)
         fn event_to_js(event: &Event) -> Result<JsValue, JsValue> {
             let obj = js_sys::Object::new();
             let (event_type, data) = match event {
@@ -66,6 +67,19 @@ macro_rules! bridge_events {
             js_sys::Reflect::set(&obj, &"type".into(), &event_type.into())?;
             js_sys::Reflect::set(&obj, &"data".into(), &data)?;
             Ok(obj.into())
+        }
+
+        // Generate event_to_json dispatch (host-agnostic)
+        /// Serialize an Event to a host-agnostic JSON value: `{"type": "...", "data": {...}}`.
+        pub fn event_to_json(event: &Event) -> Result<serde_json::Value, String> {
+            let (event_type, data) = match event {
+                $( Event::$variant(data) => {
+                    let val = serde_json::to_value(data).map_err(|e| e.to_string())?;
+                    ($name, val)
+                }, )*
+                other => return event_to_json_special(other),
+            };
+            Ok(serde_json::json!({ "type": event_type, "data": data }))
         }
     };
 }
@@ -237,6 +251,9 @@ impl EventHandler for JsEventHandler {
     fn handle_event(&self, event: &Event) {
         match event_to_js(event) {
             Ok(js_event) => {
+                if js_event.is_undefined() {
+                    return; // unhandled variant, already logged
+                }
                 if let Err(e) = self.event_tx.try_send(js_event) {
                     log::warn!("Event channel send failed: {e}");
                 }
@@ -321,12 +338,84 @@ fn event_to_js_special(event: &Event) -> Result<JsValue, JsValue> {
             ("joined_group", crate::proto::to_js_value(lg)?)
         }
         // All other variants are handled by serialize_event! in event_to_js
-        _ => unreachable!("unhandled event variant in event_to_js_special"),
+        other => {
+            log::warn!(
+                "unhandled event variant in event_to_js_special: {:?}",
+                other
+            );
+            return Ok(JsValue::UNDEFINED);
+        }
     };
 
     js_sys::Reflect::set(&obj, &"type".into(), &event_type.into())?;
     js_sys::Reflect::set(&obj, &"data".into(), &data)?;
     Ok(obj.into())
+}
+
+/// Host-agnostic equivalent of `event_to_js_special`.
+fn event_to_json_special(event: &Event) -> Result<serde_json::Value, String> {
+    let (event_type, data) = match event {
+        Event::Connected(_) => ("connected", serde_json::json!({})),
+        Event::Disconnected(_) => ("disconnected", serde_json::json!({})),
+        Event::QrScannedWithoutMultidevice(_) => {
+            ("qr_scanned_without_multidevice", serde_json::json!({}))
+        }
+        Event::ClientOutdated(_) => ("client_outdated", serde_json::json!({})),
+        Event::StreamReplaced(_) => ("stream_replaced", serde_json::json!({})),
+        Event::PairingQrCode { code, timeout } => (
+            "qr",
+            serde_json::json!({ "code": code, "timeout": timeout.as_secs() }),
+        ),
+        Event::PairingCode { code, timeout } => (
+            "pairing_code",
+            serde_json::json!({ "code": code, "timeout": timeout.as_secs() }),
+        ),
+        Event::PairSuccess(ps) => (
+            "pair_success",
+            serde_json::json!({
+                "id": ps.id.to_string(),
+                "lid": ps.lid.to_string(),
+                "business_name": ps.business_name.as_str(),
+                "platform": ps.platform.as_str(),
+            }),
+        ),
+        Event::PairError(pe) => (
+            "pair_error",
+            serde_json::json!({
+                "id": pe.id.to_string(),
+                "lid": pe.lid.to_string(),
+                "business_name": pe.business_name.as_str(),
+                "platform": pe.platform.as_str(),
+                "error": pe.error.as_str(),
+            }),
+        ),
+        Event::LoggedOut(lo) => (
+            "logged_out",
+            serde_json::json!({
+                "on_connect": lo.on_connect,
+                "reason": format!("{:?}", lo.reason),
+            }),
+        ),
+        Event::Message(msg, info) => {
+            let msg_json = crate::camel_serializer::to_json_value_camel(msg.as_ref())?;
+            let info_json = serde_json::to_value(info).map_err(|e| e.to_string())?;
+            (
+                "message",
+                serde_json::json!({ "message": msg_json, "info": info_json }),
+            )
+        }
+        Event::JoinedGroup(lg) => {
+            if lg.get().is_none() {
+                log::warn!("Failed to parse JoinedGroup conversation from raw bytes");
+            }
+            let val = serde_json::to_value(lg).map_err(|e| e.to_string())?;
+            ("joined_group", val)
+        }
+        _other => {
+            return Ok(serde_json::Value::Null);
+        }
+    };
+    Ok(serde_json::json!({ "type": event_type, "data": data }))
 }
 
 /// Default WhatsApp Web version. Hardcoded to skip HTTP version-check on startup.
@@ -1539,9 +1628,10 @@ impl WasmWhatsAppClient {
     #[wasm_bindgen(js_name = updatePrivacySetting)]
     pub async fn update_privacy_setting(&self, category: &str, value: &str) -> Result<(), JsError> {
         self.client
-            .set_privacy_setting(category, value)
+            .set_privacy_setting(category.into(), value.into())
             .await
-            .map_err(js_err)
+            .map_err(js_err)?;
+        Ok(())
     }
 
     /// Set default disappearing messages duration (seconds). 0 to disable.
@@ -2209,8 +2299,8 @@ impl WasmWhatsAppClient {
         let d = self.client.memory_diagnostics().await;
         crate::result_types::MemoryDiagnosticsResult {
             group_cache: d.group_cache as f64,
-            device_cache: d.device_cache as f64,
             device_registry_cache: d.device_registry_cache as f64,
+            sender_key_device_cache: d.sender_key_device_cache as f64,
             lid_pn_lid_entries: d.lid_pn_lid_entries as f64,
             lid_pn_pn_entries: d.lid_pn_pn_entries as f64,
             retried_group_messages: d.retried_group_messages as f64,
@@ -2378,15 +2468,6 @@ fn js_err(e: impl std::fmt::Display) -> JsError {
     JsError::new(&e.to_string())
 }
 
-/// Convert a JsValue error (from Reflect::set, etc.) to JsError.
-fn js_val_err(e: JsValue) -> JsError {
-    if let Some(s) = e.as_string() {
-        JsError::new(&s)
-    } else {
-        JsError::new(&format!("{e:?}"))
-    }
-}
-
 /// Parse a JID string, returning a JS error on failure.
 fn parse_jid(jid: &str) -> Result<Jid, JsError> {
     jid.parse().map_err(js_err)
@@ -2502,8 +2583,8 @@ fn business_profile_to_result(
                 configs
                     .iter()
                     .map(|c| crate::result_types::BusinessHoursConfigResult {
-                        day_of_week: c.day_of_week.clone(),
-                        mode: c.mode.clone(),
+                        day_of_week: c.day_of_week.to_string(),
+                        mode: c.mode.to_string(),
                         open_time: c.open_time.clone(),
                         close_time: c.close_time.clone(),
                     })
@@ -2550,12 +2631,6 @@ fn build_cache_config(js: Option<&JsValue>) -> Result<whatsapp_rust::CacheConfig
         "group",
         &mut config.group_cache,
         &mut config.cache_stores.group_cache,
-    )?;
-    apply_cache_entry(
-        js,
-        "device",
-        &mut config.device_cache,
-        &mut config.cache_stores.device_cache,
     )?;
     apply_cache_entry(
         js,
