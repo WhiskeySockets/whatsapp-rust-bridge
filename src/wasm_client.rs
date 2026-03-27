@@ -1847,6 +1847,29 @@ impl WasmWhatsAppClient {
             .map_err(js_err)
     }
 
+    /// Send a reaction to a newsletter message.
+    ///
+    /// `server_id` is the server-assigned message ID (passed as string to avoid
+    /// JS number precision issues). `reaction` is the emoji code, or null/empty
+    /// to remove a reaction.
+    #[wasm_bindgen(js_name = newsletterReactMessage)]
+    pub async fn newsletter_react_message(
+        &self,
+        jid: &str,
+        server_id: &str,
+        reaction: Option<String>,
+    ) -> Result<(), JsError> {
+        let target = parse_jid(jid)?;
+        let sid: u64 = server_id
+            .parse()
+            .map_err(|e| JsError::new(&format!("invalid server_id: {e}")))?;
+        self.client
+            .newsletter()
+            .send_reaction(&target, sid, reaction.as_deref().unwrap_or(""))
+            .await
+            .map_err(js_err)
+    }
+
     // ── Media reupload ────────────────────────────────────────────────────
 
     /// Request the server to re-upload expired media.
