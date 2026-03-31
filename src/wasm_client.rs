@@ -2221,9 +2221,9 @@ impl WasmWhatsAppClient {
                         return Ok(crate::result_types::UploadMediaResult {
                             url: url.to_string(),
                             direct_path: dp.to_string(),
-                            media_key: media_key.to_vec(),
-                            file_sha256: file_sha256.to_vec(),
-                            file_enc_sha256: file_enc_sha256.to_vec(),
+                            media_key: media_key.try_into().map_err(js_err)?,
+                            file_sha256: file_sha256.try_into().map_err(js_err)?,
+                            file_enc_sha256: file_enc_sha256.try_into().map_err(js_err)?,
                             file_length: file_length as f64,
                         });
                     }
@@ -2257,9 +2257,9 @@ impl WasmWhatsAppClient {
                         return Ok(crate::result_types::UploadMediaResult {
                             url: url.to_string(),
                             direct_path: dp.to_string(),
-                            media_key: media_key.to_vec(),
-                            file_sha256: file_sha256.to_vec(),
-                            file_enc_sha256: file_enc_sha256.to_vec(),
+                            media_key: media_key.try_into().map_err(js_err)?,
+                            file_sha256: file_sha256.try_into().map_err(js_err)?,
+                            file_enc_sha256: file_enc_sha256.try_into().map_err(js_err)?,
                             file_length: file_length as f64,
                         });
                     }

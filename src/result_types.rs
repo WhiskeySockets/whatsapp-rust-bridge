@@ -214,13 +214,13 @@ pub struct UploadMediaResult {
     pub direct_path: String,
     #[tsify(type = "Uint8Array")]
     #[serde(with = "serde_bytes")]
-    pub media_key: Vec<u8>,
+    pub media_key: [u8; 32],
     #[tsify(type = "Uint8Array")]
     #[serde(with = "serde_bytes")]
-    pub file_sha256: Vec<u8>,
+    pub file_sha256: [u8; 32],
     #[tsify(type = "Uint8Array")]
     #[serde(with = "serde_bytes")]
-    pub file_enc_sha256: Vec<u8>,
+    pub file_enc_sha256: [u8; 32],
     pub file_length: f64,
 }
 

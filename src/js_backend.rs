@@ -410,7 +410,7 @@ impl ProtocolStore for JsBackend {
             .js_get_json(STORE_META, "sender_key_groups")
             .await?
             .unwrap_or_default();
-        if !groups.contains(&group_jid.to_string()) {
+        if !groups.iter().any(|g| g == group_jid) {
             groups.push(group_jid.to_string());
             self.js_set_json(STORE_META, "sender_key_groups", &groups)
                 .await?;
@@ -559,7 +559,7 @@ impl ProtocolStore for JsBackend {
             .js_get_json(STORE_META, "tc_token_jids")
             .await?
             .unwrap_or_default();
-        if !jids.contains(&jid.to_string()) {
+        if !jids.iter().any(|j| j == jid) {
             jids.push(jid.to_string());
             self.js_set_json(STORE_META, "tc_token_jids", &jids).await?;
         }
