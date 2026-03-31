@@ -713,16 +713,16 @@ impl WasmWhatsAppClient {
     #[wasm_bindgen(js_name = sendMessage)]
     pub async fn send_message(&self, jid: &str, message: JsValue) -> Result<String, JsError> {
         let (to, msg) = parse_jid_and_msg(jid, message)?;
-        let id = self.client.send_message(to, msg).await.map_err(js_err)?;
-        Ok(id)
+        let result = self.client.send_message(to, msg).await.map_err(js_err)?;
+        Ok(result.message_id)
     }
 
     /// Send a message from protobuf binary bytes.
     #[wasm_bindgen(js_name = sendMessageBytes)]
     pub async fn send_message_bytes(&self, jid: &str, bytes: &[u8]) -> Result<String, JsError> {
         let (to, msg) = parse_jid_and_msg_bytes(jid, bytes)?;
-        let id = self.client.send_message(to, msg).await.map_err(js_err)?;
-        Ok(id)
+        let result = self.client.send_message(to, msg).await.map_err(js_err)?;
+        Ok(result.message_id)
     }
 
     /// Low-level message relay — sends a raw proto.IMessage with an optional
@@ -739,12 +739,12 @@ impl WasmWhatsAppClient {
             message_id,
             ..Default::default()
         };
-        let id = self
+        let result = self
             .client
             .send_message_with_options(to, msg, options)
             .await
             .map_err(js_err)?;
-        Ok(id)
+        Ok(result.message_id)
     }
 
     /// Low-level message relay from protobuf binary bytes.
@@ -760,12 +760,12 @@ impl WasmWhatsAppClient {
             message_id,
             ..Default::default()
         };
-        let id = self
+        let result = self
             .client
             .send_message_with_options(to, msg, options)
             .await
             .map_err(js_err)?;
-        Ok(id)
+        Ok(result.message_id)
     }
 
     // ── Message management ──────────────────────────────────────────────
@@ -1104,10 +1104,11 @@ impl WasmWhatsAppClient {
         &self,
         phone: &str,
     ) -> Result<Vec<crate::result_types::IsOnWhatsAppResult>, JsError> {
+        let jid = Jid::new(phone, wacore_binary::jid::DEFAULT_USER_SERVER);
         let results = self
             .client
             .contacts()
-            .is_on_whatsapp(&[phone])
+            .is_on_whatsapp(&[jid])
             .await
             .map_err(js_err)?;
 
@@ -1415,14 +1416,14 @@ impl WasmWhatsAppClient {
         selectable_count: u32,
     ) -> Result<crate::result_types::CreatePollResult, JsError> {
         let to = parse_jid(jid)?;
-        let (msg_id, message_secret) = self
+        let (result, message_secret) = self
             .client
             .polls()
             .create(&to, name, &options, selectable_count)
             .await
             .map_err(js_err)?;
         Ok(crate::result_types::CreatePollResult {
-            message_id: msg_id,
+            message_id: result.message_id,
             message_secret: message_secret.to_vec(),
         })
     }
@@ -1439,13 +1440,13 @@ impl WasmWhatsAppClient {
     ) -> Result<String, JsError> {
         let chat = parse_jid(chat_jid)?;
         let creator = parse_jid(poll_creator_jid)?;
-        let id = self
+        let result = self
             .client
             .polls()
             .vote(&chat, poll_msg_id, &creator, message_secret, &option_names)
             .await
             .map_err(js_err)?;
-        Ok(id)
+        Ok(result.message_id)
     }
 
     /// Send a status/story message to specified recipients.
@@ -1464,13 +1465,13 @@ impl WasmWhatsAppClient {
             .iter()
             .map(|s| parse_jid(s))
             .collect::<Result<_, _>>()?;
-        let id = self
+        let result = self
             .client
             .status()
-            .send_raw(msg, jids, Default::default())
+            .send_raw(msg, &jids, Default::default())
             .await
             .map_err(js_err)?;
-        Ok(id)
+        Ok(result.message_id)
     }
 
     // ── Read receipts ─────────────────────────────────────────────────
@@ -1663,15 +1664,18 @@ impl WasmWhatsAppClient {
         &self,
         jids: Vec<String>,
     ) -> Result<Vec<crate::result_types::FetchStatusResult>, JsError> {
-        let jid_refs: Vec<&str> = jids.iter().map(|s| s.as_str()).collect();
+        let parsed_jids: Vec<Jid> = jids
+            .iter()
+            .map(|s| parse_jid(s))
+            .collect::<Result<_, _>>()?;
         let infos = self
             .client
             .contacts()
-            .get_info(&jid_refs)
+            .get_user_info(&parsed_jids)
             .await
             .map_err(js_err)?;
         Ok(infos
-            .iter()
+            .values()
             .map(|info| crate::result_types::FetchStatusResult {
                 jid: info.jid.to_string(),
                 status: info.status.clone(),
@@ -2077,7 +2081,7 @@ impl WasmWhatsAppClient {
         let mt: wacore::download::MediaType = media_type.into();
         let resp = self
             .client
-            .upload(data.to_vec(), mt)
+            .upload(data.to_vec(), mt, Default::default())
             .await
             .map_err(js_err)?;
         Ok(crate::result_types::UploadMediaResult {

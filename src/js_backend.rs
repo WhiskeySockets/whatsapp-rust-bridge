@@ -404,11 +404,44 @@ impl ProtocolStore for JsBackend {
             }
         }
         self.js_set_json(STORE_SENDER_KEY_DEVICES, group_jid, &devices)
-            .await
+            .await?;
+        // Track group JID so clear_all_sender_key_devices can enumerate them
+        let mut groups: Vec<String> = self
+            .js_get_json(STORE_META, "sender_key_groups")
+            .await?
+            .unwrap_or_default();
+        if !groups.contains(&group_jid.to_string()) {
+            groups.push(group_jid.to_string());
+            self.js_set_json(STORE_META, "sender_key_groups", &groups)
+                .await?;
+        }
+        Ok(())
     }
 
     async fn clear_sender_key_devices(&self, group_jid: &str) -> Result<()> {
-        self.js_delete(STORE_SENDER_KEY_DEVICES, group_jid).await
+        self.js_delete(STORE_SENDER_KEY_DEVICES, group_jid).await?;
+        // Remove from tracking list
+        let mut groups: Vec<String> = self
+            .js_get_json(STORE_META, "sender_key_groups")
+            .await?
+            .unwrap_or_default();
+        if let Some(pos) = groups.iter().position(|g| g == group_jid) {
+            groups.swap_remove(pos);
+            self.js_set_json(STORE_META, "sender_key_groups", &groups)
+                .await?;
+        }
+        Ok(())
+    }
+
+    async fn clear_all_sender_key_devices(&self) -> Result<()> {
+        let groups: Vec<String> = self
+            .js_get_json(STORE_META, "sender_key_groups")
+            .await?
+            .unwrap_or_default();
+        for group in &groups {
+            self.js_delete(STORE_SENDER_KEY_DEVICES, group).await?;
+        }
+        self.js_delete(STORE_META, "sender_key_groups").await
     }
 
     // --- LID-PN Mapping ---
@@ -508,6 +541,10 @@ impl ProtocolStore for JsBackend {
 
     async fn get_devices(&self, user: &str) -> Result<Option<DeviceListRecord>> {
         self.js_get_json(STORE_DEVICE_LIST, user).await
+    }
+
+    async fn delete_devices(&self, user: &str) -> Result<()> {
+        self.js_delete(STORE_DEVICE_LIST, user).await
     }
 
     // --- TcToken Storage ---
