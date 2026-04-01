@@ -63,29 +63,46 @@ fn create_js_handle(event_tx: async_channel::Sender<TransportEvent>) -> JsValue 
     let tx = event_tx.clone();
     let on_data = Closure::wrap(Box::new(move |data: js_sys::Uint8Array| {
         let bytes = data.to_vec();
-        if tx
-            .try_send(TransportEvent::DataReceived(Bytes::from(bytes)))
-            .is_err()
-        {
-            log::error!("Transport event channel full, data event dropped!");
+        match tx.try_send(TransportEvent::DataReceived(Bytes::from(bytes))) {
+            Ok(()) => {}
+            Err(async_channel::TrySendError::Closed(_)) => {
+                log::debug!("Transport channel closed, data event dropped (shutdown in progress)");
+            }
+            Err(async_channel::TrySendError::Full(_)) => {
+                log::error!("Transport event channel full, data event dropped!");
+            }
         }
     }) as Box<dyn FnMut(js_sys::Uint8Array)>);
     let _ = js_sys::Reflect::set(&obj, &"onData".into(), &on_data.into_js_value());
 
     let tx = event_tx.clone();
-    let on_connected = Closure::wrap(Box::new(move || {
-        if tx.try_send(TransportEvent::Connected).is_err() {
-            log::error!("Transport event channel full, Connected event dropped!");
-        }
-    }) as Box<dyn FnMut()>);
+    let on_connected =
+        Closure::wrap(
+            Box::new(move || match tx.try_send(TransportEvent::Connected) {
+                Ok(()) => {}
+                Err(async_channel::TrySendError::Closed(_)) => {
+                    log::debug!("Transport channel closed, Connected event dropped");
+                }
+                Err(async_channel::TrySendError::Full(_)) => {
+                    log::error!("Transport event channel full, Connected event dropped!");
+                }
+            }) as Box<dyn FnMut()>,
+        );
     let _ = js_sys::Reflect::set(&obj, &"onConnected".into(), &on_connected.into_js_value());
 
     let tx = event_tx;
-    let on_disconnected = Closure::wrap(Box::new(move || {
-        if tx.try_send(TransportEvent::Disconnected).is_err() {
-            log::error!("Transport event channel full, Disconnected event dropped!");
-        }
-    }) as Box<dyn FnMut()>);
+    let on_disconnected =
+        Closure::wrap(
+            Box::new(move || match tx.try_send(TransportEvent::Disconnected) {
+                Ok(()) => {}
+                Err(async_channel::TrySendError::Closed(_)) => {
+                    log::debug!("Transport channel closed, Disconnected event dropped");
+                }
+                Err(async_channel::TrySendError::Full(_)) => {
+                    log::error!("Transport event channel full, Disconnected event dropped!");
+                }
+            }) as Box<dyn FnMut()>,
+        );
     let _ = js_sys::Reflect::set(
         &obj,
         &"onDisconnected".into(),

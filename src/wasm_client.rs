@@ -133,6 +133,7 @@ bridge_events! {
         "stream_replaced"                 => "Record<string, never>",
         "qr_scanned_without_multidevice"  => "Record<string, never>",
         "client_outdated"                 => "Record<string, never>",
+        "raw_node"                        => "{ tag: string; attrs: Record<string, string>; content?: unknown }",
     }
 }
 
@@ -337,6 +338,11 @@ fn event_to_js_special(event: &Event) -> Result<JsValue, JsValue> {
             }
             ("joined_group", crate::proto::to_js_value(lg)?)
         }
+        Event::RawNode(node) => {
+            // Convert to BinaryNode-compatible JS object { tag, attrs: Record, content }
+            let data = node_to_js(node.as_ref())?;
+            ("raw_node", data)
+        }
         // All other variants are handled by serialize_event! in event_to_js
         other => {
             log::warn!(
@@ -410,6 +416,10 @@ fn event_to_json_special(event: &Event) -> Result<serde_json::Value, String> {
             }
             let val = serde_json::to_value(lg).map_err(|e| e.to_string())?;
             ("joined_group", val)
+        }
+        Event::RawNode(node) => {
+            let val = serde_json::to_value(node.as_ref()).map_err(|e| e.to_string())?;
+            ("raw_node", val)
         }
         _other => {
             return Ok(serde_json::Value::Null);
@@ -2320,6 +2330,18 @@ impl WasmWhatsAppClient {
             .map(|j| j.to_non_ad().to_string())
     }
 
+    /// Get the ADV signed device identity (account), if available.
+    /// Used by upstream Baileys consumers that access `authState.creds.account`.
+    #[wasm_bindgen(js_name = getAccount)]
+    pub async fn get_account(&self) -> Result<JsValue, JsError> {
+        let snapshot = self.persistence_manager.get_device_snapshot().await;
+        match &snapshot.account {
+            Some(account) => crate::camel_serializer::to_js_value_camel(account)
+                .map_err(|e| JsError::new(&format!("account serialization: {e:?}"))),
+            None => Ok(JsValue::UNDEFINED),
+        }
+    }
+
     /// Returns a snapshot of internal memory diagnostics (cache sizes, session counts, etc.).
     #[wasm_bindgen(js_name = getMemoryDiagnostics)]
     pub async fn get_memory_diagnostics(&self) -> crate::result_types::MemoryDiagnosticsResult {
@@ -2348,6 +2370,256 @@ impl WasmWhatsAppClient {
             signal_cache_sender_keys: d.signal_cache_sender_keys as f64,
             chatstate_handlers: d.chatstate_handlers as f64,
         }
+    }
+
+    // ── Signal / low-level protocol ──────────────────────────────────────
+
+    /// Enable or disable raw node forwarding. When enabled, a `raw_node` event
+    /// is emitted for every decoded stanza before internal dispatch.
+    #[wasm_bindgen(js_name = setRawNodeForwarding)]
+    pub fn set_raw_node_forwarding(&self, enabled: bool) {
+        self.client.set_raw_node_forwarding(enabled);
+    }
+
+    /// Send a raw binary node stanza to WhatsApp servers.
+    /// Accepts a JS object matching `{ tag: string, attrs: Record<string, string>, content?: ... }`.
+    #[wasm_bindgen(js_name = sendNode)]
+    pub async fn send_node(&self, node_js: JsValue) -> Result<(), JsError> {
+        let node = js_to_node(&node_js)?;
+        self.client.send_node(node).await.map_err(js_err)
+    }
+
+    /// Ensure E2E Signal sessions exist for the given JIDs.
+    /// Returns true after sessions are established.
+    #[wasm_bindgen(js_name = assertSessions)]
+    pub async fn assert_sessions(&self, jids: Vec<String>, _force: bool) -> Result<bool, JsError> {
+        let parsed: Vec<wacore_binary::jid::Jid> = jids
+            .iter()
+            .map(|j| parse_jid(j))
+            .collect::<Result<_, _>>()?;
+        self.client
+            .signal()
+            .assert_sessions(&parsed)
+            .await
+            .map_err(js_err)?;
+        Ok(true)
+    }
+
+    /// Get the list of known devices for the given user JIDs via usync query.
+    /// Returns an array of JID strings (one per device).
+    #[wasm_bindgen(js_name = getUSyncDevices)]
+    pub async fn get_usync_devices(
+        &self,
+        jids: Vec<String>,
+        _use_cache: bool,
+        _ignore_zero_devices: bool,
+    ) -> Result<JsValue, JsError> {
+        let parsed: Vec<wacore_binary::jid::Jid> = jids
+            .iter()
+            .map(|j| parse_jid(j))
+            .collect::<Result<_, _>>()?;
+        let devices = self
+            .client
+            .signal()
+            .get_user_devices(&parsed)
+            .await
+            .map_err(js_err)?;
+        // Return as JidWithDevice[] = { user: string, device?: number, jid: string }
+        let arr = js_sys::Array::new_with_length(devices.len() as u32);
+        for (i, jid) in devices.iter().enumerate() {
+            let obj = js_sys::Object::new();
+            js_sys::Reflect::set(&obj, &"user".into(), &jid.user.as_str().into())
+                .map_err(|e| JsError::new(&format!("{e:?}")))?;
+            if jid.device != 0 {
+                js_sys::Reflect::set(&obj, &"device".into(), &(jid.device as f64).into())
+                    .map_err(|e| JsError::new(&format!("{e:?}")))?;
+            }
+            js_sys::Reflect::set(&obj, &"jid".into(), &jid.to_string().into())
+                .map_err(|e| JsError::new(&format!("{e:?}")))?;
+            arr.set(i as u32, obj.into());
+        }
+        Ok(arr.into())
+    }
+
+    // ── Signal protocol ──────────────────────────────────────────────────
+
+    /// Encrypt plaintext for a single recipient.
+    /// Returns `{ type: "msg"|"pkmsg", ciphertext: Uint8Array }`.
+    #[wasm_bindgen(js_name = signalEncryptMessage)]
+    pub async fn signal_encrypt_message(&self, jid: &str, data: &[u8]) -> Result<JsValue, JsError> {
+        let parsed = parse_jid(jid)?;
+        let (msg_type, ciphertext) = self
+            .client
+            .signal()
+            .encrypt_message(&parsed, data)
+            .await
+            .map_err(js_err)?;
+        let obj = js_sys::Object::new();
+        js_sys::Reflect::set(&obj, &"type".into(), &msg_type.as_wire_str().into())
+            .map_err(|e| JsError::new(&format!("{e:?}")))?;
+        js_sys::Reflect::set(
+            &obj,
+            &"ciphertext".into(),
+            &js_sys::Uint8Array::from(ciphertext.as_slice()).into(),
+        )
+        .map_err(|e| JsError::new(&format!("{e:?}")))?;
+        Ok(obj.into())
+    }
+
+    /// Decrypt a Signal protocol message. `msg_type` is "msg", "pkmsg", or "skmsg".
+    #[wasm_bindgen(js_name = signalDecryptMessage)]
+    pub async fn signal_decrypt_message(
+        &self,
+        jid: &str,
+        msg_type: &str,
+        ciphertext: &[u8],
+    ) -> Result<js_sys::Uint8Array, JsError> {
+        let parsed = parse_jid(jid)?;
+        let enc_type = wacore::message_processing::EncType::from_wire(msg_type)
+            .ok_or_else(|| JsError::new(&format!("invalid msg_type: {msg_type}")))?;
+        let plaintext = self
+            .client
+            .signal()
+            .decrypt_message(&parsed, enc_type, ciphertext)
+            .await
+            .map_err(js_err)?;
+        Ok(js_sys::Uint8Array::from(plaintext.as_slice()))
+    }
+
+    /// Encrypt plaintext for a group (sender key).
+    /// Returns `{ senderKeyDistributionMessage: Uint8Array, ciphertext: Uint8Array }`.
+    #[wasm_bindgen(js_name = signalEncryptGroupMessage)]
+    pub async fn signal_encrypt_group_message(
+        &self,
+        group_jid: &str,
+        data: &[u8],
+        _me_id: &str,
+    ) -> Result<JsValue, JsError> {
+        let parsed = parse_jid(group_jid)?;
+        let (skdm, ciphertext) = self
+            .client
+            .signal()
+            .encrypt_group_message(&parsed, data)
+            .await
+            .map_err(js_err)?;
+        let obj = js_sys::Object::new();
+        let skdm_js = match &skdm {
+            Some(bytes) => js_sys::Uint8Array::from(bytes.as_slice()).into(),
+            None => JsValue::UNDEFINED,
+        };
+        js_sys::Reflect::set(&obj, &"senderKeyDistributionMessage".into(), &skdm_js)
+            .map_err(|e| JsError::new(&format!("{e:?}")))?;
+        js_sys::Reflect::set(
+            &obj,
+            &"ciphertext".into(),
+            &js_sys::Uint8Array::from(ciphertext.as_slice()).into(),
+        )
+        .map_err(|e| JsError::new(&format!("{e:?}")))?;
+        Ok(obj.into())
+    }
+
+    /// Decrypt a group (sender-key) message.
+    #[wasm_bindgen(js_name = signalDecryptGroupMessage)]
+    pub async fn signal_decrypt_group_message(
+        &self,
+        group_jid: &str,
+        author_jid: &str,
+        msg: &[u8],
+    ) -> Result<js_sys::Uint8Array, JsError> {
+        let group = parse_jid(group_jid)?;
+        let sender = parse_jid(author_jid)?;
+        let plaintext = self
+            .client
+            .signal()
+            .decrypt_group_message(&group, &sender, msg)
+            .await
+            .map_err(js_err)?;
+        Ok(js_sys::Uint8Array::from(plaintext.as_slice()))
+    }
+
+    /// Check whether a Signal session exists for the given JID.
+    #[wasm_bindgen(js_name = signalValidateSession)]
+    pub async fn signal_validate_session(&self, jid: &str) -> Result<bool, JsError> {
+        let parsed = parse_jid(jid)?;
+        self.client
+            .signal()
+            .validate_session(&parsed)
+            .await
+            .map_err(js_err)
+    }
+
+    /// Delete Signal sessions for the given JIDs.
+    #[wasm_bindgen(js_name = signalDeleteSessions)]
+    pub async fn signal_delete_sessions(&self, jids: Vec<String>) -> Result<(), JsError> {
+        let parsed: Vec<wacore_binary::jid::Jid> = jids
+            .iter()
+            .map(|j| parse_jid(j))
+            .collect::<Result<_, _>>()?;
+        self.client
+            .signal()
+            .delete_sessions(&parsed)
+            .await
+            .map_err(js_err)
+    }
+
+    /// Convert a JID string to its Signal protocol address representation.
+    #[wasm_bindgen(js_name = jidToSignalProtocolAddress)]
+    pub fn jid_to_signal_protocol_address(&self, jid: &str) -> Result<String, JsError> {
+        use wacore::types::jid::JidExt;
+        let parsed = parse_jid(jid)?;
+        Ok(parsed.to_protocol_address_string())
+    }
+
+    // ── Participant node creation ────────────────────────────────────────
+
+    /// Create encrypted participant `<to>` nodes for recipient JIDs.
+    /// Returns `{ nodes: [...], shouldIncludeDeviceIdentity: boolean }`.
+    #[wasm_bindgen(js_name = createParticipantNodes)]
+    pub async fn create_participant_nodes(
+        &self,
+        jids: Vec<String>,
+        message: JsValue,
+        _extra_attrs: JsValue,
+    ) -> Result<JsValue, JsError> {
+        let recipient_jids: Vec<wacore_binary::jid::Jid> = jids
+            .iter()
+            .map(|j| parse_jid(j))
+            .collect::<Result<_, _>>()?;
+
+        let snake_msg = crate::proto::to_snake_case_js(&message);
+        let msg: waproto::whatsapp::Message = serde_wasm_bindgen::from_value(snake_msg)
+            .map_err(|e| JsError::new(&format!("invalid message: {e}")))?;
+
+        let (nodes, should_include_device_identity) = self
+            .client
+            .signal()
+            .create_participant_nodes(&recipient_jids, &msg)
+            .await
+            .map_err(js_err)?;
+
+        let obj = js_sys::Object::new();
+        let nodes_js = nodes_to_js_array(&nodes)
+            .map_err(|e| JsError::new(&format!("node serialization failed: {e:?}")))?;
+        js_sys::Reflect::set(&obj, &"nodes".into(), &nodes_js)
+            .map_err(|e| JsError::new(&format!("{e:?}")))?;
+        js_sys::Reflect::set(
+            &obj,
+            &"shouldIncludeDeviceIdentity".into(),
+            &should_include_device_identity.into(),
+        )
+        .map_err(|e| JsError::new(&format!("{e:?}")))?;
+        Ok(obj.into())
+    }
+
+    // ── Raw transport ────────────────────────────────────────────────────
+
+    /// Send pre-marshaled bytes through the noise socket.
+    #[wasm_bindgen(js_name = sendRawMessage)]
+    pub async fn send_raw_message(&self, data: &[u8]) -> Result<(), JsError> {
+        self.client
+            .send_raw_bytes(data.to_vec())
+            .await
+            .map_err(js_err)
     }
 }
 
@@ -2498,6 +2770,112 @@ fn js_err(e: impl std::fmt::Display) -> JsError {
 /// Parse a JID string, returning a JS error on failure.
 fn parse_jid(jid: &str) -> Result<Jid, JsError> {
     jid.parse().map_err(js_err)
+}
+
+// ---------------------------------------------------------------------------
+// Node ↔ BinaryNode conversion
+// ---------------------------------------------------------------------------
+// Upstream Baileys uses `BinaryNode = { tag: string, attrs: Record<string, string>, content?: ... }`
+// but wacore's `Node` has `Attrs(Vec<(Cow, NodeValue)>)` with tagged enum content.
+// These converters bridge the two representations.
+
+/// Convert a wacore `Node` → JS `BinaryNode` object `{ tag, attrs, content }`.
+fn node_to_js(node: &wacore_binary::node::Node) -> Result<JsValue, JsValue> {
+    let obj = js_sys::Object::new();
+    js_sys::Reflect::set(&obj, &"tag".into(), &node.tag.as_ref().into())?;
+
+    // attrs: Record<string, string> — flatten Vec<(key, NodeValue)> to object
+    let attrs_obj = js_sys::Object::new();
+    for (key, value) in node.attrs.iter() {
+        let val_str: String = value.as_str().into_owned();
+        js_sys::Reflect::set(&attrs_obj, &key.as_ref().into(), &val_str.into())?;
+    }
+    js_sys::Reflect::set(&obj, &"attrs".into(), &attrs_obj.into())?;
+
+    // content: BinaryNode[] | string | Uint8Array | undefined
+    if let Some(content) = &node.content {
+        let content_js = match content {
+            wacore_binary::node::NodeContent::Nodes(nodes) => {
+                let arr = js_sys::Array::new_with_length(nodes.len() as u32);
+                for (i, child) in nodes.iter().enumerate() {
+                    arr.set(i as u32, node_to_js(child)?);
+                }
+                arr.into()
+            }
+            wacore_binary::node::NodeContent::Bytes(bytes) => {
+                js_sys::Uint8Array::from(bytes.as_slice()).into()
+            }
+            wacore_binary::node::NodeContent::String(s) => JsValue::from_str(s),
+        };
+        js_sys::Reflect::set(&obj, &"content".into(), &content_js)?;
+    }
+
+    Ok(obj.into())
+}
+
+/// Convert a JS `BinaryNode` object → wacore `Node`.
+fn js_to_node(val: &JsValue) -> Result<wacore_binary::node::Node, JsError> {
+    use std::borrow::Cow;
+    use wacore_binary::node::{Attrs, Node, NodeContent, NodeValue};
+
+    let tag: String = js_sys::Reflect::get(val, &"tag".into())
+        .map_err(|e| JsError::new(&format!("missing tag: {e:?}")))?
+        .as_string()
+        .ok_or_else(|| JsError::new("tag must be a string"))?;
+
+    // Parse attrs: Record<string, string> → Vec<(Cow, NodeValue)>
+    let attrs_val = js_sys::Reflect::get(val, &"attrs".into()).unwrap_or(JsValue::UNDEFINED);
+    let mut attrs = Attrs::new();
+    if attrs_val.is_object() && !attrs_val.is_undefined() && !attrs_val.is_null() {
+        let keys = js_sys::Object::keys(&js_sys::Object::from(attrs_val.clone()));
+        for i in 0..keys.length() {
+            let key = keys.get(i).as_string().unwrap_or_default();
+            let value = js_sys::Reflect::get(&attrs_val, &key.as_str().into())
+                .unwrap_or(JsValue::UNDEFINED);
+            let val_str = value.as_string().unwrap_or_default();
+            // Try to parse as JID if it contains '@'
+            if val_str.contains('@')
+                && let Ok(jid) = val_str.parse::<wacore_binary::jid::Jid>()
+            {
+                attrs.push(Cow::Owned(key), NodeValue::Jid(jid));
+                continue;
+            }
+            attrs.push(Cow::Owned(key), NodeValue::String(val_str));
+        }
+    }
+
+    // Parse content
+    let content_val = js_sys::Reflect::get(val, &"content".into()).unwrap_or(JsValue::UNDEFINED);
+    let content = if content_val.is_undefined() || content_val.is_null() {
+        None
+    } else if content_val.is_string() {
+        Some(NodeContent::String(
+            content_val.as_string().unwrap_or_default(),
+        ))
+    } else if content_val.is_instance_of::<js_sys::Uint8Array>() {
+        let arr = js_sys::Uint8Array::from(content_val);
+        Some(NodeContent::Bytes(arr.to_vec()))
+    } else if js_sys::Array::is_array(&content_val) {
+        let arr = js_sys::Array::from(&content_val);
+        let mut children = Vec::with_capacity(arr.length() as usize);
+        for i in 0..arr.length() {
+            children.push(js_to_node(&arr.get(i))?);
+        }
+        Some(NodeContent::Nodes(children))
+    } else {
+        None
+    };
+
+    Ok(Node::new(Cow::Owned(tag), attrs, content))
+}
+
+/// Convert an array of wacore Nodes to JS BinaryNode array.
+fn nodes_to_js_array(nodes: &[wacore_binary::node::Node]) -> Result<JsValue, JsValue> {
+    let arr = js_sys::Array::new_with_length(nodes.len() as u32);
+    for (i, node) in nodes.iter().enumerate() {
+        arr.set(i as u32, node_to_js(node)?);
+    }
+    Ok(arr.into())
 }
 
 /// Base64-URL-safe (no padding) encoding for upload tokens.
