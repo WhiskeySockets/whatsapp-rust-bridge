@@ -3,7 +3,7 @@
 //! Wraps `whatsapp_rust::Client` with JS-provided adapters for
 //! transport (WebSocket), storage (InMemory/JS), and HTTP (fetch).
 
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 use log::info;
 use wacore::types::events::{Event, EventHandler};
@@ -503,11 +503,6 @@ pub async fn create_whatsapp_client(
                 .map_err(|e| JsError::new(&format!("create persistence manager: {e}")))?,
         );
 
-    // Start background saver — flushes dirty Device state to the backend
-    persistence_manager
-        .clone()
-        .run_background_saver(runtime.clone(), std::time::Duration::from_secs(5));
-
     let cache_config = build_cache_config(cache_config_js.as_ref()).map_err(js_val_err)?;
 
     let (client, sync_rx) = whatsapp_rust::Client::new_with_cache_config(
@@ -520,6 +515,16 @@ pub async fn create_whatsapp_client(
     )
     .await;
 
+    // Start the periodic saver AFTER the Client exists so we can subscribe to
+    // its shutdown signal. The returned `AbortHandle` is stored on the wrapper
+    // and also aborted explicitly in `disconnect()` — belt-and-suspenders with
+    // the self-terminating shutdown arm in the saver loop.
+    let saver_handle = persistence_manager.clone().run_background_saver(
+        runtime.clone(),
+        std::time::Duration::from_secs(5),
+        client.shutdown_signal(),
+    );
+
     if let Some(callback) = on_event {
         let handler = Arc::new(JsEventHandler::new(callback)) as Arc<dyn EventHandler>;
         client.register_handler(handler);
@@ -530,6 +535,7 @@ pub async fn create_whatsapp_client(
         runtime,
         sync_rx: Some(sync_rx),
         persistence_manager,
+        saver_handle: Mutex::new(Some(saver_handle)),
     })
 }
 
@@ -545,6 +551,10 @@ pub struct WasmWhatsAppClient {
     runtime: Arc<dyn wacore::runtime::Runtime>,
     sync_rx: Option<async_channel::Receiver<whatsapp_rust::sync_task::MajorSyncTask>>,
     persistence_manager: Arc<whatsapp_rust::store::persistence_manager::PersistenceManager>,
+    /// Handle to the bridge-owned background saver task. Aborted on
+    /// `disconnect()` so the in-flight 5s `sleep` doesn't keep the Node.js
+    /// event loop alive.
+    saver_handle: Mutex<Option<wacore::runtime::AbortHandle>>,
 }
 
 #[wasm_bindgen]
@@ -600,6 +610,19 @@ impl WasmWhatsAppClient {
     /// Disconnect the client and flush pending state to storage.
     pub async fn disconnect(&self) {
         self.client.disconnect().await;
+        // Abort the bridge background saver BEFORE the final flush: aborting
+        // drops its pending `sleep` future, which calls `clearTimeout` on the
+        // 5s timer that would otherwise keep the Node.js event loop alive.
+        // The explicit `flush()` below persists any dirty state the saver
+        // would have written on its next tick.
+        if let Some(handle) = self
+            .saver_handle
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .take()
+        {
+            handle.abort();
+        }
         if let Err(e) = self.persistence_manager.flush().await {
             log::warn!("Failed to flush state on disconnect: {e}");
         }
@@ -612,6 +635,14 @@ impl WasmWhatsAppClient {
     /// delete the store to fully clear credentials.
     pub async fn logout(&self) -> Result<(), JsError> {
         self.client.logout().await.map_err(js_err)?;
+        if let Some(handle) = self
+            .saver_handle
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .take()
+        {
+            handle.abort();
+        }
         if let Err(e) = self.persistence_manager.flush().await {
             log::warn!("Failed to flush state on logout: {e}");
         }
@@ -2336,7 +2367,6 @@ impl WasmWhatsAppClient {
             sender_key_device_cache: d.sender_key_device_cache as f64,
             lid_pn_lid_entries: d.lid_pn_lid_entries as f64,
             lid_pn_pn_entries: d.lid_pn_pn_entries as f64,
-            retried_group_messages: d.retried_group_messages as f64,
             recent_messages: d.recent_messages as f64,
             message_retry_counts: d.message_retry_counts as f64,
             pdo_pending_requests: d.pdo_pending_requests as f64,
@@ -3072,11 +3102,6 @@ fn build_cache_config(js: Option<&JsValue>) -> Result<whatsapp_rust::CacheConfig
         "lidPn",
         &mut config.lid_pn_cache,
         &mut config.cache_stores.lid_pn_cache,
-    )?;
-    apply_cache_entry_simple(
-        js,
-        "retriedGroupMessages",
-        &mut config.retried_group_messages,
     )?;
     apply_cache_entry_simple(js, "recentMessages", &mut config.recent_messages)?;
     apply_cache_entry_simple(js, "messageRetry", &mut config.message_retry_counts)?;

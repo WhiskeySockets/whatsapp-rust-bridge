@@ -386,7 +386,6 @@ pub struct MemoryDiagnosticsResult {
     pub sender_key_device_cache: f64,
     pub lid_pn_lid_entries: f64,
     pub lid_pn_pn_entries: f64,
-    pub retried_group_messages: f64,
     pub recent_messages: f64,
     pub message_retry_counts: f64,
     pub pdo_pending_requests: f64,

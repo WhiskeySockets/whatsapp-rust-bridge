@@ -69,7 +69,10 @@ fn create_js_handle(event_tx: async_channel::Sender<TransportEvent>) -> JsValue 
                 log::debug!("Transport channel closed, data event dropped (shutdown in progress)");
             }
             Err(async_channel::TrySendError::Full(_)) => {
-                log::error!("Transport event channel full, data event dropped!");
+                // Dropping a frame desyncs the noise counter; force reconnect
+                // instead — WA redelivers unacked messages on resume.
+                log::error!("Transport channel full; closing to force reconnect");
+                tx.close();
             }
         }
     }) as Box<dyn FnMut(js_sys::Uint8Array)>);
@@ -84,7 +87,8 @@ fn create_js_handle(event_tx: async_channel::Sender<TransportEvent>) -> JsValue 
                     log::debug!("Transport channel closed, Connected event dropped");
                 }
                 Err(async_channel::TrySendError::Full(_)) => {
-                    log::error!("Transport event channel full, Connected event dropped!");
+                    log::error!("Transport channel full on Connected; closing");
+                    tx.close();
                 }
             }) as Box<dyn FnMut()>,
         );
@@ -99,7 +103,9 @@ fn create_js_handle(event_tx: async_channel::Sender<TransportEvent>) -> JsValue 
                     log::debug!("Transport channel closed, Disconnected event dropped");
                 }
                 Err(async_channel::TrySendError::Full(_)) => {
-                    log::error!("Transport event channel full, Disconnected event dropped!");
+                    // Receiver treats channel close as Disconnected (client.rs recv Err).
+                    log::error!("Transport channel full on Disconnected; closing");
+                    tx.close();
                 }
             }) as Box<dyn FnMut()>,
         );
@@ -237,7 +243,8 @@ impl TransportFactory for JsTransportFactory {
         &self,
     ) -> Result<(Arc<dyn Transport>, Receiver<TransportEvent>), anyhow::Error> {
         log::debug!("JsTransportFactory::create_transport called");
-        let (event_tx, event_rx) = async_channel::bounded(8192);
+        // Sized for burst absorption; overflow is a real lag signal, not noise.
+        let (event_tx, event_rx) = async_channel::bounded(32768);
         let handle = create_js_handle(event_tx);
 
         log::debug!("Calling JS connect(handle)...");
