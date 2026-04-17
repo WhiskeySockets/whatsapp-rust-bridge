@@ -89,7 +89,6 @@ bridge_events! {
         // Variant              => "js_name"                       => "TsDataType"
         Receipt                  => "receipt"                       => "Receipt",
         UndecryptableMessage     => "undecryptable_message"         => "UndecryptableMessage",
-        Notification             => "notification"                  => "Record<string, unknown>",
         ChatPresence             => "chat_presence"                 => "ChatPresenceUpdate",
         Presence                 => "presence"                      => "PresenceUpdate",
         PictureUpdate            => "picture_update"                => "PictureUpdate",
@@ -129,7 +128,7 @@ bridge_events! {
         "pair_error"                      => "{ id: string; lid: string; business_name: string; platform: string; error: string }",
         "logged_out"                      => "{ on_connect: boolean; reason: string }",
         "message"                         => "{ message: Record<string, unknown>; info: MessageInfo }",
-        "joined_group"                    => "Record<string, unknown>",
+        "notification"                    => "{ tag: string; attrs: Record<string, string>; content?: unknown }",
         "stream_replaced"                 => "Record<string, never>",
         "qr_scanned_without_multidevice"  => "Record<string, never>",
         "client_outdated"                 => "Record<string, never>",
@@ -249,8 +248,8 @@ impl JsEventHandler {
 }
 
 impl EventHandler for JsEventHandler {
-    fn handle_event(&self, event: &Event) {
-        match event_to_js(event) {
+    fn handle_event(&self, event: Arc<Event>) {
+        match event_to_js(&event) {
             Ok(js_event) => {
                 if js_event.is_undefined() {
                     return; // unhandled variant, already logged
@@ -331,16 +330,12 @@ fn event_to_js_special(event: &Event) -> Result<JsValue, JsValue> {
             js_sys::Reflect::set(&d, &"info".into(), &crate::proto::to_js_value(info)?)?;
             ("message", d.into())
         }
-        Event::JoinedGroup(lg) => {
-            // Force parse before serialization; log if parsing fails
-            if lg.get().is_none() {
-                log::warn!("Failed to parse JoinedGroup conversation from raw bytes");
-            }
-            ("joined_group", crate::proto::to_js_value(lg)?)
+        Event::Notification(node) => {
+            let data = node_ref_to_js(node.get())?;
+            ("notification", data)
         }
         Event::RawNode(node) => {
-            // Convert to BinaryNode-compatible JS object { tag, attrs: Record, content }
-            let data = node_to_js(node.as_ref())?;
+            let data = node_ref_to_js(node.get())?;
             ("raw_node", data)
         }
         // All other variants are handled by serialize_event! in event_to_js
@@ -410,15 +405,12 @@ fn event_to_json_special(event: &Event) -> Result<serde_json::Value, String> {
                 serde_json::json!({ "message": msg_json, "info": info_json }),
             )
         }
-        Event::JoinedGroup(lg) => {
-            if lg.get().is_none() {
-                log::warn!("Failed to parse JoinedGroup conversation from raw bytes");
-            }
-            let val = serde_json::to_value(lg).map_err(|e| e.to_string())?;
-            ("joined_group", val)
+        Event::Notification(node) => {
+            let val = serde_json::to_value(node.get()).map_err(|e| e.to_string())?;
+            ("notification", val)
         }
         Event::RawNode(node) => {
-            let val = serde_json::to_value(node.as_ref()).map_err(|e| e.to_string())?;
+            let val = serde_json::to_value(node.get()).map_err(|e| e.to_string())?;
             ("raw_node", val)
         }
         _other => {
@@ -871,13 +863,8 @@ impl WasmWhatsAppClient {
 
         let participant_options: Vec<GroupParticipantOptions> = participants
             .iter()
-            .map(|p| {
-                let jid: Jid = p
-                    .parse()
-                    .unwrap_or_else(|_| Jid::new(p, wacore_binary::jid::DEFAULT_USER_SERVER));
-                GroupParticipantOptions::new(jid)
-            })
-            .collect();
+            .map(|p| parse_jid(p).map(GroupParticipantOptions::new))
+            .collect::<Result<_, _>>()?;
 
         let options = whatsapp_rust::features::GroupCreateOptions::new(subject)
             .with_participants(participant_options);
@@ -951,11 +938,8 @@ impl WasmWhatsAppClient {
 
         let participant_jids: Vec<Jid> = participants
             .iter()
-            .map(|p| {
-                p.parse()
-                    .unwrap_or_else(|_| Jid::new(p, wacore_binary::jid::DEFAULT_USER_SERVER))
-            })
-            .collect();
+            .map(|p| parse_jid(p))
+            .collect::<Result<_, _>>()?;
 
         let to_results =
             |responses: Vec<whatsapp_rust::features::ParticipantChangeResponse>| -> Vec<crate::result_types::ParticipantChangeResult> {
@@ -1114,7 +1098,7 @@ impl WasmWhatsAppClient {
         &self,
         phone: &str,
     ) -> Result<Vec<crate::result_types::IsOnWhatsAppResult>, JsError> {
-        let jid = Jid::new(phone, wacore_binary::jid::DEFAULT_USER_SERVER);
+        let jid = Jid::pn(phone);
         let results = self
             .client
             .contacts()
@@ -2357,8 +2341,7 @@ impl WasmWhatsAppClient {
             message_retry_counts: d.message_retry_counts as f64,
             pdo_pending_requests: d.pdo_pending_requests as f64,
             session_locks: d.session_locks as f64,
-            message_queues: d.message_queues as f64,
-            message_enqueue_locks: d.message_enqueue_locks as f64,
+            chat_lanes: d.chat_lanes as f64,
             response_waiters: d.response_waiters as f64,
             node_waiters: d.node_waiters as f64,
             pending_retries: d.pending_retries as f64,
@@ -2369,6 +2352,7 @@ impl WasmWhatsAppClient {
             signal_cache_identities: d.signal_cache_identities as f64,
             signal_cache_sender_keys: d.signal_cache_sender_keys as f64,
             chatstate_handlers: d.chatstate_handlers as f64,
+            custom_enc_handlers: d.custom_enc_handlers as f64,
         }
     }
 
@@ -2641,7 +2625,7 @@ fn group_metadata_to_result(
             .map(|p| GroupParticipantInfo {
                 jid: p.jid.to_string(),
                 phone_number: p.phone_number.as_ref().map(|pn| pn.to_string()),
-                is_admin: p.is_admin,
+                is_admin: p.is_admin(),
             })
             .collect(),
         addressing_mode: serde_json::to_string(&metadata.addressing_mode)
@@ -2813,6 +2797,46 @@ fn node_to_js(node: &wacore_binary::node::Node) -> Result<JsValue, JsValue> {
     Ok(obj.into())
 }
 
+/// Convert a yoke-borrowed `NodeRef` → JS `BinaryNode` object `{ tag, attrs, content }`.
+/// Zero-copy: reads directly from the decoded buffer without cloning to `Node`.
+fn node_ref_to_js(node: &wacore_binary::node::NodeRef<'_>) -> Result<JsValue, JsValue> {
+    let obj = js_sys::Object::new();
+    js_sys::Reflect::set(&obj, &"tag".into(), &JsValue::from_str(&node.tag))?;
+
+    let attrs_obj = js_sys::Object::new();
+    for (key, value) in node.attrs_iter() {
+        let js_val = match value {
+            wacore_binary::node::ValueRef::String(s) => JsValue::from_str(s),
+            wacore_binary::node::ValueRef::Jid(j) => {
+                let mut s = String::with_capacity(j.user.len() + 20);
+                wacore_binary::push_jid_to_string(&j.user, j.server, j.agent, j.device, &mut s);
+                JsValue::from_str(&s)
+            }
+        };
+        js_sys::Reflect::set(&attrs_obj, &JsValue::from_str(key), &js_val)?;
+    }
+    js_sys::Reflect::set(&obj, &"attrs".into(), &attrs_obj.into())?;
+
+    if let Some(content) = node.content.as_deref() {
+        let content_js = match content {
+            wacore_binary::node::NodeContentRef::Nodes(children) => {
+                let arr = js_sys::Array::new_with_length(children.len() as u32);
+                for (i, child) in children.iter().enumerate() {
+                    arr.set(i as u32, node_ref_to_js(child)?);
+                }
+                arr.into()
+            }
+            wacore_binary::node::NodeContentRef::Bytes(bytes) => {
+                js_sys::Uint8Array::from(bytes.as_ref()).into()
+            }
+            wacore_binary::node::NodeContentRef::String(s) => JsValue::from_str(s),
+        };
+        js_sys::Reflect::set(&obj, &"content".into(), &content_js)?;
+    }
+
+    Ok(obj.into())
+}
+
 /// Convert a JS `BinaryNode` object → wacore `Node`.
 fn js_to_node(val: &JsValue) -> Result<wacore_binary::node::Node, JsError> {
     use std::borrow::Cow;
@@ -2840,7 +2864,7 @@ fn js_to_node(val: &JsValue) -> Result<wacore_binary::node::Node, JsError> {
                 attrs.push(Cow::Owned(key), NodeValue::Jid(jid));
                 continue;
             }
-            attrs.push(Cow::Owned(key), NodeValue::String(val_str));
+            attrs.push(Cow::Owned(key), NodeValue::String(val_str.into()));
         }
     }
 
@@ -2850,7 +2874,7 @@ fn js_to_node(val: &JsValue) -> Result<wacore_binary::node::Node, JsError> {
         None
     } else if content_val.is_string() {
         Some(NodeContent::String(
-            content_val.as_string().unwrap_or_default(),
+            content_val.as_string().unwrap_or_default().into(),
         ))
     } else if content_val.is_instance_of::<js_sys::Uint8Array>() {
         let arr = js_sys::Uint8Array::from(content_val);
@@ -2990,8 +3014,8 @@ fn business_profile_to_result(
                     .map(|c| crate::result_types::BusinessHoursConfigResult {
                         day_of_week: c.day_of_week.to_string(),
                         mode: c.mode.to_string(),
-                        open_time: c.open_time.clone(),
-                        close_time: c.close_time.clone(),
+                        open_time: c.open_time as f64,
+                        close_time: c.close_time as f64,
                     })
                     .collect()
             }),

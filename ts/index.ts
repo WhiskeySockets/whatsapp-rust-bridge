@@ -13,7 +13,6 @@ export {
   getEnabledFeatures,
   decryptPollVote,
   getAggregateVotesInPollMessage,
-  stressTestSpawn,
 } from "../pkg/whatsapp_rust_bridge.js";
 
 // initWasmEngine and createWhatsAppClient need explicit typing

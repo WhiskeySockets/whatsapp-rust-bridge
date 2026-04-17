@@ -1,7 +1,9 @@
 // Talc allocator — ~2x faster than dlmalloc (default), ~63% smaller binary overhead.
 // Dynamic mode with grow-in-place for reduced fragmentation in long-running clients.
+// `WasmDynamicTalc` is the single-threaded, zero-overhead variant (talc 5.x).
+#[cfg(all(not(target_feature = "atomics"), target_family = "wasm"))]
 #[global_allocator]
-static ALLOCATOR: talc::TalckWasm = unsafe { talc::TalckWasm::new_global() };
+static ALLOCATOR: talc::wasm::WasmDynamicTalc = talc::wasm::new_wasm_dynamic_allocator();
 
 #[cfg(feature = "audio")]
 pub mod audio;

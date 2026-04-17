@@ -61,21 +61,18 @@ fn parse_level_filter(level_str: &str) -> LevelFilter {
 
 struct BridgeLogger;
 
-impl BridgeLogger {
-    fn get_level_filter_from_js() -> LevelFilter {
-        JS_LOGGER.with(|logger| {
-            logger
-                .borrow()
-                .as_ref()
-                .map(|js_logger| parse_level_filter(&js_logger.js_level()))
-                .unwrap_or(LevelFilter::Off)
-        })
-    }
+/// Read the JS logger level and publish it to `log::set_max_level` — the
+/// `log` crate's macros check this static filter before calling `enabled()`,
+/// so this is the single source of truth for level filtering.
+fn sync_level_cache(js_logger: &JsLogger) {
+    log::set_max_level(parse_level_filter(&js_logger.js_level()));
 }
 
 impl Log for BridgeLogger {
-    fn enabled(&self, metadata: &Metadata) -> bool {
-        metadata.level() <= Self::get_level_filter_from_js()
+    fn enabled(&self, _metadata: &Metadata) -> bool {
+        // `log::set_max_level` already short-circuits below the desired level
+        // before we are ever called, so every call that reaches us is enabled.
+        true
     }
 
     fn log(&self, record: &Record) {
@@ -113,6 +110,8 @@ static BRIDGE_LOGGER: BridgeLogger = BridgeLogger;
 
 #[wasm_bindgen(js_name = setLogger)]
 pub fn set_logger(logger: JsLogger) -> Result<(), JsValue> {
+    sync_level_cache(&logger);
+
     JS_LOGGER.with(|cell| {
         *cell.borrow_mut() = Some(logger);
     });
@@ -120,8 +119,6 @@ pub fn set_logger(logger: JsLogger) -> Result<(), JsValue> {
     if !LOGGER_INITIALIZED.swap(true, Ordering::SeqCst) {
         log::set_logger(&BRIDGE_LOGGER)
             .map_err(|e| JsValue::from_str(&format!("Failed to set logger: {}", e)))?;
-
-        log::set_max_level(LevelFilter::Trace);
     }
 
     Ok(())
@@ -129,6 +126,8 @@ pub fn set_logger(logger: JsLogger) -> Result<(), JsValue> {
 
 #[wasm_bindgen(js_name = updateLogger)]
 pub fn update_logger(logger: JsLogger) {
+    sync_level_cache(&logger);
+
     JS_LOGGER.with(|cell| {
         *cell.borrow_mut() = Some(logger);
     });
@@ -139,14 +138,14 @@ pub fn has_logger() -> bool {
     JS_LOGGER.with(|logger| logger.borrow().is_some())
 }
 
+/// Parse a pino-style level string to `log::Level`.
+/// "off"/"silent" are upgraded to `Error` so the message is never silently dropped
+/// by the single shared parser — callers that want true suppression should check
+/// `log::max_level()` before invoking.
 fn parse_level(level_str: &str) -> Level {
-    match level_str.to_lowercase().as_str() {
-        "trace" => Level::Trace,
-        "debug" => Level::Debug,
-        "warn" | "warning" => Level::Warn,
-        "error" => Level::Error,
-        _ => Level::Info,
-    }
+    parse_level_filter(level_str)
+        .to_level()
+        .unwrap_or(Level::Error)
 }
 
 #[wasm_bindgen(js_name = logMessage)]

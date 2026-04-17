@@ -200,7 +200,7 @@ crate::wasm_send_sync!(JsTransportInner);
 #[cfg_attr(target_arch = "wasm32", async_trait(?Send))]
 #[cfg_attr(not(target_arch = "wasm32"), async_trait)]
 impl Transport for JsTransportInner {
-    async fn send(&self, data: Vec<u8>) -> Result<(), anyhow::Error> {
+    async fn send(&self, data: Bytes) -> Result<(), anyhow::Error> {
         log::trace!("Transport::send {} bytes", data.len());
         self.callbacks.call_send(&data).await
     }

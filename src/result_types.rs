@@ -391,8 +391,7 @@ pub struct MemoryDiagnosticsResult {
     pub message_retry_counts: f64,
     pub pdo_pending_requests: f64,
     pub session_locks: f64,
-    pub message_queues: f64,
-    pub message_enqueue_locks: f64,
+    pub chat_lanes: f64,
     pub response_waiters: f64,
     pub node_waiters: f64,
     pub pending_retries: f64,
@@ -403,6 +402,7 @@ pub struct MemoryDiagnosticsResult {
     pub signal_cache_identities: f64,
     pub signal_cache_sender_keys: f64,
     pub chatstate_handlers: f64,
+    pub custom_enc_handlers: f64,
 }
 
 /// Result from `getAggregateVotesInPollMessage`.
@@ -466,8 +466,6 @@ pub struct BusinessHoursResult {
 pub struct BusinessHoursConfigResult {
     pub day_of_week: String,
     pub mode: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub open_time: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub close_time: Option<String>,
+    pub open_time: f64,
+    pub close_time: f64,
 }

@@ -2,12 +2,14 @@ use std::cell::RefCell;
 use std::collections::VecDeque;
 use std::future::Future;
 use std::pin::Pin;
+use std::rc::Rc;
 use std::task::{Context, Poll, Waker};
 use std::time::Duration;
 
 use async_trait::async_trait;
 use wacore::runtime::{AbortHandle, Runtime};
 use wasm_bindgen::prelude::*;
+use wasm_bindgen_futures::JsFuture;
 
 /// WASM-based implementation of [`Runtime`].
 ///
@@ -19,14 +21,127 @@ pub struct WasmRuntime;
 
 crate::wasm_send_sync!(WasmRuntime);
 
-/// Cached reference to `globalThis.setTimeout`.
-static SET_TIMEOUT_FN: std::sync::OnceLock<JsValue> = std::sync::OnceLock::new();
+/// Cached reference to `globalThis.setTimeout`, resolved once and stored as
+/// `js_sys::Function` so hot paths avoid a per-call `dyn_into` + clone.
+static SET_TIMEOUT_FN: std::sync::OnceLock<Option<js_sys::Function>> = std::sync::OnceLock::new();
+/// Cached reference to `globalThis.clearTimeout` — same rationale as above.
+static CLEAR_TIMEOUT_FN: std::sync::OnceLock<Option<js_sys::Function>> = std::sync::OnceLock::new();
 
-fn get_set_timeout() -> &'static JsValue {
-    SET_TIMEOUT_FN.get_or_init(|| {
-        let global = js_sys::global();
-        js_sys::Reflect::get(&global, &"setTimeout".into()).unwrap_or(JsValue::UNDEFINED)
-    })
+fn resolve_global_fn(name: &str) -> Option<js_sys::Function> {
+    let global = js_sys::global();
+    js_sys::Reflect::get(&global, &name.into())
+        .ok()
+        .and_then(|v| v.dyn_into::<js_sys::Function>().ok())
+}
+
+fn get_set_timeout() -> Option<&'static js_sys::Function> {
+    SET_TIMEOUT_FN
+        .get_or_init(|| resolve_global_fn("setTimeout"))
+        .as_ref()
+}
+
+fn get_clear_timeout() -> Option<&'static js_sys::Function> {
+    CLEAR_TIMEOUT_FN
+        .get_or_init(|| resolve_global_fn("clearTimeout"))
+        .as_ref()
+}
+
+/// Call `clearTimeout(id)` to cancel a pending timer. Silently no-ops if
+/// `globalThis.clearTimeout` is unavailable or the call throws.
+fn clear_timeout(id: &JsValue) {
+    if let Some(clear_fn) = get_clear_timeout() {
+        let _ = clear_fn.call1(&JsValue::NULL, id);
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Cancellation-aware sleep future
+// ---------------------------------------------------------------------------
+//
+// `Promise::new` + `setTimeout` alone leaks timers on cancellation: if the
+// owning Rust future is dropped (via `futures::select!`, Abortable, etc.)
+// before the timer fires, the Rust-side `JsFuture` goes away — but the
+// JS-side `setTimeout` callback remains queued and keeps the Node.js event
+// loop alive until it fires naturally. For long sleeps (minutes) during
+// shutdown this causes the process to hang.
+//
+// `SleepFut` captures the timer ID returned by `setTimeout` into a shared
+// `Rc<RefCell<Option<JsValue>>>` so that Drop can call `clearTimeout(id)`.
+// When the timer fires naturally we clear the slot so Drop is a no-op.
+
+struct SleepFut {
+    /// Shared timer ID — `Some` while the timer is pending, cleared to
+    /// `None` either when the timer fires (in `poll`) or when we've already
+    /// cancelled it (in `drop`). When `setTimeout` is unavailable the slot
+    /// stays `None` and the underlying promise is already resolved.
+    timer_id: Rc<RefCell<Option<JsValue>>>,
+    js_future: JsFuture,
+}
+
+impl Future for SleepFut {
+    type Output = ();
+
+    fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<()> {
+        match Pin::new(&mut self.js_future).poll(cx) {
+            Poll::Ready(_) => {
+                // Timer fired naturally (or was never scheduled) — clear the ID
+                // so Drop is a no-op.
+                self.timer_id.borrow_mut().take();
+                Poll::Ready(())
+            }
+            Poll::Pending => Poll::Pending,
+        }
+    }
+}
+
+impl Drop for SleepFut {
+    fn drop(&mut self) {
+        if let Some(id) = self.timer_id.borrow_mut().take() {
+            clear_timeout(&id);
+        }
+    }
+}
+
+/// Schedule `callback` via `setTimeout(ms)` and return the timer ID.
+///
+/// Returns `None` if scheduling failed (e.g. `globalThis.setTimeout` missing
+/// — the caller should treat this as "resolved synchronously").
+fn schedule_timeout(callback: &JsValue, ms: i32) -> Option<JsValue> {
+    let set_timeout_fn = get_set_timeout()?;
+    let id = set_timeout_fn
+        .call2(&JsValue::NULL, callback, &JsValue::from(ms))
+        .ok()?;
+    if id.is_undefined() || id.is_null() {
+        None
+    } else {
+        Some(id)
+    }
+}
+
+/// Build a cancellation-aware sleep future.
+///
+/// `ms == 0` still allocates a timer to preserve "yield to event loop" semantics,
+/// but Drop-cancellation works identically.
+fn make_sleep(ms: i32) -> SleepFut {
+    // `timer_id_slot` is populated by the Promise executor (runs synchronously
+    // during `Promise::new`). We share it with `SleepFut` so Drop can cancel.
+    let timer_id_slot: Rc<RefCell<Option<JsValue>>> = Rc::new(RefCell::new(None));
+
+    let executor_slot = timer_id_slot.clone();
+    let promise = js_sys::Promise::new(&mut |resolve, _reject| {
+        match schedule_timeout(&resolve, ms) {
+            Some(id) => *executor_slot.borrow_mut() = Some(id),
+            None => {
+                // Couldn't schedule — resolve synchronously so the future is Ready.
+                let _ = resolve.call0(&JsValue::NULL);
+            }
+        }
+    });
+
+    SleepFut {
+        timer_id: timer_id_slot,
+        js_future: JsFuture::from(promise),
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -221,20 +336,13 @@ impl Future for SetImmediateYield {
     }
 }
 
-/// Fallback: yield via setTimeout(0) — used when MessageChannel is unavailable.
+/// Fallback: yield via setTimeout(0) — used when `setImmediate` is unavailable.
+///
+/// Uses the cancellation-aware `SleepFut` so a dropped yield doesn't leak a
+/// pending timer into the event loop. For a 0ms timer this rarely matters in
+/// practice, but it's free insurance and keeps the code path consistent.
 fn set_timeout_yield() -> Pin<Box<dyn Future<Output = ()>>> {
-    let promise = js_sys::Promise::new(&mut |resolve, _reject| {
-        let st = get_set_timeout();
-        if let Ok(set_timeout_fn) = st.clone().dyn_into::<js_sys::Function>() {
-            let _ = set_timeout_fn.call2(&JsValue::NULL, &resolve, &JsValue::from(0));
-        } else {
-            let _ = resolve.call0(&JsValue::NULL);
-        }
-    });
-    let js_future = wasm_bindgen_futures::JsFuture::from(promise);
-    Box::pin(async move {
-        let _ = js_future.await;
-    })
+    Box::pin(make_sleep(0))
 }
 
 #[async_trait(?Send)]
@@ -250,18 +358,10 @@ impl Runtime for WasmRuntime {
 
     fn sleep(&self, duration: Duration) -> Pin<Box<dyn Future<Output = ()>>> {
         let ms = duration.as_millis().min(i32::MAX as u128) as i32;
-        let promise = js_sys::Promise::new(&mut |resolve, _reject| {
-            let st = get_set_timeout();
-            if let Ok(set_timeout_fn) = st.clone().dyn_into::<js_sys::Function>() {
-                let _ = set_timeout_fn.call2(&JsValue::NULL, &resolve, &JsValue::from(ms));
-            } else {
-                let _ = resolve.call0(&JsValue::NULL);
-            }
-        });
-        let js_future = wasm_bindgen_futures::JsFuture::from(promise);
-        Box::pin(async move {
-            let _ = js_future.await;
-        })
+        // `make_sleep` returns a `SleepFut` that calls `clearTimeout` on Drop
+        // if the underlying timer hasn't fired yet — prevents leaking pending
+        // timers into the Node.js event loop on cancellation/abort.
+        Box::pin(make_sleep(ms))
     }
 
     fn spawn_blocking(&self, f: Box<dyn FnOnce() + 'static>) -> Pin<Box<dyn Future<Output = ()>>> {
@@ -288,62 +388,4 @@ impl Runtime for WasmRuntime {
         // for single-threaded execution — pending I/O starves between yields.
         1
     }
-}
-
-// ---------------------------------------------------------------------------
-// Test helper: stress-test the spawn + yield mechanism
-// ---------------------------------------------------------------------------
-
-/// Spawns `worker_count` async tasks that each perform `steps_per_worker`
-/// rounds of: compute work → yield → compute work. Returns a Promise that
-/// resolves with the total number of completed steps.
-///
-/// This exercises the actual `spawn_local` + `set_timeout_0` path that the
-/// WhatsApp client uses during offline sync. If spawned tasks create a
-/// microtask storm, the JS event loop starves and timers can't fire.
-#[wasm_bindgen(js_name = stressTestSpawn)]
-pub async fn stress_test_spawn(worker_count: u32, steps_per_worker: u32) -> u32 {
-    use std::sync::atomic::{AtomicU32, Ordering};
-    let completed = std::rc::Rc::new(AtomicU32::new(0));
-    let (done_tx, done_rx) = async_channel::bounded::<()>(worker_count as usize);
-
-    let runtime = WasmRuntime;
-    for _ in 0..worker_count {
-        let completed = completed.clone();
-        let done_tx = done_tx.clone();
-        let steps = steps_per_worker;
-
-        // Use the same spawn path as the real WhatsApp client
-        runtime
-            .spawn(Box::pin(async move {
-                for _ in 0..steps {
-                    // Simulate WASM compute work (like message decryption)
-                    let mut sum = 0u64;
-                    for j in 0..1000 {
-                        sum = sum.wrapping_add(j);
-                    }
-                    std::hint::black_box(sum);
-
-                    // Yield to event loop (like flush_signal_cache → backend.set)
-                    set_timeout_0().await;
-
-                    completed.fetch_add(1, Ordering::Relaxed);
-                }
-                let _ = done_tx.send(()).await;
-            }))
-            .detach();
-    }
-    // Drop our copy so the channel closes when all workers are done
-    drop(done_tx);
-
-    // Wait for all workers to complete
-    let mut finished = 0u32;
-    while done_rx.recv().await.is_ok() {
-        finished += 1;
-        if finished == worker_count {
-            break;
-        }
-    }
-
-    completed.load(Ordering::Relaxed)
 }

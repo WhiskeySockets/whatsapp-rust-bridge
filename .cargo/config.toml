@@ -1,5 +1,5 @@
 [target.wasm32-unknown-unknown]
-rustflags = ["-C", "target-feature=+simd128", '--cfg', 'getrandom_backend="wasm_js"']
+rustflags = ["-C", "target-feature=+simd128", '--cfg', 'getrandom_backend="wasm_js"', '--cfg', 'curve25519_dalek_bits="64"']
 
 [build]
 target = "wasm32-unknown-unknown"

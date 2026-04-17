@@ -13,6 +13,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicI32, Ordering};
 
 use async_trait::async_trait;
+use bytes::Bytes;
 use js_sys::{Promise, Uint8Array};
 use wasm_bindgen::prelude::*;
 use wasm_bindgen_futures::JsFuture;
@@ -205,16 +206,24 @@ impl SignalStore for JsBackend {
         self.js_set(STORE_IDENTITY, address, &key).await
     }
 
-    async fn load_identity(&self, address: &str) -> Result<Option<Vec<u8>>> {
-        self.js_get(STORE_IDENTITY, address).await
+    async fn load_identity(&self, address: &str) -> Result<Option<[u8; 32]>> {
+        match self.js_get(STORE_IDENTITY, address).await? {
+            Some(bytes) => Ok(Some(bytes.try_into().map_err(|v: Vec<u8>| {
+                store_err(format!(
+                    "identity key for {address} has invalid length {}",
+                    v.len()
+                ))
+            })?)),
+            None => Ok(None),
+        }
     }
 
     async fn delete_identity(&self, address: &str) -> Result<()> {
         self.js_delete(STORE_IDENTITY, address).await
     }
 
-    async fn get_session(&self, address: &str) -> Result<Option<Vec<u8>>> {
-        self.js_get(STORE_SESSION, address).await
+    async fn get_session(&self, address: &str) -> Result<Option<Bytes>> {
+        Ok(self.js_get(STORE_SESSION, address).await?.map(Bytes::from))
     }
 
     async fn put_session(&self, address: &str, session: &[u8]) -> Result<()> {
@@ -229,8 +238,11 @@ impl SignalStore for JsBackend {
         self.js_set(STORE_PREKEY, &id.to_string(), record).await
     }
 
-    async fn load_prekey(&self, id: u32) -> Result<Option<Vec<u8>>> {
-        self.js_get(STORE_PREKEY, &id.to_string()).await
+    async fn load_prekey(&self, id: u32) -> Result<Option<Bytes>> {
+        Ok(self
+            .js_get(STORE_PREKEY, &id.to_string())
+            .await?
+            .map(Bytes::from))
     }
 
     async fn remove_prekey(&self, id: u32) -> Result<()> {
@@ -247,7 +259,7 @@ impl SignalStore for JsBackend {
         }
     }
 
-    async fn store_prekeys_batch(&self, keys: &[(u32, Vec<u8>)], uploaded: bool) -> Result<()> {
+    async fn store_prekeys_batch(&self, keys: &[(u32, Bytes)], uploaded: bool) -> Result<()> {
         let mut max_id = self.get_max_prekey_id().await?;
         for (id, record) in keys {
             self.store_prekey(*id, record, uploaded).await?;
