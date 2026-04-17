@@ -151,8 +151,14 @@ export interface JsStoreCallbacks {
   delete(store: string, key: string): Promise<void>;
 }
 
-/** Initialize the WASM engine. Call once before creating clients. */
-export function initWasmEngine(): void;
+/**
+ * Initialize the WASM engine. Call once before creating clients.
+ * @param logger Optional pino-compatible logger.
+ * @param crypto Optional native crypto callbacks — when provided, AES/HMAC
+ *               primitives delegate to the host (e.g. `node:crypto`). Falls
+ *               back to the Rust-soft implementation if omitted.
+ */
+export function initWasmEngine(logger?: any, crypto?: JsCryptoCallbacks): void;
 
 /**
  * Create a full WhatsApp client running in WASM.
@@ -432,7 +438,7 @@ const DEFAULT_WA_WEB_VERSION: (u32, u32, u32) = (2, 3000, 1031424117);
 /// Accepts an optional JS logger (pino-compatible) to route all Rust logs through.
 /// If no logger is provided, falls back to console.log with "warn" level.
 #[wasm_bindgen(js_name = initWasmEngine, skip_typescript)]
-pub fn init_wasm_engine(logger: JsValue) {
+pub fn init_wasm_engine(logger: JsValue, crypto: JsValue) {
     console_error_panic_hook::set_once();
 
     if !logger.is_undefined() && !logger.is_null() {
@@ -445,6 +451,10 @@ pub fn init_wasm_engine(logger: JsValue) {
     }
 
     js_time::init_time_provider();
+
+    if let Err(e) = crate::js_crypto::try_install_from_js(&crypto) {
+        log::warn!("skipping native crypto provider: {e:?}");
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -742,41 +752,12 @@ impl WasmWhatsAppClient {
 
     // ── Sending messages ─────────────────────────────────────────────────
 
-    /// Send an E2E encrypted message from a JS object.
-    #[wasm_bindgen(js_name = sendMessage)]
-    pub async fn send_message(&self, jid: &str, message: JsValue) -> Result<String, JsError> {
-        let (to, msg) = parse_jid_and_msg(jid, message)?;
-        let result = self.client.send_message(to, msg).await.map_err(js_err)?;
-        Ok(result.message_id)
-    }
-
-    /// Send a message from protobuf binary bytes.
+    /// Send an E2E encrypted message from protobuf bytes.
+    /// Use `encodeProto('Message', obj)` on the JS side to produce the bytes.
     #[wasm_bindgen(js_name = sendMessageBytes)]
     pub async fn send_message_bytes(&self, jid: &str, bytes: &[u8]) -> Result<String, JsError> {
         let (to, msg) = parse_jid_and_msg_bytes(jid, bytes)?;
         let result = self.client.send_message(to, msg).await.map_err(js_err)?;
-        Ok(result.message_id)
-    }
-
-    /// Low-level message relay — sends a raw proto.IMessage with an optional
-    /// custom message ID. Use `sendMessage` for the high-level API.
-    #[wasm_bindgen(js_name = relayMessage)]
-    pub async fn relay_message(
-        &self,
-        jid: &str,
-        message: JsValue,
-        message_id: Option<String>,
-    ) -> Result<String, JsError> {
-        let (to, msg) = parse_jid_and_msg(jid, message)?;
-        let options = whatsapp_rust::SendOptions {
-            message_id,
-            ..Default::default()
-        };
-        let result = self
-            .client
-            .send_message_with_options(to, msg, options)
-            .await
-            .map_err(js_err)?;
         Ok(result.message_id)
     }
 
@@ -802,23 +783,6 @@ impl WasmWhatsAppClient {
     }
 
     // ── Message management ──────────────────────────────────────────────
-
-    /// Edit a previously sent message.
-    #[wasm_bindgen(js_name = editMessage)]
-    pub async fn edit_message(
-        &self,
-        jid: &str,
-        message_id: &str,
-        new_content: JsValue,
-    ) -> Result<String, JsError> {
-        let (to, msg) = parse_jid_and_msg(jid, new_content)?;
-        let id = self
-            .client
-            .edit_message(to, message_id, msg)
-            .await
-            .map_err(js_err)?;
-        Ok(id)
-    }
 
     /// Edit a previously sent message from protobuf bytes.
     #[wasm_bindgen(js_name = editMessageBytes)]
@@ -1475,17 +1439,16 @@ impl WasmWhatsAppClient {
     }
 
     /// Send a status/story message to specified recipients.
-    #[wasm_bindgen(js_name = sendStatusMessage)]
-    pub async fn send_status_message(
+    /// Use `encodeProto('Message', obj)` on the JS side to produce the bytes.
+    #[wasm_bindgen(js_name = sendStatusMessageBytes)]
+    pub async fn send_status_message_bytes(
         &self,
-        message: JsValue,
+        bytes: &[u8],
         recipients: Vec<String>,
     ) -> Result<String, JsError> {
-        let msg: waproto::whatsapp::Message = {
-            let snake = crate::proto::to_snake_case_js(&message);
-            serde_wasm_bindgen::from_value(snake)
-                .map_err(|e| JsError::new(&format!("invalid message: {e}")))?
-        };
+        use prost::Message;
+        let msg = waproto::whatsapp::Message::decode(bytes)
+            .map_err(|e| JsError::new(&format!("invalid message bytes: {e}")))?;
         let jids: Vec<Jid> = recipients
             .iter()
             .map(|s| parse_jid(s))
@@ -2588,21 +2551,22 @@ impl WasmWhatsAppClient {
 
     /// Create encrypted participant `<to>` nodes for recipient JIDs.
     /// Returns `{ nodes: [...], shouldIncludeDeviceIdentity: boolean }`.
-    #[wasm_bindgen(js_name = createParticipantNodes)]
-    pub async fn create_participant_nodes(
+    /// Use `encodeProto('Message', obj)` on the JS side to produce the bytes.
+    #[wasm_bindgen(js_name = createParticipantNodesBytes)]
+    pub async fn create_participant_nodes_bytes(
         &self,
         jids: Vec<String>,
-        message: JsValue,
+        bytes: &[u8],
         _extra_attrs: JsValue,
     ) -> Result<JsValue, JsError> {
+        use prost::Message;
         let recipient_jids: Vec<wacore_binary::jid::Jid> = jids
             .iter()
             .map(|j| parse_jid(j))
             .collect::<Result<_, _>>()?;
 
-        let snake_msg = crate::proto::to_snake_case_js(&message);
-        let msg: waproto::whatsapp::Message = serde_wasm_bindgen::from_value(snake_msg)
-            .map_err(|e| JsError::new(&format!("invalid message: {e}")))?;
+        let msg = waproto::whatsapp::Message::decode(bytes)
+            .map_err(|e| JsError::new(&format!("invalid message bytes: {e}")))?;
 
         let (nodes, should_include_device_identity) = self
             .client
@@ -2975,18 +2939,6 @@ async fn stream_upload_via_js(
         .execute(request)
         .await
         .map_err(|e| JsValue::from(js_err(e)))
-}
-
-/// Parse a JID string and deserialize a JS object as a proto Message.
-fn parse_jid_and_msg(
-    jid: &str,
-    message: JsValue,
-) -> Result<(Jid, waproto::whatsapp::Message), JsError> {
-    let to = parse_jid(jid)?;
-    let snake_message = crate::proto::to_snake_case_js(&message);
-    let msg = serde_wasm_bindgen::from_value(snake_message)
-        .map_err(|e| JsError::new(&format!("invalid message: {e}")))?;
-    Ok((to, msg))
 }
 
 fn parse_jid_and_msg_bytes(

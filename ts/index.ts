@@ -7,13 +7,14 @@ initSync({ module: wasmBytes });
 
 // Runtime exports from WASM
 export {
-  encodeProto,
-  decodeProto,
   getWasmMemoryBytes,
   getEnabledFeatures,
   decryptPollVote,
   getAggregateVotesInPollMessage,
 } from "../pkg/whatsapp_rust_bridge.js";
+
+// Pure-JS proto codec (bundled at build time, zero runtime deps for consumers)
+export { encodeProto, decodeProto } from "./proto";
 
 // initWasmEngine and createWhatsAppClient need explicit typing
 // because they use skip_typescript in Rust for complex params.
@@ -24,7 +25,7 @@ import {
 import type { WhatsAppEvent, JsTransportCallbacks, JsHttpClientConfig, JsStoreCallbacks, CacheConfig } from "../pkg/whatsapp_rust_bridge.js";
 import type { WasmWhatsAppClient } from "../pkg/whatsapp_rust_bridge.js";
 
-export const initWasmEngine: (logger?: any) => void = _initWasmEngine;
+export const initWasmEngine: (logger?: any, crypto?: any) => void = _initWasmEngine;
 export const createWhatsAppClient: (
   transport: JsTransportCallbacks,
   httpClient: JsHttpClientConfig,
