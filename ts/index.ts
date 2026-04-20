@@ -16,6 +16,11 @@ export {
 // Pure-JS proto codec (bundled at build time, zero runtime deps for consumers)
 export { encodeProto, decodeProto } from "./proto";
 
+// Auto-assembled protobufjs-style namespace covering every ts-proto type.
+// Lets `WAProto.X.encode(obj).finish()` and friends work for the full schema
+// without a hand-maintained shim — see `proto-namespace.ts` for details.
+export { proto } from "./proto-namespace";
+
 // initWasmEngine and createWhatsAppClient need explicit typing
 // because they use skip_typescript in Rust for complex params.
 import {

@@ -117,6 +117,7 @@ bridge_events! {
         StreamError              => "stream_error"                  => "StreamError",
         DisappearingModeChanged  => "disappearing_mode_changed"     => "DisappearingModeChanged",
         NewsletterLiveUpdate     => "newsletter_live_update"        => "NewsletterLiveUpdate",
+        IncomingCall             => "incoming_call"                 => "IncomingCall",
     }
     special {
         // "js_name"                         => "TsDataType"
@@ -135,6 +136,87 @@ bridge_events! {
         "raw_node"                        => "{ tag: string; attrs: Record<string, string>; content?: unknown }",
     }
 }
+
+// Declaration for the participant variant carried inside event-time
+// `GroupNotificationAction.participants[]`. Mirrors the wire shape of
+// `wacore::stanza::groups::GroupParticipantInfo` — fields stay as nested `Jid`
+// objects (matching the rest of the event payload) instead of being flattened
+// to strings, which is the whole point of keeping it separate from
+// `GroupMetadataParticipant` (the cached-metadata variant returned by
+// `getGroupMetadata`).
+#[wasm_bindgen(typescript_custom_section)]
+const _TS_GROUP_PARTICIPANT_INFO: &str = r#"
+/**
+ * Participant info as carried inside an event-time `GroupNotificationAction`.
+ * Distinct from `GroupMetadataParticipant` (returned by `getGroupMetadata`,
+ * which carries stringified `jid`/`phoneNumber` plus `isAdmin`).
+ */
+export interface GroupParticipantInfo {
+  jid: Jid;
+  phone_number?: Jid | null;
+}
+"#;
+
+// Declarations for the incoming-call event types. These come from
+// `wacore::types::call`, which is not tsify-derived in the bridge crate, so
+// the wasm-bindgen output references them without declaring them. Without
+// this block the `WhatsAppEvent` union has a dangling reference to
+// `IncomingCall`. Shapes mirror the `Serialize` impls 1:1 — including
+// `timestamp` being seconds-since-epoch (`#[serde(with = "ts_seconds")]`)
+// rather than an ISO string.
+#[wasm_bindgen(typescript_custom_section)]
+const _TS_INCOMING_CALL: &str = r#"
+/** One audio codec advertised inside a call `<offer>` child. */
+export interface CallAudioCodec {
+  enc: string;
+  rate: number;
+}
+
+/**
+ * Lifecycle action carried inside an inbound `<call>` stanza. The discriminant
+ * (`type`) matches the stanza child name; `pre_accept` is the snake_case form
+ * of `<pre-accept>`.
+ */
+export type CallAction =
+  | {
+      type: "offer";
+      call_id: string;
+      call_creator: Jid;
+      caller_pn?: Jid | null;
+      caller_country_code?: string | null;
+      device_class?: string | null;
+      joinable: boolean;
+      is_video: boolean;
+      audio: CallAudioCodec[];
+    }
+  | { type: "pre_accept"; call_id: string; call_creator: Jid }
+  | { type: "accept"; call_id: string; call_creator: Jid }
+  | { type: "reject"; call_id: string; call_creator: Jid }
+  | {
+      type: "terminate";
+      call_id: string;
+      call_creator: Jid;
+      duration?: number | null;
+      audio_duration?: number | null;
+    };
+
+/**
+ * Inbound `<call>` stanza parsed into a typed event. `timestamp` is unix
+ * seconds (not ISO) because the core serializes via
+ * `chrono::serde::ts_seconds`.
+ */
+export interface IncomingCall {
+  from: Jid;
+  /** Stanza-level `id`; distinct from `CallAction.call_id`. */
+  stanza_id: string;
+  notify?: string | null;
+  platform?: string | null;
+  version?: string | null;
+  timestamp: number;
+  offline: boolean;
+  action: CallAction;
+}
+"#;
 
 #[wasm_bindgen(typescript_custom_section)]
 const _TS_CLIENT_CONFIG: &str = r#"
@@ -920,6 +1002,20 @@ impl WasmWhatsAppClient {
         self.client.groups().leave(&group_jid).await.map_err(js_err)
     }
 
+    /// Set or clear the bot's per-group "member label" — the small tag rendered
+    /// under the bot's display name inside that group's UI. Empty `label`
+    /// clears the label. The core sends this as a `ProtocolMessage` over the
+    /// normal message path (not an IQ), matching WA Web's behavior.
+    #[wasm_bindgen(js_name = updateMemberLabel)]
+    pub async fn update_member_label(&self, group_jid: &str, label: &str) -> Result<(), JsError> {
+        let parsed = parse_jid(group_jid)?;
+        self.client
+            .groups()
+            .update_member_label(&parsed, label)
+            .await
+            .map_err(js_err)
+    }
+
     /// Update group participants (add, remove, promote, demote).
     #[wasm_bindgen(js_name = groupParticipantsUpdate)]
     pub async fn group_participants_update(
@@ -1085,27 +1181,59 @@ impl WasmWhatsAppClient {
 
     // ── Contacts ─────────────────────────────────────────────────────────
 
-    /// Check if a phone number is registered on WhatsApp.
+    /// Check if one or more phone numbers / JIDs are registered on WhatsApp.
     ///
-    /// Returns an array of `{ jid: string, isRegistered: boolean }`.
+    /// Accepts either bare phone numbers (treated as PN JIDs) or full JIDs
+    /// (`@s.whatsapp.net` for PN, `@lid` for LID). Mixed PN/LID inputs are
+    /// transparently split into the two underlying usync queries by the core,
+    /// so a single call is at most two IQs regardless of input size.
+    ///
+    /// Returns one `IsOnWhatsAppResult` per server hit — including the LID
+    /// counterpart and business flag — eliminating the follow-up `fetchUserInfo`
+    /// round trip the previous single-phone API forced callers into.
     #[wasm_bindgen(js_name = isOnWhatsApp)]
     pub async fn is_on_whatsapp(
         &self,
-        phone: &str,
+        phones: Vec<String>,
     ) -> Result<Vec<crate::result_types::IsOnWhatsAppResult>, JsError> {
-        let jid = Jid::pn(phone);
+        let jids: Vec<Jid> = phones
+            .iter()
+            .map(|p| {
+                // Bare digits → PN JID; anything containing '@' → parse as full JID.
+                if p.contains('@') {
+                    parse_jid(p)
+                } else {
+                    Ok(Jid::pn(p))
+                }
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+
         let results = self
             .client
             .contacts()
-            .is_on_whatsapp(&[jid])
+            .is_on_whatsapp(&jids)
             .await
             .map_err(js_err)?;
+
+        // Use `Jid::push_to` instead of `to_string()` — bypasses the
+        // `fmt::Display` / `dyn Write` dispatch path the core ships a specialized
+        // fast writer for. Each output `String` is still owned (required to cross
+        // the WASM ABI), but we skip the formatter machinery and size the buffer
+        // up front to avoid mid-push reallocations.
+        fn jid_to_owned(jid: &Jid) -> String {
+            let mut buf = String::with_capacity(jid.user.len() + jid.server.as_str().len() + 8);
+            jid.push_to(&mut buf);
+            buf
+        }
 
         Ok(results
             .iter()
             .map(|r| crate::result_types::IsOnWhatsAppResult {
-                jid: r.jid.to_string(),
+                jid: jid_to_owned(&r.jid),
                 is_registered: r.is_registered,
+                lid: r.lid.as_ref().map(jid_to_owned),
+                pn_jid: r.pn_jid.as_ref().map(jid_to_owned),
+                is_business: r.is_business,
             })
             .collect())
     }
@@ -1212,6 +1340,57 @@ impl WasmWhatsAppClient {
             .await
             .map_err(js_err)?;
 
+        Ok(crate::result_types::ProfilePictureResult { id: result.id })
+    }
+
+    /// Set the profile picture for a group the user administers.
+    ///
+    /// Mirrors the core `SetProfilePictureSpec::set_group` path — same IQ as
+    /// the self update, just routed at the JID level so admins can change a
+    /// group's avatar from JS without an extra capability check.
+    #[wasm_bindgen(js_name = setGroupProfilePicture)]
+    pub async fn set_group_profile_picture(
+        &self,
+        group_jid: &str,
+        img_data: Vec<u8>,
+    ) -> Result<crate::result_types::ProfilePictureResult, JsError> {
+        use wacore_binary::JidExt;
+        let target = parse_jid(group_jid)?;
+        if !target.is_group() {
+            return Err(JsError::new(
+                "setGroupProfilePicture: target jid must be a group jid",
+            ));
+        }
+        let result = self
+            .client
+            .execute(wacore::iq::contacts::SetProfilePictureSpec::set_group(
+                &target, img_data,
+            ))
+            .await
+            .map_err(js_err)?;
+        Ok(crate::result_types::ProfilePictureResult { id: result.id })
+    }
+
+    /// Remove a group's profile picture.
+    #[wasm_bindgen(js_name = removeGroupProfilePicture)]
+    pub async fn remove_group_profile_picture(
+        &self,
+        group_jid: &str,
+    ) -> Result<crate::result_types::ProfilePictureResult, JsError> {
+        use wacore_binary::JidExt;
+        let target = parse_jid(group_jid)?;
+        if !target.is_group() {
+            return Err(JsError::new(
+                "removeGroupProfilePicture: target jid must be a group jid",
+            ));
+        }
+        let result = self
+            .client
+            .execute(wacore::iq::contacts::SetProfilePictureSpec::remove_group(
+                &target,
+            ))
+            .await
+            .map_err(js_err)?;
         Ok(crate::result_types::ProfilePictureResult { id: result.id })
     }
 
@@ -2539,6 +2718,51 @@ impl WasmWhatsAppClient {
             .map_err(js_err)
     }
 
+    /// Look up the LID JID corresponding to a given phone number JID.
+    ///
+    /// Accepts a bare phone number (treated as PN), a `<phone>@s.whatsapp.net`
+    /// JID, or any LID/PN JID. Returns the full LID JID string (e.g.
+    /// `100000012345678@lid`) or `null` when no mapping is known. Backed by
+    /// the core's cache-aside `get_lid_pn_entry`: hits the in-memory cache
+    /// first, then falls through to `backend.get_pn_mapping(user)` so a JS
+    /// `JsStoreCallbacks` backend without a list primitive still resolves
+    /// every persisted mapping without an extra usync round trip.
+    #[wasm_bindgen(js_name = lidForPn)]
+    pub async fn lid_for_pn(&self, jid: &str) -> Result<Option<String>, JsError> {
+        let parsed = if jid.contains('@') {
+            parse_jid(jid)?
+        } else {
+            Jid::pn(jid)
+        };
+        Ok(self
+            .client
+            .get_lid_pn_entry(&parsed)
+            .await
+            .map_err(js_err)?
+            .map(|e| format!("{}@lid", e.lid)))
+    }
+
+    /// Look up the phone number JID corresponding to a given LID JID.
+    ///
+    /// Accepts a bare LID user-part, a `<user>@lid` JID, or any LID/PN JID.
+    /// Returns the full PN JID string (e.g. `559980000001@s.whatsapp.net`) or
+    /// `null` when no mapping is known. Same cache-aside semantics as
+    /// `lidForPn` — see that doc.
+    #[wasm_bindgen(js_name = pnForLid)]
+    pub async fn pn_for_lid(&self, jid: &str) -> Result<Option<String>, JsError> {
+        let parsed = if jid.contains('@') {
+            parse_jid(jid)?
+        } else {
+            Jid::lid(jid)
+        };
+        Ok(self
+            .client
+            .get_lid_pn_entry(&parsed)
+            .await
+            .map_err(js_err)?
+            .map(|e| format!("{}@s.whatsapp.net", e.phone_number)))
+    }
+
     /// Convert a JID string to its Signal protocol address representation.
     #[wasm_bindgen(js_name = jidToSignalProtocolAddress)]
     pub fn jid_to_signal_protocol_address(&self, jid: &str) -> Result<String, JsError> {
@@ -2609,14 +2833,14 @@ impl WasmWhatsAppClient {
 fn group_metadata_to_result(
     metadata: &whatsapp_rust::features::GroupMetadata,
 ) -> crate::result_types::GroupMetadataResult {
-    use crate::result_types::{GroupMetadataResult, GroupParticipantInfo};
+    use crate::result_types::{GroupMetadataParticipant, GroupMetadataResult};
     GroupMetadataResult {
         id: metadata.id.to_string(),
         subject: metadata.subject.to_string(),
         participants: metadata
             .participants
             .iter()
-            .map(|p| GroupParticipantInfo {
+            .map(|p| GroupMetadataParticipant {
                 jid: p.jid.to_string(),
                 phone_number: p.phone_number.as_ref().map(|pn| pn.to_string()),
                 is_admin: p.is_admin(),

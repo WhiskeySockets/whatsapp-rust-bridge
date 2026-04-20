@@ -9,7 +9,7 @@
  */
 
 import { describe, test, expect, beforeAll, afterAll } from "bun:test";
-import { initWasmEngine, createWhatsAppClient } from "../dist/index.js";
+import { initWasmEngine, createWhatsAppClient, encodeProto } from "../dist/index.js";
 import type {
   WhatsAppEvent,
   WasmWhatsAppClient,
@@ -28,6 +28,16 @@ process.env.NODE_TLS_REJECT_UNAUTHORIZED = "0";
 beforeAll(() => {
   initWasmEngine();
 });
+
+/**
+ * Encode a `{conversation: string}` Message and hand it to the wasm client's
+ * `sendMessageBytes`. The wasm exposes only the low-level "encoded protobuf
+ * bytes" entrypoint — encoding belongs to JS.
+ */
+function sendText(client: WasmWhatsAppClient, jid: string, text: string): Promise<string> {
+  const bytes = encodeProto("Message", { conversation: text });
+  return client.sendMessageBytes(jid, bytes);
+}
 
 // ---------------------------------------------------------------------------
 // Test helpers
@@ -117,7 +127,7 @@ describe("Two-client E2E messaging", () => {
       const text = `Hello Bob! ${Date.now()}`;
       const before = bob.events.length;
 
-      const msgId = await alice.client.sendMessage(bobJid, { conversation: text });
+      const msgId = await sendText(alice.client, bobJid, text);
       expect(msgId).toBeTruthy();
       console.log(`  Alice → Bob: "${text}" (id=${msgId})`);
 
@@ -146,7 +156,7 @@ describe("Two-client E2E messaging", () => {
       const text = `Hey Alice! ${Date.now()}`;
       const before = alice.events.length;
 
-      const msgId = await bob.client.sendMessage(aliceJid, { conversation: text });
+      const msgId = await sendText(bob.client, aliceJid, text);
       expect(msgId).toBeTruthy();
       console.log(`  Bob → Alice: "${text}" (id=${msgId})`);
 
@@ -180,7 +190,7 @@ describe("Two-client E2E messaging", () => {
       for (const { from, to, toJid, text } of exchanges) {
         const before = to.events.length;
 
-        const msgId = await from.client.sendMessage(toJid, { conversation: text });
+        const msgId = await sendText(from.client, toJid, text);
         expect(msgId).toBeTruthy();
         console.log(`  ${from.name} → ${to.name}: "${text}"`);
 
@@ -207,7 +217,7 @@ describe("Two-client E2E messaging", () => {
       const before = bob.events.length;
       const start = Date.now();
 
-      await alice.client.sendMessage(bobJid, { conversation: text });
+      await sendText(alice.client, bobJid, text);
 
       await waitForEventMatching(
         bob.events,

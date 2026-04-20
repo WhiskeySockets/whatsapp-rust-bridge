@@ -285,12 +285,24 @@ pub struct CreatePollResult {
 }
 
 /// Result from `isOnWhatsApp`.
+///
+/// Mirrors the core `IsOnWhatsAppResult` so callers get the LID/PN counterpart
+/// and business flag from the same usync round trip — no follow-up
+/// `fetchUserInfo` IQ needed for the common "check + enrich" flow.
 #[derive(Serialize, Tsify)]
 #[tsify(into_wasm_abi)]
 #[serde(rename_all = "camelCase")]
 pub struct IsOnWhatsAppResult {
     pub jid: String,
     pub is_registered: bool,
+    /// LID counterpart of `jid` when the input was a PN, populated from the
+    /// usync `<lid>` attribute (or the local LID/PN cache).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub lid: Option<String>,
+    /// PN counterpart, set when the server responds with a LID as primary JID.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub pn_jid: Option<String>,
+    pub is_business: bool,
 }
 
 /// Result from `fetchStatus`.
@@ -302,11 +314,14 @@ pub struct FetchStatusResult {
     pub status: Option<String>,
 }
 
-/// Group participant info.
+/// Group participant info as returned from `getGroupMetadata` / cached group
+/// state. Distinct from `wacore::stanza::groups::GroupParticipantInfo` (the
+/// event-time variant that carries `Jid` objects on the wire); naming it
+/// separately avoids the TypeScript collision that forced consumers to cast.
 #[derive(Serialize, Tsify)]
 #[tsify(into_wasm_abi)]
 #[serde(rename_all = "camelCase")]
-pub struct GroupParticipantInfo {
+pub struct GroupMetadataParticipant {
     pub jid: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub phone_number: Option<String>,
@@ -320,7 +335,7 @@ pub struct GroupParticipantInfo {
 pub struct GroupMetadataResult {
     pub id: String,
     pub subject: String,
-    pub participants: Vec<GroupParticipantInfo>,
+    pub participants: Vec<GroupMetadataParticipant>,
     pub addressing_mode: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub creator: Option<String>,

@@ -12,5 +12,11 @@
     "declaration": true,
     "emitDeclarationOnly": true
   },
-  "include": ["ts/**/*.ts"]
+  "include": ["ts/**/*.ts"],
+  // `proto-types.ts` is a thin runtime re-export. Its declarations are
+  // overridden by the auto-generated `proto-types.d.ts` (full protobufjs-style
+  // namespace from `scripts/gen-protobufjs-dts.ts`); excluding the .ts from
+  // tsc prevents the inferred declarations from clobbering the generated ones.
+  // bun build still bundles it for runtime emission.
+  "exclude": ["ts/proto-types.ts"]
 }

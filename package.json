@@ -1,6 +1,6 @@
 {
     "name": "whatsapp-rust-bridge",
-    "version": "0.6.0-alpha.9",
+    "version": "0.6.0-alpha.10",
     "description": "A high-performance utilities for WhatsApp, powered by Rust and WebAssembly.",
     "author": "João Lucas <jlucaso@hotmail.com>",
     "license": "MIT",
@@ -19,19 +19,26 @@
         ".": {
             "import": "./dist/index.js",
             "types": "./dist/index.d.ts"
+        },
+        "./proto-types": {
+            "import": "./dist/proto-types.js",
+            "types": "./dist/proto-types.d.ts"
         }
     },
     "scripts": {
         "bench": "bun run build && bun run benches/binary.ts && bun run benches/signal.ts && bun run benches/curve.ts && bun run benches/crypto.ts",
         "bench:node": "bun run build && node --expose-gc benches/binary.ts && node --expose-gc benches/signal.ts && node --expose-gc benches/curve.ts && node --expose-gc benches/crypto.ts",
-        "gen:types": "cd codegen && cargo run --target $(rustc -vV | grep host | cut -d' ' -f2) 2>/dev/null > ../src/generated_types.rs",
+        "gen:bridge-types": "cd codegen && cargo run -q --bin gen-types --target $(rustc -vV | grep host | cut -d' ' -f2) > ../src/generated_types.rs.tmp && mv ../src/generated_types.rs.tmp ../src/generated_types.rs",
+        "gen:proto-types": "bun run scripts/gen-protobufjs-dts.ts",
+        "gen": "bun run gen:bridge-types && bun run gen:proto-types",
         "build:wasm": "wasm-pack build --target web --out-dir pkg --no-pack",
         "build:wasm:dev": "wasm-pack build --target web --out-dir pkg --no-pack --dev",
-        "build:ts": "bun build ts/index.ts --minify --outfile dist/index.js --target node && cp pkg/whatsapp_rust_bridge_bg.wasm dist/",
-        "postbuild": "tsc -p tsconfig.json --outDir dist && rm -f dist/macro.d.ts",
-        "build": "bun run build:wasm && bun run build:ts && bun run postbuild",
-        "build:dev": "bun run build:wasm:dev && bun run build:ts && bun run postbuild",
+        "build:ts": "bun build ts/index.ts --minify --outfile dist/index.js --target node && cp pkg/whatsapp_rust_bridge_bg.wasm dist/ && cp ts/proto-types.d.ts dist/proto-types.d.ts && printf 'export { proto } from \"./index.js\";\\n' > dist/proto-types.js",
+        "postbuild": "tsc -p tsconfig.json --outDir dist && rm -f dist/macro.d.ts && rm -rf dist/generated",
+        "build": "bun run gen && bun run build:wasm && bun run build:ts && bun run postbuild",
+        "build:dev": "bun run gen && bun run build:wasm:dev && bun run build:ts && bun run postbuild",
         "build:profile": "cargo build --profile profiling --target wasm32-unknown-unknown && wasm-bindgen --target web --out-dir pkg --keep-debug target/wasm32-unknown-unknown/profiling/whatsapp_rust_bridge.wasm && wasm-tools strip pkg/whatsapp_rust_bridge_bg.wasm -o pkg/whatsapp_rust_bridge_bg.wasm && bun run build:ts && bun run postbuild",
+        "bump:wacore": "cargo update -p whatsapp-rust && bun run build",
         "example": "NODE_TLS_REJECT_UNAUTHORIZED=0 bun run examples/connect.ts",
         "prepublishOnly": "bun run build"
     },

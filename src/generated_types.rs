@@ -26,6 +26,7 @@ export interface AppStateSyncKey {
 }
 
 export interface ArchiveUpdate {
+  /** The chat being archived or unarchived. */
   jid: Jid;
   timestamp: number;
   action: ArchiveChatAction;
@@ -36,6 +37,8 @@ export interface ArchiveUpdate {
 export type BlocklistAction = "block" | "unblock";
 
 export type BotEditType = "first" | "inner" | "last";
+
+export type BusinessHourMode = "open_24h" | "specific_hours" | "appointment_only" | string;
 
 /** Parsed `<notification type="business">` stanza. */
 export interface BusinessNotification {
@@ -56,6 +59,7 @@ export type BusinessNotificationType = "remove_jid" | "remove_hash" | "verified_
 
 /** Business status update notification. */
 export interface BusinessStatusUpdate {
+  /** The business account whose status changed. */
   jid: Jid;
   update_type: BusinessUpdateType;
   timestamp: number;
@@ -78,9 +82,23 @@ export interface BusinessSubscription {
 /** Type of business status update. */
 export type BusinessUpdateType = "removed_as_business" | "verified_name_changed" | "profile_updated" | "products_updated" | "collections_updated" | "subscriptions_updated" | "unknown";
 
-export interface Category {
+/** Fields kept per-variant (not a shared `BasicCallMeta`) so the `serde` shape mirrors the stanza 1:1 for downstream JS consumers. */
+export type CallAction =
+  | { type: "offer"; call_id: string; call_creator: Jid; caller_pn?: Jid | null; caller_country_code?: string | null; device_class?: string | null; joinable: boolean; is_video: boolean; audio: CallAudioCodec[] }
+  | { type: "pre_accept"; call_id: string; call_creator: Jid }
+  | { type: "accept"; call_id: string; call_creator: Jid }
+  | { type: "reject"; call_id: string; call_creator: Jid }
+  | { type: "terminate"; call_id: string; call_creator: Jid; duration?: number | null; audio_duration?: number | null };
+
+export interface CallAudioCodec {
+  enc: string;
+  rate: number;
+}
+
+/** Identifies a specific message within a chat. */
+export interface ChatMessageId {
+  chat: Jid;
   id: string;
-  name: string;
 }
 
 export type ChatPresence = "composing" | "paused";
@@ -102,22 +120,8 @@ export interface ConnectFailure {
   raw?: any | null;
 }
 
-export type ConnectFailureReason =
-  | { type: "generic" }
-  | { type: "logged_out" }
-  | { type: "temp_banned" }
-  | { type: "main_device_gone" }
-  | { type: "unknown_logout" }
-  | { type: "client_outdated" }
-  | { type: "bad_user_agent" }
-  | { type: "cat_expired" }
-  | { type: "cat_invalid" }
-  | { type: "not_found" }
-  | { type: "client_unknown" }
-  | { type: "internal_server_error" }
-  | { type: "experimental" }
-  | { type: "service_unavailable" }
-  | { type: "unknown"; data: number };
+/** Wire codes: 400=Generic, 401=LoggedOut, 402=TempBanned, 403=MainDeviceGone, 406=UnknownLogout, 405=ClientOutdated, 409=BadUserAgent, 413=CatExpired, 414=CatInvalid, 415=NotFound, 418=ClientUnknown, 500=InternalServerError, 501=Experimental, 503=ServiceUnavailable */
+export type ConnectFailureReason = number;
 
 /** A contact changed their phone number.  Emitted from `<notification type="contacts"><modify old="..." new="..." old_lid="..." new_lid="..."/>`.  WA Web creates two LID-PN mappings (`old_lid→old_jid`, `new_lid→new_jid`) and generates a system notification message in both old and new chats. */
 export interface ContactNumberChanged {
@@ -139,6 +143,7 @@ export interface ContactSyncRequested {
 }
 
 export interface ContactUpdate {
+  /** The chat/contact this sync action applies to. */
   jid: Jid;
   timestamp: number;
   action: ContactAction;
@@ -147,13 +152,17 @@ export interface ContactUpdate {
 
 /** A contact's profile changed (server notification).  Emitted from `<notification type="contacts"><update jid="..."/>`. WA Web resets cached presence and refreshes the profile picture on this event — consumers should invalidate any cached presence/profile data.  Not to be confused with [`ContactUpdate`] which comes from app-state sync mutations (different source, different payload). */
 export interface ContactUpdated {
+  /** The contact whose profile was updated. */
   jid: Jid;
   timestamp: number;
 }
 
+export type DayOfWeek = "sun" | "mon" | "tue" | "wed" | "thu" | "fri" | "sat" | string;
+
 export type DecryptFailMode = "show" | "hide";
 
 export interface DeleteChatUpdate {
+  /** The chat being deleted. */
   jid: Jid;
   /** From the index, not the proto — DeleteChatAction only has messageRange. */
   delete_media: boolean;
@@ -163,6 +172,7 @@ export interface DeleteChatUpdate {
 }
 
 export interface DeleteMessageForMeUpdate {
+  /** The chat containing the deleted message. */
   chat_jid: Jid;
   participant_jid?: Jid | null;
   message_id: string;
@@ -195,6 +205,12 @@ export interface Device {
   props_hash?: string | null;
   /** Monotonically increasing counter for one-time pre-key ID generation. Matches WhatsApp Web's `NEXT_PK_ID` pattern: only increases, never resets. Prevents prekey ID collisions when prekeys are consumed non-sequentially. */
   next_pre_key_id: number;
+  /** Persisted flag matching WA Web's `signal_sever_has_pre_keys` metadata. */
+  server_has_prekeys: boolean;
+  /** NCT salt provisioned by the server via app state sync or history sync. */
+  nct_salt?: Uint8Array | null;
+  /** Runtime-only marker that an authoritative nct_salt_sync mutation was seen. This prevents stale history sync data from resurrecting a cleared salt. */
+  nct_salt_sync_seen: boolean;
 }
 
 /** Device element from notification.  Wire format: ```xml <device jid="185169143189667:75@lid" key-index="2" lid="..."/> ```  Device ID is extracted from the JID's device part (e.g., 75 from "user:75@lid").  Per WhatsApp Web: if both `jid` and `lid` attributes are present, the device IDs must match or the notification is rejected. */
@@ -225,6 +241,8 @@ export interface DeviceListRecord {
   timestamp: number;
   /** Participant hash from usync, if available */
   phash?: string | null;
+  /** ADV raw_id from `ADVKeyIndexList` — used to detect identity changes. When this changes, all sessions and sender keys for the user must be cleared. */
+  raw_id?: number | null;
 }
 
 /** Device list update notification. Emitted when a user's device list changes (device added/removed/updated). */
@@ -288,8 +306,9 @@ export interface DeviceSentMeta {
   phash: string;
 }
 
-/** Known dirty bit types. */
-export type DirtyType = "account_sync" | "groups" | "other";
+export type DirtyType = "account_sync" | "groups" | "syncd_app_state" | "newsletter_metadata" | string;
+
+export type DisallowedListAction = "add" | "remove";
 
 /** A contact's default disappearing messages setting changed.  Sent by the server as `<notification type="disappearing_mode">`. WA Web: `WAWebHandleDisappearingModeNotification` → `WAWebUpdateDisappearingModeForContact`. */
 export interface DisappearingModeChanged {
@@ -297,18 +316,18 @@ export interface DisappearingModeChanged {
   from: Jid;
   /** New duration in seconds (0 = disabled, 86400 = 24h, etc.). */
   duration: number;
-  /** Unix timestamp (seconds) when the setting was changed. Consumers should only apply this if it's newer than their stored timestamp. */
+  /** When the setting was changed. Consumers should only apply this if it's newer than their stored value. */
   setting_timestamp: number;
 }
 
-export type EditAttribute = "empty" | "message_edit" | "pin_in_chat" | "admin_edit" | "sender_revoke" | "admin_revoke" | "unknown";
+export type EditAttribute = "" | "1" | "2" | "3" | "7" | "8" | string;
 
 export interface GroupInfo {
   participants: Jid[];
   addressing_mode: AddressingMode;
 }
 
-/** All possible group notification action types.  Maps 1:1 to `GROUP_NOTIFICATION_TAG` child element tags from WhatsApp Web. */
+/** All possible group notification action types.  Maps 1:1 to `GROUP_NOTIFICATION_TAG` child element tags from WhatsApp Web.  The `#[wire = "..."]` attribute is the SINGLE source of truth for each variant's wire tag: the JSON discriminator (via the auto-derived `Serialize`), the parser dispatch (via the auto-generated sibling `GroupNotificationActionTag` enum), and `wire_tag()` / `tag_name()` all read from the same table. */
 export type GroupNotificationAction =
   | { type: "add"; participants: GroupParticipantInfo[]; reason?: string | null }
   | { type: "remove"; participants: GroupParticipantInfo[]; reason?: string | null }
@@ -319,22 +338,31 @@ export type GroupNotificationAction =
   | { type: "description"; id: string; description?: string | null }
   | { type: "locked"; threshold?: string | null }
   | { type: "unlocked" }
-  | { type: "announce" }
-  | { type: "not_announce" }
+  | { type: "announcement" }
+  | { type: "not_announcement" }
   | { type: "ephemeral"; expiration: number; trigger?: number | null }
   | { type: "membership_approval_mode"; enabled: boolean }
+  | { type: "membership_approval_request"; request_method: MembershipRequestMethod; parent_group_jid?: Jid | null }
+  | { type: "created_membership_requests"; request_method: MembershipRequestMethod; parent_group_jid?: Jid | null; requests: GroupParticipantInfo[] }
+  | { type: "revoked_membership_requests"; participants: Jid[] }
   | { type: "member_add_mode"; mode: string }
   | { type: "no_frequently_forwarded" }
   | { type: "frequently_forwarded_ok" }
   | { type: "invite"; code: string }
-  | { type: "revoke_invite" }
+  | { type: "revoke" }
   | { type: "growth_locked"; expiration: number; lock_type: string }
   | { type: "growth_unlocked" }
-  | { type: "create"; raw: any }
+  | { type: "create" }
   | { type: "delete"; reason?: string | null }
-  | { type: "link"; link_type: string; raw: any }
-  | { type: "unlink"; unlink_type: string; unlink_reason?: string | null; raw: any }
-  | { type: "unknown"; tag: string };
+  | { type: "link"; link_type: string }
+  | { type: "unlink"; unlink_type: string; unlink_reason?: string | null }
+  | { type: string; tag: string };
+
+/** Participant info extracted from `<participant>` child elements.  Wire format: ```xml <participant jid="1234567890@s.whatsapp.net" phone_number="1234567890@s.whatsapp.net"/> ``` */
+export interface GroupParticipantInfo {
+  jid: Jid;
+  phone_number?: Jid | null;
+}
 
 /** Query request type. */
 export type GroupQueryRequestType = "interactive";
@@ -353,6 +381,28 @@ export interface GroupUpdate {
   is_lid_addressing_mode: boolean;
   /** The specific action */
   action: GroupNotificationAction;
+}
+
+export type HostType = "primary" | "fallback" | string;
+
+/** Identity key changed for a user (e.g., user reinstalled WhatsApp). Emitted after device record cleanup so sessions and sender keys are cleared. */
+export interface IdentityChange {
+  /** The user whose identity changed */
+  user: Jid;
+  /** Optional LID for the user */
+  lid_user?: Jid | null;
+}
+
+export interface IncomingCall {
+  from: Jid;
+  /** Stanza id; distinct from `CallAction::call_id`. */
+  stanza_id: string;
+  notify?: string | null;
+  platform?: string | null;
+  version?: string | null;
+  timestamp: number;
+  offline: boolean;
+  action: CallAction;
 }
 
 /** IQ request type for WhatsApp protocol queries. */
@@ -401,6 +451,7 @@ export interface LoggedOut {
 }
 
 export interface MarkChatAsReadUpdate {
+  /** The chat being marked as read or unread. */
   jid: Jid;
   timestamp: number;
   action: MarkChatAsReadAction;
@@ -410,6 +461,14 @@ export interface MarkChatAsReadUpdate {
 /** Member link mode for group invite links. */
 export type MemberLinkMode = "admin_link" | "all_member_link";
 
+/** Who can share message history with new members. */
+export type MemberShareHistoryMode = "admin_share" | "all_member_share";
+
+/** How a membership request was initiated.  Maps to `WAWebRequestMethodType` in WhatsApp Web JS. */
+export type MembershipRequestMethod = "invite_link" | "linked_group_join" | "non_admin_add";
+
+export type MessageCategory = "" | "peer" | string;
+
 export interface MessageInfo {
   source: MessageSource;
   id: string;
@@ -417,7 +476,7 @@ export interface MessageInfo {
   type: string;
   push_name: string;
   timestamp: number;
-  category: string;
+  category: MessageCategory;
   multicast: boolean;
   media_type: string;
   edit: EditAttribute;
@@ -425,6 +484,12 @@ export interface MessageInfo {
   meta_info: MsgMetaInfo;
   verified_name?: VerifiedNameCertificate | null;
   device_sent_meta?: DeviceSentMeta | null;
+  /** Ephemeral duration in seconds, extracted from `contextInfo.expiration`. */
+  ephemeral_expiration?: number | null;
+  /** Whether this message was delivered during offline sync. */
+  is_offline: boolean;
+  /** Set when this message was recovered via PDO rather than normal decryption. Contains the PDO request message ID. */
+  unavailable_request_id?: string | null;
 }
 
 export interface MessageSource {
@@ -474,6 +539,7 @@ export interface MsgMetaInfo {
 }
 
 export interface MuteUpdate {
+  /** The chat being muted or unmuted. */
   jid: Jid;
   timestamp: number;
   action: MuteAction;
@@ -482,6 +548,7 @@ export interface MuteUpdate {
 
 /** A newsletter live update notification, typically containing updated reaction counts for one or more messages. */
 export interface NewsletterLiveUpdate {
+  /** The newsletter channel this update belongs to. */
   newsletter_jid: Jid;
   messages: NewsletterLiveUpdateMessage[];
 }
@@ -497,6 +564,8 @@ export interface NewsletterLiveUpdateReaction {
   code: string;
   count: number;
 }
+
+export type NewsletterMessageType = "text" | "media" | "reaction" | "revoke" | "poll_creation" | "poll_vote" | "edit" | string;
 
 export interface OfflineSyncCompleted {
   count: number;
@@ -526,7 +595,7 @@ export interface PairSuccess {
 }
 
 /** Participant type (admin level). */
-export type ParticipantType = "member" | "admin" | "super_admin";
+export type ParticipantType = "member" | "admin" | "superadmin";
 
 export interface PictureUpdate {
   /** The JID whose picture changed (user or group). */
@@ -541,6 +610,7 @@ export interface PictureUpdate {
 }
 
 export interface PinUpdate {
+  /** The chat being pinned or unpinned. */
   jid: Jid;
   timestamp: number;
   action: PinAction;
@@ -548,18 +618,20 @@ export interface PinUpdate {
 }
 
 /** Platform identifiers for companion devices. These match the DeviceProps.PlatformType protobuf enum. */
-export type PlatformId = "unknown" | "chrome" | "firefox" | "internet_explorer" | "opera" | "safari" | "edge" | "electron" | "uwp" | "other_web_client";
+export type PlatformId = "0" | "1" | "2" | "3" | "4" | "5" | "6" | "7" | "8" | "9";
+
+export type PreKeyFetchReason = "identity" | "retry" | string;
 
 export type Presence = "available" | "unavailable";
 
 export interface PresenceUpdate {
+  /** The contact whose presence changed. */
   from: Jid;
   unavailable: boolean;
   last_seen?: number | null;
 }
 
-/** Privacy setting category name. */
-export type PrivacyCategory = "last" | "online" | "profile" | "status" | "group_add" | "read_receipts" | "other";
+export type PrivacyCategory = "last" | "online" | "profile" | "status" | "groupadd" | "readreceipts" | "calladd" | "messages" | "defense" | string;
 
 export type PrivacySetting = "all" | "contacts" | "contact_blacklist" | "match_last_seen" | "known" | "none" | "undefined";
 
@@ -575,13 +647,13 @@ export interface PrivacySettings {
   online?: PrivacySetting | null;
 }
 
-/** Privacy setting value. */
-export type PrivacyValue = "all" | "contacts" | "none" | "contact_blacklist" | "match_last_seen" | "other";
+export type PrivacyValue = "all" | "contacts" | "none" | "contact_blacklist" | "match_last_seen" | "known" | "off" | "on_standard" | string;
 
 /** Profile picture type (preview thumbnail or full-size). */
-export type ProfilePictureType = "preview" | "full";
+export type ProfilePictureType = "preview" | "image";
 
 export interface PushNameUpdate {
+  /** The contact who changed their push name. */
   jid: Jid;
   message: MessageInfo;
   old_push_name: string;
@@ -593,7 +665,6 @@ export interface Receipt {
   message_ids: string[];
   timestamp: number;
   type: ReceiptType;
-  message_sender: Jid;
 }
 
 export type ReceiptType =
@@ -621,15 +692,10 @@ export interface SelfPushNameUpdated {
 }
 
 /** The type of spam flow indicating the source of the report. */
-export type SpamFlow = "group_spam_banner_report" | "group_info_report" | "message_menu" | "contact_info" | "status_report";
-
-/** Unique identifier for a message stanza within a chat. Used for deduplication and retry tracking. */
-export interface StanzaKey {
-  chat: Jid;
-  id: string;
-}
+export type SpamFlow = "GroupSpamBannerReport" | "GroupInfoReport" | "MessageMenu" | "ContactInfo" | "StatusReport";
 
 export interface StarUpdate {
+  /** The chat containing the starred or unstarred message. */
   chat_jid: Jid;
   /** The participant who sent the message. `Some` for group messages from others, `None` for self-authored or 1-on-1 messages (wire value `"0"`). */
   participant_jid?: Jid | null;
@@ -641,7 +707,7 @@ export interface StarUpdate {
 }
 
 /** Privacy setting sent in the `<meta>` node of the status stanza. Matches WhatsApp Web's `status_setting` attribute. */
-export type StatusPrivacySetting = "contacts" | "allow_list" | "deny_list";
+export type StatusPrivacySetting = "contacts" | "allowlist" | "denylist";
 
 export interface StreamError {
   code: string;
@@ -658,13 +724,8 @@ export interface TcTokenEntry {
   sender_timestamp?: number | null;
 }
 
-export type TempBanReason =
-  | { type: "sent_to_too_many_people" }
-  | { type: "blocked_by_users" }
-  | { type: "created_too_many_groups" }
-  | { type: "sent_too_many_same_message" }
-  | { type: "broadcast_list" }
-  | { type: "unknown"; data: number };
+/** Wire codes: 101=SentToTooManyPeople, 102=BlockedByUsers, 103=CreatedTooManyGroups, 104=SentTooManySameMessage, 106=BroadcastList */
+export type TempBanReason = number;
 
 export interface TemporaryBan {
   code: TempBanReason;
@@ -681,6 +742,7 @@ export interface UndecryptableMessage {
 }
 
 export interface UserAboutUpdate {
+  /** The contact whose about text changed. */
   jid: Jid;
   status: string;
   timestamp: number;

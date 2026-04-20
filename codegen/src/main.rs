@@ -138,6 +138,17 @@ enum TsTypeDef {
     },
     StringEnum {
         variants: Vec<(String, String)>, // (name, value)
+        /// `true` when the enum has a `#[wire_fallback]` variant (or
+        /// equivalent). The TS type widens to include `string` so unknown
+        /// wire tags don't fail consumer type checks.
+        has_fallback: bool,
+        doc: Option<String>,
+    },
+    /// Numeric enum (`#[wire(kind = "int")]`) — discriminator is `i32`.
+    /// Renders as `export type X = number;` plus a doc comment listing the
+    /// known codes for human reference.
+    IntEnum {
+        codes: Vec<(String, String)>, // (variant_name, numeric_literal)
         doc: Option<String>,
     },
 }
@@ -152,9 +163,24 @@ struct TsField {
 
 #[derive(Debug)]
 enum TsEnumVariant {
-    Unit(String),
-    Tuple(String, String),        // name, inner_type
-    Struct(String, Vec<TsField>), // name, fields
+    /// Unit variant. `wire` is the explicit discriminator string (from
+    /// `#[wire = "..."]`); empty when the variant should fall back to
+    /// `to_snake_case(name)`.
+    Unit { name: String, wire: String },
+    Tuple {
+        name: String,
+        wire: String,
+        inner: String,
+    },
+    Struct {
+        name: String,
+        wire: String,
+        fields: Vec<TsField>,
+    },
+    /// `#[wire_fallback]` catch-all for tagged-payload enums — emits
+    /// `{ type: string; tag: string }` so any unknown discriminator still
+    /// satisfies the union.
+    Fallback,
 }
 
 impl TsTypeDef {
@@ -185,16 +211,16 @@ impl TsTypeDef {
                 let parts: Vec<String> = variants
                     .iter()
                     .map(|v| match v {
-                        TsEnumVariant::Unit(n) => {
-                            let snake = to_snake_case(n);
-                            format!("  | {{ type: \"{}\" }}", snake)
+                        TsEnumVariant::Unit { name, wire } => {
+                            let tag = if wire.is_empty() { to_snake_case(name) } else { wire.clone() };
+                            format!("  | {{ type: \"{}\" }}", tag)
                         }
-                        TsEnumVariant::Tuple(n, t) => {
-                            let snake = to_snake_case(n);
-                            format!("  | {{ type: \"{}\"; data: {} }}", snake, t)
+                        TsEnumVariant::Tuple { name, wire, inner } => {
+                            let tag = if wire.is_empty() { to_snake_case(name) } else { wire.clone() };
+                            format!("  | {{ type: \"{}\"; data: {} }}", tag, inner)
                         }
-                        TsEnumVariant::Struct(n, fields) => {
-                            let snake = to_snake_case(n);
+                        TsEnumVariant::Struct { name, wire, fields } => {
+                            let tag = if wire.is_empty() { to_snake_case(name) } else { wire.clone() };
                             let fs: Vec<String> = fields
                                 .iter()
                                 .map(|f| {
@@ -202,7 +228,17 @@ impl TsTypeDef {
                                     format!("{}{}: {}", f.name, opt, f.ts_type)
                                 })
                                 .collect();
-                            format!("  | {{ type: \"{}\"; {} }}", snake, fs.join("; "))
+                            if fs.is_empty() {
+                                format!("  | {{ type: \"{}\" }}", tag)
+                            } else {
+                                format!("  | {{ type: \"{}\"; {} }}", tag, fs.join("; "))
+                            }
+                        }
+                        TsEnumVariant::Fallback => {
+                            // Catch-all: any other discriminator string + the
+                            // captured tag. Mirrors `#[wire_fallback]` Unknown
+                            // { tag: String } on the rust side.
+                            "  | { type: string; tag: string }".to_string()
                         }
                     })
                     .collect();
@@ -210,14 +246,37 @@ impl TsTypeDef {
                 out.push(';');
                 out
             }
-            TsTypeDef::StringEnum { variants, doc } => {
+            TsTypeDef::StringEnum { variants, has_fallback, doc } => {
                 let mut out = String::new();
                 if let Some(d) = doc {
                     out.push_str(&format!("/** {} */\n", d.trim()));
                 }
-                let parts: Vec<String> =
+                let mut parts: Vec<String> =
                     variants.iter().map(|(_, v)| format!("\"{}\"", v)).collect();
+                if *has_fallback {
+                    parts.push("string".to_string());
+                }
                 out.push_str(&format!("export type {} = {};", name, parts.join(" | ")));
+                out
+            }
+            TsTypeDef::IntEnum { codes, doc } => {
+                let mut out = String::new();
+                let combined_doc = match doc {
+                    Some(d) => d.clone(),
+                    None => String::new(),
+                };
+                let codes_doc = codes
+                    .iter()
+                    .map(|(n, v)| format!("{}={}", v, n))
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                let final_doc = if combined_doc.is_empty() {
+                    format!("Wire codes: {}", codes_doc)
+                } else {
+                    format!("{} Wire codes: {}", combined_doc.trim(), codes_doc)
+                };
+                out.push_str(&format!("/** {} */\n", final_doc));
+                out.push_str(&format!("export type {} = number;", name));
                 out
             }
         }
@@ -245,7 +304,7 @@ fn parse_file(path: &Path, types: &mut BTreeMap<String, TsTypeDef>) {
                         "BusinessCategory",
                         "BusinessHours",
                         "BusinessHoursConfig",
-                        "GroupParticipantInfo",
+                        "GroupMetadataParticipant",
                         "MembershipRequest",
                     ];
                     if TSIFY_STRUCTS.contains(&name.as_str()) {
@@ -289,28 +348,110 @@ fn parse_file(path: &Path, types: &mut BTreeMap<String, TsTypeDef>) {
                     continue;
                 }
 
-                // Check if it's a StringEnum (has #[str = "..."] or #[string_default])
-                if has_string_enum_derive(&e.attrs) {
-                    let doc = extract_doc(&e.attrs);
-                    let variants: Vec<(String, String)> = e
-                        .variants
-                        .iter()
-                        .map(|v| {
-                            let name = v.ident.to_string();
-                            let value =
-                                get_str_attr(&v.attrs).unwrap_or_else(|| to_snake_case(&name));
-                            (name, value)
-                        })
-                        .collect();
-                    types.insert(e.ident.to_string(), TsTypeDef::StringEnum { variants, doc });
-                    continue;
+                // Sibling `<Name>Tag` enums auto-generated by `WireEnum`'s
+                // tagged mode are an internal parser-dispatch helper — they
+                // exist only after macro expansion (not in source), so the
+                // `syn`-based codegen never sees them. No filter needed here;
+                // documenting for the next reader.
+
+                let name = e.ident.to_string();
+
+                // Recognize `#[derive(WireEnum)]` (the unified successor to
+                // `#[derive(StringEnum)]` plus the hand-written `impl
+                // Serialize` blocks from before whatsapp-rust PR #567).
+                // Three modes inferred from enum-level attributes:
+                //   - unit-string  (default — drop-in `StringEnum` replacement)
+                //   - tagged       (`#[wire(tag = "type")]` — payload variants)
+                //   - int          (`#[wire(kind = "int")]`)
+                if has_wire_enum_derive(&e.attrs) {
+                    match wire_enum_kind(&e.attrs) {
+                        WireEnumKind::Int => {
+                            let codes: Vec<(String, String)> = e
+                                .variants
+                                .iter()
+                                .filter(|v| !is_wire_fallback(&v.attrs))
+                                .map(|v| (v.ident.to_string(), get_wire_attr_lit(&v.attrs).unwrap_or_default()))
+                                .filter(|(_, lit)| !lit.is_empty())
+                                .collect();
+                            types.insert(name, TsTypeDef::IntEnum { codes, doc: extract_doc(&e.attrs) });
+                            continue;
+                        }
+                        WireEnumKind::Tagged(_discriminator) => {
+                            // The discriminator field name is always `"type"`
+                            // for the variants we care about — encoded directly
+                            // in the rendered `{ type: "..." }` shape. Keep it
+                            // around in case we generalize later.
+                            let doc = extract_doc(&e.attrs);
+                            let variants: Vec<TsEnumVariant> = e
+                                .variants
+                                .iter()
+                                .map(|v| {
+                                    let vname = v.ident.to_string();
+                                    if is_wire_fallback(&v.attrs) {
+                                        return TsEnumVariant::Fallback;
+                                    }
+                                    let wire = get_wire_attr_lit(&v.attrs).unwrap_or_default();
+                                    match &v.fields {
+                                        Fields::Unit => TsEnumVariant::Unit { name: vname, wire },
+                                        Fields::Unnamed(unnamed) if unnamed.unnamed.len() == 1 => {
+                                            let (ts, _) = rust_type_to_ts(&unnamed.unnamed[0].ty);
+                                            TsEnumVariant::Tuple { name: vname, wire, inner: ts }
+                                        }
+                                        Fields::Unnamed(_) => TsEnumVariant::Unit { name: vname, wire },
+                                        Fields::Named(named) => {
+                                            let fields: Vec<TsField> = named
+                                                .named
+                                                .iter()
+                                                .filter(|f| !has_wire_skip(&f.attrs))
+                                                .map(|f| {
+                                                    let fname =
+                                                        f.ident.as_ref().unwrap().to_string();
+                                                    let (ts, opt) = rust_type_to_ts(&f.ty);
+                                                    TsField {
+                                                        name: fname,
+                                                        ts_type: ts,
+                                                        optional: opt,
+                                                        doc: extract_doc(&f.attrs),
+                                                    }
+                                                })
+                                                .collect();
+                                            TsEnumVariant::Struct { name: vname, wire, fields }
+                                        }
+                                    }
+                                })
+                                .collect();
+                            types.insert(name, TsTypeDef::Enum { variants, doc });
+                            continue;
+                        }
+                        WireEnumKind::UnitString => {
+                            let doc = extract_doc(&e.attrs);
+                            let mut has_fallback = false;
+                            let variants: Vec<(String, String)> = e
+                                .variants
+                                .iter()
+                                .filter_map(|v| {
+                                    if is_wire_fallback(&v.attrs) {
+                                        has_fallback = true;
+                                        return None;
+                                    }
+                                    let vname = v.ident.to_string();
+                                    let value = get_wire_attr_lit(&v.attrs)
+                                        .unwrap_or_else(|| to_snake_case(&vname));
+                                    Some((vname, value))
+                                })
+                                .collect();
+                            types.insert(
+                                name,
+                                TsTypeDef::StringEnum { variants, has_fallback, doc },
+                            );
+                            continue;
+                        }
+                    }
                 }
 
                 if !has_serde_derive(&e.attrs) {
                     continue;
                 }
-
-                let name = e.ident.to_string();
 
                 // Skip types that are already generated by Tsify derives in
                 // result_types.rs — avoids duplicate export conflicts.
@@ -339,22 +480,26 @@ fn parse_file(path: &Path, types: &mut BTreeMap<String, TsTypeDef>) {
                             (vname, value)
                         })
                         .collect();
-                    types.insert(name, TsTypeDef::StringEnum { variants, doc });
+                    types.insert(
+                        name,
+                        TsTypeDef::StringEnum { variants, has_fallback: false, doc },
+                    );
                 } else {
-                    // Tagged enum
+                    // Tagged enum (serde-derived, no WireEnum)
                     let variants: Vec<TsEnumVariant> = e
                         .variants
                         .iter()
                         .map(|v| {
                             let vname = v.ident.to_string();
+                            let wire = get_serde_rename_variant(v).unwrap_or_default();
                             match &v.fields {
-                                Fields::Unit => TsEnumVariant::Unit(vname),
+                                Fields::Unit => TsEnumVariant::Unit { name: vname, wire },
                                 Fields::Unnamed(unnamed) => {
                                     if unnamed.unnamed.len() == 1 {
                                         let (ts, _) = rust_type_to_ts(&unnamed.unnamed[0].ty);
-                                        TsEnumVariant::Tuple(vname, ts)
+                                        TsEnumVariant::Tuple { name: vname, wire, inner: ts }
                                     } else {
-                                        TsEnumVariant::Unit(vname)
+                                        TsEnumVariant::Unit { name: vname, wire }
                                     }
                                 }
                                 Fields::Named(named) => {
@@ -372,7 +517,7 @@ fn parse_file(path: &Path, types: &mut BTreeMap<String, TsTypeDef>) {
                                             }
                                         })
                                         .collect();
-                                    TsEnumVariant::Struct(vname, fields)
+                                    TsEnumVariant::Struct { name: vname, wire, fields }
                                 }
                             }
                         })
@@ -398,7 +543,10 @@ fn has_serde_derive(attrs: &[Attribute]) -> bool {
     })
 }
 
-fn has_string_enum_derive(attrs: &[Attribute]) -> bool {
+/// Detect `#[derive(WireEnum)]` (the unified successor to `StringEnum` plus
+/// hand-written `impl Serialize` blocks). Matches both `WireEnum` and
+/// `crate :: WireEnum` / `wacore :: WireEnum` forms produced by `quote!`.
+fn has_wire_enum_derive(attrs: &[Attribute]) -> bool {
     attrs.iter().any(|a| {
         if !a.path().is_ident("derive") {
             return false;
@@ -407,8 +555,101 @@ fn has_string_enum_derive(attrs: &[Attribute]) -> bool {
             return false;
         };
         let s = meta.to_string();
-        s.contains("StringEnum")
+        s.contains("WireEnum")
     })
+}
+
+#[derive(Debug)]
+enum WireEnumKind {
+    UnitString,
+    Tagged(String),
+    Int,
+}
+
+/// Inspect enum-level `#[wire(...)]` attribute to determine which mode the
+/// `WireEnum` derive runs in. Mirrors `wacore_derive`'s `parse_enum_level_wire`.
+fn wire_enum_kind(attrs: &[Attribute]) -> WireEnumKind {
+    let mut tag_field: Option<String> = None;
+    let mut int_kind = false;
+    for attr in attrs {
+        if !attr.path().is_ident("wire") {
+            continue;
+        }
+        // `#[wire(tag = "type")]` and `#[wire(kind = "int")]` use parenthesized
+        // nested meta. `#[wire = "..."]` uses NameValue and isn't enum-level.
+        let _ = attr.parse_nested_meta(|meta| {
+            if meta.path.is_ident("tag") {
+                if let Ok(value) = meta.value()
+                    && let Ok(lit) = value.parse::<syn::LitStr>()
+                {
+                    tag_field = Some(lit.value());
+                }
+            } else if meta.path.is_ident("kind") {
+                if let Ok(value) = meta.value()
+                    && let Ok(lit) = value.parse::<syn::LitStr>()
+                    && lit.value() == "int"
+                {
+                    int_kind = true;
+                }
+            }
+            Ok(())
+        });
+    }
+    if int_kind {
+        WireEnumKind::Int
+    } else if let Some(t) = tag_field {
+        WireEnumKind::Tagged(t)
+    } else {
+        WireEnumKind::UnitString
+    }
+}
+
+/// Read `#[wire = "..."]` (string mode) or `#[wire = NUM]` (int mode) from
+/// a variant. Returns the literal as a string in both cases — caller decides
+/// how to render. Returns `None` for variants without the attribute (e.g.
+/// `#[wire_fallback]` ones).
+fn get_wire_attr_lit(attrs: &[Attribute]) -> Option<String> {
+    for attr in attrs {
+        if !attr.path().is_ident("wire") {
+            continue;
+        }
+        // `#[wire = "..."]` / `#[wire = 101]` — NameValue form, not parenthesized.
+        if let syn::Meta::NameValue(nv) = &attr.meta
+            && let syn::Expr::Lit(lit) = &nv.value
+        {
+            return match &lit.lit {
+                syn::Lit::Str(s) => Some(s.value()),
+                syn::Lit::Int(i) => Some(i.base10_digits().to_string()),
+                _ => None,
+            };
+        }
+    }
+    None
+}
+
+fn is_wire_fallback(attrs: &[Attribute]) -> bool {
+    attrs.iter().any(|a| a.path().is_ident("wire_fallback"))
+}
+
+/// Field-level `#[wire(skip)]` — exclude the field from the JSON contract
+/// (used for `raw: Node` payloads on `Create`/`Link`/`Unlink`).
+fn has_wire_skip(attrs: &[Attribute]) -> bool {
+    for attr in attrs {
+        if !attr.path().is_ident("wire") {
+            continue;
+        }
+        let mut skip = false;
+        let _ = attr.parse_nested_meta(|meta| {
+            if meta.path.is_ident("skip") {
+                skip = true;
+            }
+            Ok(())
+        });
+        if skip {
+            return true;
+        }
+    }
+    false
 }
 
 fn is_pub(vis: &syn::Visibility) -> bool {
@@ -472,24 +713,6 @@ fn get_serde_rename_variant(v: &syn::Variant) -> Option<String> {
     None
 }
 
-fn get_str_attr(attrs: &[Attribute]) -> Option<String> {
-    for attr in attrs {
-        if attr.path().is_ident("str") {
-            let Ok(meta) = attr.parse_args::<proc_macro2::TokenStream>() else {
-                continue;
-            };
-            let s = meta.to_string();
-            // Parse: "value"
-            if let Some(start) = s.find('"') {
-                let rest = &s[start + 1..];
-                if let Some(end) = rest.find('"') {
-                    return Some(rest[..end].to_string());
-                }
-            }
-        }
-    }
-    None
-}
 
 /// Map a Rust type to a TypeScript type string.
 /// Returns (ts_type, is_optional).

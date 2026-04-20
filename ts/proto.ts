@@ -72,10 +72,28 @@ const REGISTRY: Record<string, MessageFns<any>> = {
   "Message.EventResponseMessage": Message_EventResponseMessage,
 };
 
+// Star-import the generated module so any ts-proto type is resolvable by name
+// without us having to register each manually. Bundled at build time (bun
+// includes all imports), so the runtime cost is one extra Object.entries-style
+// lookup on the cold path.
+import * as gen from "./generated/whatsapp";
+
+const GENERATED_MODULE = gen as unknown as Record<string, unknown>;
+
 function resolve(typeName: string): MessageFns<any> {
-  const fns = REGISTRY[typeName];
-  if (!fns) throw new Error(`unknown proto type: ${typeName}`);
-  return fns;
+  // Hot path: the small REGISTRY of well-known top-level types above.
+  const direct = REGISTRY[typeName];
+  if (direct) return direct;
+  // Fallback: protobufjs-style namespace path (e.g. `Message.VideoMessage`)
+  // is mapped to ts-proto's flat `Message_VideoMessage` and looked up in the
+  // generated module. Any wacore proto type the bridge knows about resolves
+  // here, no manual registration needed.
+  const flatName = typeName.replace(/\./g, "_");
+  const candidate = GENERATED_MODULE[flatName];
+  if (candidate && typeof candidate === "object" && "encode" in candidate) {
+    return candidate as MessageFns<any>;
+  }
+  throw new Error(`unknown proto type: ${typeName}`);
 }
 
 export function encodeProto(typeName: string, obj: unknown): Uint8Array {
