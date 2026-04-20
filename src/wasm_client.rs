@@ -118,6 +118,7 @@ bridge_events! {
         DisappearingModeChanged  => "disappearing_mode_changed"     => "DisappearingModeChanged",
         NewsletterLiveUpdate     => "newsletter_live_update"        => "NewsletterLiveUpdate",
         IncomingCall             => "incoming_call"                 => "IncomingCall",
+        MexNotification          => "mex_notification"               => "MexNotification",
     }
     special {
         // "js_name"                         => "TsDataType"
@@ -215,6 +216,40 @@ export interface IncomingCall {
   timestamp: number;
   offline: boolean;
   action: CallAction;
+}
+"#;
+
+// MEX (GraphQL) push notification + on-demand response shapes. The op_name
+// is the routing key — stable across WA Web bundle releases (numeric query
+// ids rotate). Payload shape varies per op_name; consumers dispatch on it.
+#[wasm_bindgen(typescript_custom_section)]
+const _TS_MEX: &str = r#"
+/**
+ * Server-pushed MEX (GraphQL) update, e.g.
+ * `NotificationUserReachoutTimelockUpdate`. Routed by `op_name`.
+ */
+export interface MexNotification {
+  op_name: string;
+  from?: Jid | null;
+  stanza_id?: string | null;
+  offline: boolean;
+  payload: Record<string, unknown>;
+}
+
+/** GraphQL error returned inside a MEX response's `errors` array. */
+export interface MexGraphQLError {
+  message: string;
+  extensions?: {
+    error_code?: number | null;
+    severity?: string | null;
+    is_retryable?: boolean | null;
+  } | null;
+}
+
+/** Response from `mexQuery`. `data` is the GraphQL payload (op-specific). */
+export interface MexResponse {
+  data: Record<string, unknown> | null;
+  errors: MexGraphQLError[] | null;
 }
 "#;
 
@@ -697,6 +732,83 @@ impl WasmWhatsAppClient {
     /// Connect to WhatsApp servers (single connection, no auto-reconnect).
     pub async fn connect(&self) -> Result<(), JsError> {
         self.client.connect().await.map_err(js_err)
+    }
+
+    /// Run a MEX (GraphQL) persisted query against the server.
+    ///
+    /// The numeric `doc_id` rotates with the WA Web bundle, so callers
+    /// supply both the human-readable `op_name` (stable, used for error
+    /// diagnostics) and the current `id`. Variables are passed as a JSON
+    /// string for transparency on the JS boundary.
+    ///
+    /// Returns the raw `MexResponse` (`data` + `errors`). Domain mapping is
+    /// the consumer's job — keeps the bridge insulated from WA Web shape
+    /// churn.
+    #[wasm_bindgen(js_name = "mexQuery")]
+    pub async fn mex_query(
+        &self,
+        op_name: String,
+        doc_id: String,
+        variables_json: String,
+    ) -> Result<JsValue, JsError> {
+        use wacore::iq::mex::MexDoc;
+        use whatsapp_rust::features::MexRequest;
+
+        let variables: serde_json::Value = serde_json::from_str(&variables_json)
+            .map_err(|e| JsError::new(&format!("invalid variables JSON: {e}")))?;
+        let doc = MexDoc {
+            name: intern_static(op_name),
+            id: intern_static(doc_id),
+        };
+        let response = self
+            .client
+            .mex()
+            .query(MexRequest { doc, variables })
+            .await
+            .map_err(js_err)?;
+        serde_wasm_bindgen::to_value(&response)
+            .map_err(|e| JsError::new(&format!("serialize MexResponse: {e}")))
+    }
+
+    /// Fetch the account's reachout-timelock state.
+    ///
+    /// Wraps the `WAWebMexFetchReachoutTimelockJobQuery` MEX persisted
+    /// query (id sourced from `wacore::iq::mex_ids::reachout_timelock::FETCH`)
+    /// and returns the `xwa2_fetch_account_reachout_timelock` payload as a
+    /// raw JSON object — typically:
+    ///
+    /// ```json
+    /// { "is_active": true,
+    ///   "time_enforcement_ends": "1734567890",
+    ///   "enforcement_type": "BIZ_COMMERCE_VIOLATION_…" }
+    /// ```
+    ///
+    /// Returns `null` when the server has no timelock for this account.
+    /// Callers map snake_case → idiomatic shape themselves.
+    #[wasm_bindgen(js_name = "fetchReachoutTimelock")]
+    pub async fn fetch_reachout_timelock(&self) -> Result<JsValue, JsError> {
+        use wacore::iq::mex_ids;
+        use whatsapp_rust::features::MexRequest;
+
+        let response = self
+            .client
+            .mex()
+            .query(MexRequest {
+                doc: mex_ids::reachout_timelock::FETCH,
+                variables: serde_json::json!({}),
+            })
+            .await
+            .map_err(js_err)?;
+
+        let payload = response
+            .data
+            .as_ref()
+            .and_then(|d| d.get("xwa2_fetch_account_reachout_timelock"))
+            .cloned()
+            .unwrap_or(serde_json::Value::Null);
+
+        serde_wasm_bindgen::to_value(&payload)
+            .map_err(|e| JsError::new(&format!("serialize reachout payload: {e}")))
     }
 
     /// Disconnect the client and flush pending state to storage.
@@ -2967,6 +3079,25 @@ pub fn get_aggregate_votes_in_poll_message(
 /// Convert any error to a proper JS Error object.
 fn js_err(e: impl std::fmt::Display) -> JsError {
     JsError::new(&e.to_string())
+}
+
+/// Intern a runtime `String` into a `&'static str`, deduplicating across
+/// calls. Required because `wacore::iq::mex::MexDoc` carries `&'static str`
+/// fields, but JS-supplied strings are heap-allocated. The internal map
+/// keeps total leaked memory bounded by the count of distinct doc names+ids
+/// ever passed in (typically <50 per app lifetime).
+fn intern_static(s: String) -> &'static str {
+    use std::collections::HashMap;
+    use std::sync::{Mutex, OnceLock};
+    static MAP: OnceLock<Mutex<HashMap<String, &'static str>>> = OnceLock::new();
+    let map = MAP.get_or_init(|| Mutex::new(HashMap::new()));
+    let mut g = map.lock().unwrap_or_else(|e| e.into_inner());
+    if let Some(&v) = g.get(&s) {
+        return v;
+    }
+    let leaked: &'static str = Box::leak(s.clone().into_boxed_str());
+    g.insert(s, leaked);
+    leaked
 }
 
 /// Parse a JID string, returning a JS error on failure.

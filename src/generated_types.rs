@@ -518,6 +518,15 @@ export interface MexGraphQLError {
   extensions?: MexErrorExtensions | null;
 }
 
+/** `payload` shape depends on `op_name`. `offline` mirrors the raw string the server sets when replaying backlog (often a timestamp); presence alone signals backlog vs live. */
+export interface MexNotification {
+  op_name: string;
+  from?: Jid | null;
+  stanza_id?: string | null;
+  offline?: string | null;
+  payload: Value;
+}
+
 /** MEX GraphQL response. */
 export interface MexResponse {
   data?: Value | null;
