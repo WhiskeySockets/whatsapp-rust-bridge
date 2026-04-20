@@ -78,11 +78,11 @@ talc = { version = "5", default-features = false }
 tsify-next = { version = "0.5", default-features = false, features = ["js"] }
 uuid = { version = "1.18.1", default-features = false, features = ["v4", "js"] }
 
-wacore = { git = "https://github.com/jlucaso1/whatsapp-rust", branch = "main", features = ["js"] }
-wacore-appstate = { git = "https://github.com/jlucaso1/whatsapp-rust", branch = "main" }
-wacore-binary = { git = "https://github.com/jlucaso1/whatsapp-rust", branch = "main", features = ["serde"] }
-wacore-libsignal = { git = "https://github.com/jlucaso1/whatsapp-rust", branch = "main" }
-waproto = { git = "https://github.com/jlucaso1/whatsapp-rust", branch = "main" }
+wacore = { git = "https://github.com/oxidezap/whatsapp-rust", branch = "main", features = ["js"] }
+wacore-appstate = { git = "https://github.com/oxidezap/whatsapp-rust", branch = "main" }
+wacore-binary = { git = "https://github.com/oxidezap/whatsapp-rust", branch = "main", features = ["serde"] }
+wacore-libsignal = { git = "https://github.com/oxidezap/whatsapp-rust", branch = "main" }
+waproto = { git = "https://github.com/oxidezap/whatsapp-rust", branch = "main" }
 wasm-bindgen = "0.2.100"
 wasm-bindgen-futures = "0.4.55"
 wasm-streams = "0.5"
@@ -92,7 +92,7 @@ web-sys = { version = "0.3", features = [
   "WritableStream",
   "Window",
 ] }
-whatsapp-rust = { git = "https://github.com/jlucaso1/whatsapp-rust", branch = "main", default-features = false, features = ["debug-diagnostics"] }
+whatsapp-rust = { git = "https://github.com/oxidezap/whatsapp-rust", branch = "main", default-features = false, features = ["debug-diagnostics"] }
 
 [profile.release]
 lto = "fat"
