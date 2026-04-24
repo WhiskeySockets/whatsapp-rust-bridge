@@ -877,33 +877,20 @@ impl WasmWhatsAppClient {
 
     // ── Device props ─────────────────────────────────────────────────────
 
-    /// Set device properties (OS name, browser/platform type).
-    /// This controls what device name is shown on the phone (e.g. "Chrome", "Firefox").
+    /// Override `DeviceProps` before initial pairing. Only takes effect on
+    /// the registration node — for already paired sessions this is a no-op
+    /// on the wire and the core logs a warning.
     ///
-    /// `os` — OS name (e.g. "Mac OS", "Windows", "Ubuntu")
-    /// `browser` — Browser name mapped to PlatformType (e.g. "Chrome", "Firefox", "Safari")
+    /// Setting `platformType: 'ANDROID_PHONE'` flips the phone's "Linked
+    /// Devices" display to Android and unlocks server-side feature gating
+    /// (e.g. view-once delivered as payload instead of `absent` stub) WITHOUT
+    /// switching the underlying transport — the client still speaks the web
+    /// protocol. Real Android companion mode (CRSC v2/v3, TEE attestation)
+    /// is NOT implemented; if the server starts enforcing companion-type
+    /// crypto, those connections may break.
     #[wasm_bindgen(js_name = setDeviceProps)]
-    pub async fn set_device_props(&self, os: &str, browser: &str) {
-        use wacore::store::commands::DeviceCommand;
-        use waproto::whatsapp::device_props;
-
-        let platform_type = match browser {
-            "Chrome" => device_props::PlatformType::Chrome,
-            "Firefox" => device_props::PlatformType::Firefox,
-            "Safari" => device_props::PlatformType::Safari,
-            "Edge" => device_props::PlatformType::Edge,
-            "Opera" => device_props::PlatformType::Opera,
-            "Desktop" => device_props::PlatformType::Desktop,
-            _ => device_props::PlatformType::Chrome,
-        };
-
-        self.persistence_manager
-            .process_command(DeviceCommand::SetDeviceProps(
-                Some(os.to_string()),
-                None,
-                Some(platform_type),
-            ))
-            .await;
+    pub async fn set_device_props(&self, input: crate::device_props::DevicePropsInput) {
+        self.client.set_device_props(input.into()).await;
     }
 
     /// Override the WhatsApp Web version used for the connection.

@@ -13,6 +13,7 @@ pub mod image_utils;
 pub mod sticker_metadata;
 
 pub mod camel_serializer;
+pub mod device_props;
 mod generated_types;
 pub mod js_backend;
 pub mod js_cache_store;
