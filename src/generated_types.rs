@@ -626,9 +626,6 @@ export interface PinUpdate {
   from_full_sync: boolean;
 }
 
-/** Platform identifiers for companion devices. These match the DeviceProps.PlatformType protobuf enum. */
-export type PlatformId = "0" | "1" | "2" | "3" | "4" | "5" | "6" | "7" | "8" | "9";
-
 export type PreKeyFetchReason = "identity" | "retry" | string;
 
 export type Presence = "available" | "unavailable";
