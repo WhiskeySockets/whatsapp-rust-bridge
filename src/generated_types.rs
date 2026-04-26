@@ -199,6 +199,8 @@ export interface Device {
   app_version_tertiary: number;
   app_version_last_fetched_ms: number;
   device_props: DeviceProps;
+  /** Runtime-only. Set before `connect()` on every process start. */
+  client_profile: ClientProfile;
   /** Edge routing info received from server, used for optimized reconnection. When present, this should be sent as a pre-intro before the Noise handshake. */
   edge_routing_info?: Uint8Array | null;
   /** Hash from the last props (A/B experiment config) fetch. Sent on subsequent connects to enable delta updates instead of full fetches. */

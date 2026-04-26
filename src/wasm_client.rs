@@ -893,6 +893,22 @@ impl WasmWhatsAppClient {
         self.client.set_device_props(input.into()).await;
     }
 
+    /// Override the noise-handshake `ClientPayload` profile (UserAgent
+    /// platform/device/os_version/manufacturer + `web_info` presence).
+    ///
+    /// Independent of `setDeviceProps`: that one drives the "Linked Devices"
+    /// display on the phone; this one drives what the server sees during the
+    /// noise handshake. Use `{ preset: 'android', osVersion: '13' }` to
+    /// mirror Baileys' `Browsers.android('13')` (sets `UserAgent.platform =
+    /// ANDROID` and omits `web_info`).
+    ///
+    /// Runtime-only — the field is `#[serde(skip)]` in the persisted Device,
+    /// so re-apply on every fresh process before `connect()`.
+    #[wasm_bindgen(js_name = setClientProfile)]
+    pub async fn set_client_profile(&self, input: crate::client_profile::ClientProfileInput) {
+        self.client.set_client_profile(input.into()).await;
+    }
+
     /// Override the WhatsApp Web version used for the connection.
     /// Accepts [major, minor, patch] array.
     #[wasm_bindgen(js_name = setVersion)]
