@@ -14,7 +14,6 @@ use crate::js_backend;
 use crate::js_http::JsHttpClientAdapter;
 use crate::js_time;
 use crate::js_transport::JsTransportFactory;
-use crate::js_val_to_error as js_val_err;
 use crate::runtime::WasmRuntime;
 
 // ---------------------------------------------------------------------------
@@ -129,7 +128,7 @@ bridge_events! {
         "pair_success"                    => "{ id: string; lid: string; business_name: string; platform: string }",
         "pair_error"                      => "{ id: string; lid: string; business_name: string; platform: string; error: string }",
         "logged_out"                      => "{ on_connect: boolean; reason: string }",
-        "message"                         => "{ message: Record<string, unknown>; info: MessageInfo }",
+        "message"                         => "{ message: Record<string, unknown>; info: MessageInfo & { is_view_once: boolean } }",
         "notification"                    => "{ tag: string; attrs: Record<string, string>; content?: unknown }",
         "stream_replaced"                 => "Record<string, never>",
         "qr_scanned_without_multidevice"  => "Record<string, never>",
@@ -442,6 +441,7 @@ fn event_to_js_special(event: &Event) -> Result<JsValue, JsValue> {
             ("logged_out", d.into())
         }
         Event::Message(msg, info) => {
+            use wacore::proto_helpers::MessageExt;
             let d = js_sys::Object::new();
             // Proto message → camelCase (matches protobufjs/Baileys convention)
             js_sys::Reflect::set(
@@ -450,7 +450,9 @@ fn event_to_js_special(event: &Event) -> Result<JsValue, JsValue> {
                 &crate::camel_serializer::to_js_value_camel(msg.as_ref())?,
             )?;
             // MessageInfo → snake_case (wacore type, Option B)
-            js_sys::Reflect::set(&d, &"info".into(), &crate::proto::to_js_value(info)?)?;
+            let info_js = crate::proto::to_js_value(info)?;
+            js_sys::Reflect::set(&info_js, &"is_view_once".into(), &msg.is_view_once().into())?;
+            js_sys::Reflect::set(&d, &"info".into(), &info_js)?;
             ("message", d.into())
         }
         Event::Notification(node) => {
@@ -521,8 +523,12 @@ fn event_to_json_special(event: &Event) -> Result<serde_json::Value, String> {
             }),
         ),
         Event::Message(msg, info) => {
+            use wacore::proto_helpers::MessageExt;
             let msg_json = crate::camel_serializer::to_json_value_camel(msg.as_ref())?;
-            let info_json = serde_json::to_value(info).map_err(|e| e.to_string())?;
+            let mut info_json = serde_json::to_value(info).map_err(|e| e.to_string())?;
+            if let Some(obj) = info_json.as_object_mut() {
+                obj.insert("is_view_once".into(), msg.is_view_once().into());
+            }
             (
                 "message",
                 serde_json::json!({ "message": msg_json, "info": info_json }),
@@ -593,22 +599,22 @@ pub async fn create_whatsapp_client(
     on_event: Option<js_sys::Function>,
     store: Option<JsValue>,
     cache_config_js: Option<JsValue>,
-) -> Result<WasmWhatsAppClient, JsError> {
+) -> Result<WasmWhatsAppClient, crate::errors::BridgeError> {
     let runtime = Arc::new(WasmRuntime) as Arc<dyn wacore::runtime::Runtime>;
     let backend = match store {
         Some(ref store_val) if !store_val.is_null() && !store_val.is_undefined() => {
             let get_fn = js_sys::Reflect::get(store_val, &"get".into())
-                .map_err(|_| JsError::new("store.get is required"))?
+                .map_err(|_| crate::errors::internal("store.get is required"))?
                 .dyn_into::<js_sys::Function>()
-                .map_err(|_| JsError::new("store.get must be a function"))?;
+                .map_err(|_| crate::errors::internal("store.get must be a function"))?;
             let set_fn = js_sys::Reflect::get(store_val, &"set".into())
-                .map_err(|_| JsError::new("store.set is required"))?
+                .map_err(|_| crate::errors::internal("store.set is required"))?
                 .dyn_into::<js_sys::Function>()
-                .map_err(|_| JsError::new("store.set must be a function"))?;
+                .map_err(|_| crate::errors::internal("store.set must be a function"))?;
             let delete_fn = js_sys::Reflect::get(store_val, &"delete".into())
-                .map_err(|_| JsError::new("store.delete is required"))?
+                .map_err(|_| crate::errors::internal("store.delete is required"))?
                 .dyn_into::<js_sys::Function>()
-                .map_err(|_| JsError::new("store.delete must be a function"))?;
+                .map_err(|_| crate::errors::internal("store.delete must be a function"))?;
             info!("Using JS-backed persistent storage");
             js_backend::new_js_backend(get_fn, set_fn, delete_fn)
         }
@@ -617,20 +623,19 @@ pub async fn create_whatsapp_client(
             js_backend::new_in_memory_backend()
         }
     };
-    let transport_factory =
-        Arc::new(JsTransportFactory::from_js(transport_config).map_err(js_val_err)?)
-            as Arc<dyn wacore::net::TransportFactory>;
-    let http_client = Arc::new(JsHttpClientAdapter::from_js(http_config).map_err(js_val_err)?)
-        as Arc<dyn wacore::net::HttpClient>;
+    let transport_factory = Arc::new(JsTransportFactory::from_js(transport_config)?)
+        as Arc<dyn wacore::net::TransportFactory>;
+    let http_client =
+        Arc::new(JsHttpClientAdapter::from_js(http_config)?) as Arc<dyn wacore::net::HttpClient>;
 
     let persistence_manager: Arc<whatsapp_rust::store::persistence_manager::PersistenceManager> =
         Arc::new(
             whatsapp_rust::store::persistence_manager::PersistenceManager::new(backend.clone())
                 .await
-                .map_err(|e| JsError::new(&format!("create persistence manager: {e}")))?,
+                .map_err(|e| crate::errors::internal(format!("create persistence manager: {e}")))?,
         );
 
-    let cache_config = build_cache_config(cache_config_js.as_ref()).map_err(js_val_err)?;
+    let cache_config = build_cache_config(cache_config_js.as_ref())?;
 
     let (client, sync_rx) = whatsapp_rust::Client::new_with_cache_config(
         runtime.clone(),
@@ -696,9 +701,9 @@ impl WasmWhatsAppClient {
     ///
     /// Not `async` to avoid holding a wasm-bindgen borrow on `self` that would
     /// prevent calling other methods (disconnect, etc.).
-    pub fn run(&mut self) -> Result<(), JsError> {
+    pub fn run(&mut self) -> Result<(), crate::errors::BridgeError> {
         if self.sync_rx.is_none() {
-            return Err(JsError::new("run() has already been called"));
+            return Err(crate::errors::internal("run() has already been called"));
         }
         let client = self.client.clone();
         let runtime = self.runtime.clone();
@@ -730,8 +735,11 @@ impl WasmWhatsAppClient {
     }
 
     /// Connect to WhatsApp servers (single connection, no auto-reconnect).
-    pub async fn connect(&self) -> Result<(), JsError> {
-        self.client.connect().await.map_err(js_err)
+    pub async fn connect(&self) -> Result<(), crate::errors::BridgeError> {
+        self.client
+            .connect()
+            .await
+            .map_err(crate::errors::BridgeError::from)
     }
 
     /// Run a MEX (GraphQL) persisted query against the server.
@@ -750,12 +758,12 @@ impl WasmWhatsAppClient {
         op_name: String,
         doc_id: String,
         variables_json: String,
-    ) -> Result<JsValue, JsError> {
+    ) -> Result<JsValue, crate::errors::BridgeError> {
         use wacore::iq::mex::MexDoc;
         use whatsapp_rust::features::MexRequest;
 
         let variables: serde_json::Value = serde_json::from_str(&variables_json)
-            .map_err(|e| JsError::new(&format!("invalid variables JSON: {e}")))?;
+            .map_err(|e| crate::errors::invalid_arg("variables", e.to_string()))?;
         let doc = MexDoc {
             name: intern_static(op_name),
             id: intern_static(doc_id),
@@ -764,10 +772,9 @@ impl WasmWhatsAppClient {
             .client
             .mex()
             .query(MexRequest { doc, variables })
-            .await
-            .map_err(js_err)?;
+            .await?;
         serde_wasm_bindgen::to_value(&response)
-            .map_err(|e| JsError::new(&format!("serialize MexResponse: {e}")))
+            .map_err(|e| crate::errors::internal(format!("serialize MexResponse: {e}")))
     }
 
     /// Fetch the account's reachout-timelock state.
@@ -786,7 +793,7 @@ impl WasmWhatsAppClient {
     /// Returns `null` when the server has no timelock for this account.
     /// Callers map snake_case → idiomatic shape themselves.
     #[wasm_bindgen(js_name = "fetchReachoutTimelock")]
-    pub async fn fetch_reachout_timelock(&self) -> Result<JsValue, JsError> {
+    pub async fn fetch_reachout_timelock(&self) -> Result<JsValue, crate::errors::BridgeError> {
         use wacore::iq::mex_ids;
         use whatsapp_rust::features::MexRequest;
 
@@ -797,8 +804,7 @@ impl WasmWhatsAppClient {
                 doc: mex_ids::reachout_timelock::FETCH,
                 variables: serde_json::json!({}),
             })
-            .await
-            .map_err(js_err)?;
+            .await?;
 
         let payload = response
             .data
@@ -808,7 +814,7 @@ impl WasmWhatsAppClient {
             .unwrap_or(serde_json::Value::Null);
 
         serde_wasm_bindgen::to_value(&payload)
-            .map_err(|e| JsError::new(&format!("serialize reachout payload: {e}")))
+            .map_err(|e| crate::errors::internal(format!("serialize reachout payload: {e}")))
     }
 
     /// Disconnect the client and flush pending state to storage.
@@ -837,8 +843,8 @@ impl WasmWhatsAppClient {
     /// Sends `remove-companion-device` IQ to the server (best-effort),
     /// then disconnects. Does NOT clear stored keys — the caller should
     /// delete the store to fully clear credentials.
-    pub async fn logout(&self) -> Result<(), JsError> {
-        self.client.logout().await.map_err(js_err)?;
+    pub async fn logout(&self) -> Result<(), crate::errors::BridgeError> {
+        self.client.logout().await?;
         if let Some(handle) = self
             .saver_handle
             .lock()
@@ -861,6 +867,14 @@ impl WasmWhatsAppClient {
         self.client
             .enable_auto_reconnect
             .store(enabled, std::sync::atomic::Ordering::Relaxed);
+    }
+
+    /// Drop the current connection and reconnect immediately, picking up
+    /// any profile changes (e.g. `setClientProfile`) on the new handshake.
+    /// The `run()` loop continues — only the in-flight WebSocket is reset.
+    #[wasm_bindgen(js_name = reconnect)]
+    pub async fn reconnect(&self) {
+        self.client.reconnect_immediately().await;
     }
 
     /// Check if the client is connected.
@@ -930,20 +944,22 @@ impl WasmWhatsAppClient {
 
     /// Request a pairing code for phone number login (alternative to QR).
     ///
-    /// Returns the 8-character pairing code to enter on the phone.
+    /// Returns the 8-character pairing code to enter on the phone. On error,
+    /// throws a `WhatsAppError` with structured fields (`kind`, `serverCode`,
+    /// `serverText`, etc.) — see `errors::BridgeError`.
     #[wasm_bindgen(js_name = requestPairingCode)]
     pub async fn request_pairing_code(
         &self,
         phone_number: &str,
         custom_code: Option<String>,
-    ) -> Result<String, JsError> {
+    ) -> Result<String, crate::errors::BridgeError> {
         use whatsapp_rust::pair_code::PairCodeOptions;
         let options = PairCodeOptions {
             phone_number: phone_number.to_string(),
             custom_code,
             ..Default::default()
         };
-        let code = self.client.pair_with_code(options).await.map_err(js_err)?;
+        let code = self.client.pair_with_code(options).await?;
         Ok(code)
     }
 
@@ -952,9 +968,13 @@ impl WasmWhatsAppClient {
     /// Send an E2E encrypted message from protobuf bytes.
     /// Use `encodeProto('Message', obj)` on the JS side to produce the bytes.
     #[wasm_bindgen(js_name = sendMessageBytes)]
-    pub async fn send_message_bytes(&self, jid: &str, bytes: &[u8]) -> Result<String, JsError> {
+    pub async fn send_message_bytes(
+        &self,
+        jid: &str,
+        bytes: &[u8],
+    ) -> Result<String, crate::errors::BridgeError> {
         let (to, msg) = parse_jid_and_msg_bytes(jid, bytes)?;
-        let result = self.client.send_message(to, msg).await.map_err(js_err)?;
+        let result = self.client.send_message(to, msg).await?;
         Ok(result.message_id)
     }
 
@@ -965,7 +985,7 @@ impl WasmWhatsAppClient {
         jid: &str,
         bytes: &[u8],
         message_id: Option<String>,
-    ) -> Result<String, JsError> {
+    ) -> Result<String, crate::errors::BridgeError> {
         let (to, msg) = parse_jid_and_msg_bytes(jid, bytes)?;
         let options = whatsapp_rust::SendOptions {
             message_id,
@@ -974,8 +994,7 @@ impl WasmWhatsAppClient {
         let result = self
             .client
             .send_message_with_options(to, msg, options)
-            .await
-            .map_err(js_err)?;
+            .await?;
         Ok(result.message_id)
     }
 
@@ -988,12 +1007,12 @@ impl WasmWhatsAppClient {
         jid: &str,
         message_id: &str,
         bytes: &[u8],
-    ) -> Result<String, JsError> {
+    ) -> Result<String, crate::errors::BridgeError> {
         let (to, msg) = parse_jid_and_msg_bytes(jid, bytes)?;
         self.client
             .edit_message(to, message_id, msg)
             .await
-            .map_err(js_err)
+            .map_err(crate::errors::BridgeError::from)
     }
 
     /// Revoke (delete) a sent message.
@@ -1003,7 +1022,7 @@ impl WasmWhatsAppClient {
         jid: &str,
         message_id: &str,
         participant: Option<String>,
-    ) -> Result<(), JsError> {
+    ) -> Result<(), crate::errors::BridgeError> {
         let to = parse_jid(jid)?;
 
         let revoke_type = match participant {
@@ -1019,7 +1038,7 @@ impl WasmWhatsAppClient {
         self.client
             .revoke_message(to, message_id, revoke_type)
             .await
-            .map_err(js_err)
+            .map_err(crate::errors::BridgeError::from)
     }
 
     // ── Groups ───────────────────────────────────────────────────────────
@@ -1029,15 +1048,10 @@ impl WasmWhatsAppClient {
     pub async fn group_metadata(
         &self,
         jid: &str,
-    ) -> Result<crate::result_types::GroupMetadataResult, JsError> {
+    ) -> Result<crate::result_types::GroupMetadataResult, crate::errors::BridgeError> {
         let group_jid = parse_jid(jid)?;
 
-        let metadata = self
-            .client
-            .groups()
-            .get_metadata(&group_jid)
-            .await
-            .map_err(js_err)?;
+        let metadata = self.client.groups().get_metadata(&group_jid).await?;
 
         Ok(group_metadata_to_result(&metadata))
     }
@@ -1050,7 +1064,7 @@ impl WasmWhatsAppClient {
         &self,
         subject: &str,
         participants: Vec<String>,
-    ) -> Result<crate::result_types::CreateGroupResult, JsError> {
+    ) -> Result<crate::result_types::CreateGroupResult, crate::errors::BridgeError> {
         use whatsapp_rust::features::GroupParticipantOptions;
 
         let participant_options: Vec<GroupParticipantOptions> = participants
@@ -1061,12 +1075,7 @@ impl WasmWhatsAppClient {
         let options = whatsapp_rust::features::GroupCreateOptions::new(subject)
             .with_participants(participant_options);
 
-        let result = self
-            .client
-            .groups()
-            .create_group(options)
-            .await
-            .map_err(js_err)?;
+        let result = self.client.groups().create_group(options).await?;
 
         Ok(crate::result_types::CreateGroupResult {
             gid: result.gid.to_string(),
@@ -1075,16 +1084,20 @@ impl WasmWhatsAppClient {
 
     /// Update a group's subject (name).
     #[wasm_bindgen(js_name = groupUpdateSubject)]
-    pub async fn group_update_subject(&self, jid: &str, subject: &str) -> Result<(), JsError> {
+    pub async fn group_update_subject(
+        &self,
+        jid: &str,
+        subject: &str,
+    ) -> Result<(), crate::errors::BridgeError> {
         let group_jid = parse_jid(jid)?;
 
-        let group_subject = whatsapp_rust::features::GroupSubject::new(subject).map_err(js_err)?;
+        let group_subject = whatsapp_rust::features::GroupSubject::new(subject)?;
 
         self.client
             .groups()
             .set_subject(&group_jid, group_subject)
             .await
-            .map_err(js_err)
+            .map_err(crate::errors::BridgeError::from)
     }
 
     /// Update a group's description. Pass null/undefined to remove.
@@ -1093,28 +1106,31 @@ impl WasmWhatsAppClient {
         &self,
         jid: &str,
         description: Option<String>,
-    ) -> Result<(), JsError> {
+    ) -> Result<(), crate::errors::BridgeError> {
         let group_jid = parse_jid(jid)?;
 
         let desc = description
             .as_deref()
             .map(whatsapp_rust::features::GroupDescription::new)
-            .transpose()
-            .map_err(js_err)?;
+            .transpose()?;
 
         self.client
             .groups()
             .set_description(&group_jid, desc, None)
             .await
-            .map_err(js_err)
+            .map_err(crate::errors::BridgeError::from)
     }
 
     /// Leave a group.
     #[wasm_bindgen(js_name = groupLeave)]
-    pub async fn group_leave(&self, jid: &str) -> Result<(), JsError> {
+    pub async fn group_leave(&self, jid: &str) -> Result<(), crate::errors::BridgeError> {
         let group_jid = parse_jid(jid)?;
 
-        self.client.groups().leave(&group_jid).await.map_err(js_err)
+        self.client
+            .groups()
+            .leave(&group_jid)
+            .await
+            .map_err(crate::errors::BridgeError::from)
     }
 
     /// Set or clear the bot's per-group "member label" — the small tag rendered
@@ -1122,13 +1138,17 @@ impl WasmWhatsAppClient {
     /// clears the label. The core sends this as a `ProtocolMessage` over the
     /// normal message path (not an IQ), matching WA Web's behavior.
     #[wasm_bindgen(js_name = updateMemberLabel)]
-    pub async fn update_member_label(&self, group_jid: &str, label: &str) -> Result<(), JsError> {
+    pub async fn update_member_label(
+        &self,
+        group_jid: &str,
+        label: &str,
+    ) -> Result<(), crate::errors::BridgeError> {
         let parsed = parse_jid(group_jid)?;
         self.client
             .groups()
             .update_member_label(&parsed, label)
             .await
-            .map_err(js_err)
+            .map_err(crate::errors::BridgeError::from)
     }
 
     /// Update group participants (add, remove, promote, demote).
@@ -1138,7 +1158,7 @@ impl WasmWhatsAppClient {
         jid: &str,
         participants: Vec<String>,
         action: crate::result_types::GroupParticipantAction,
-    ) -> Result<Vec<crate::result_types::ParticipantChangeResult>, JsError> {
+    ) -> Result<Vec<crate::result_types::ParticipantChangeResult>, crate::errors::BridgeError> {
         use crate::result_types::GroupParticipantAction;
         let group_jid = parse_jid(jid)?;
 
@@ -1165,8 +1185,7 @@ impl WasmWhatsAppClient {
                     .client
                     .groups()
                     .add_participants(&group_jid, &participant_jids)
-                    .await
-                    .map_err(js_err)?;
+                    .await?;
                 Ok(to_results(result))
             }
             GroupParticipantAction::Remove => {
@@ -1174,24 +1193,21 @@ impl WasmWhatsAppClient {
                     .client
                     .groups()
                     .remove_participants(&group_jid, &participant_jids)
-                    .await
-                    .map_err(js_err)?;
+                    .await?;
                 Ok(to_results(result))
             }
             GroupParticipantAction::Promote => {
                 self.client
                     .groups()
                     .promote_participants(&group_jid, &participant_jids)
-                    .await
-                    .map_err(js_err)?;
+                    .await?;
                 Ok(Vec::new())
             }
             GroupParticipantAction::Demote => {
                 self.client
                     .groups()
                     .demote_participants(&group_jid, &participant_jids)
-                    .await
-                    .map_err(js_err)?;
+                    .await?;
                 Ok(Vec::new())
             }
         }
@@ -1199,34 +1215,30 @@ impl WasmWhatsAppClient {
 
     /// Fetch all groups the user is participating in.
     #[wasm_bindgen(js_name = groupFetchAllParticipating, skip_typescript)]
-    pub async fn group_fetch_all_participating(&self) -> Result<JsValue, JsError> {
-        let groups = self
-            .client
-            .groups()
-            .get_participating()
-            .await
-            .map_err(js_err)?;
+    pub async fn group_fetch_all_participating(
+        &self,
+    ) -> Result<JsValue, crate::errors::BridgeError> {
+        let groups = self.client.groups().get_participating().await?;
 
         let obj = js_sys::Object::new();
         for (key, metadata) in &groups {
             let result = group_metadata_to_result(metadata);
-            let js_metadata = serde_wasm_bindgen::to_value(&result).map_err(js_err)?;
-            js_sys::Reflect::set(&obj, &JsValue::from_str(key), &js_metadata)
-                .map_err(js_val_err)?;
+            let js_metadata = serde_wasm_bindgen::to_value(&result)?;
+            js_sys::Reflect::set(&obj, &JsValue::from_str(key), &js_metadata)?;
         }
         Ok(obj.into())
     }
 
     /// Get the invite link for a group.
     #[wasm_bindgen(js_name = groupInviteCode)]
-    pub async fn group_invite_code(&self, jid: &str) -> Result<String, JsError> {
+    pub async fn group_invite_code(&self, jid: &str) -> Result<String, crate::errors::BridgeError> {
         let group_jid = parse_jid(jid)?;
 
         self.client
             .groups()
             .get_invite_link(&group_jid, false)
             .await
-            .map_err(js_err)
+            .map_err(crate::errors::BridgeError::from)
     }
 
     /// Update a group setting (locked, announce, membership_approval).
@@ -1236,23 +1248,13 @@ impl WasmWhatsAppClient {
         jid: &str,
         setting: crate::result_types::GroupSetting,
         value: bool,
-    ) -> Result<(), JsError> {
+    ) -> Result<(), crate::errors::BridgeError> {
         use crate::result_types::GroupSetting;
         let group_jid = parse_jid(jid)?;
 
         match setting {
-            GroupSetting::Locked => self
-                .client
-                .groups()
-                .set_locked(&group_jid, value)
-                .await
-                .map_err(js_err)?,
-            GroupSetting::Announce => self
-                .client
-                .groups()
-                .set_announce(&group_jid, value)
-                .await
-                .map_err(js_err)?,
+            GroupSetting::Locked => self.client.groups().set_locked(&group_jid, value).await?,
+            GroupSetting::Announce => self.client.groups().set_announce(&group_jid, value).await?,
             GroupSetting::MembershipApproval => {
                 let mode = if value {
                     whatsapp_rust::MembershipApprovalMode::On
@@ -1262,8 +1264,7 @@ impl WasmWhatsAppClient {
                 self.client
                     .groups()
                     .set_membership_approval(&group_jid, mode)
-                    .await
-                    .map_err(js_err)?;
+                    .await?;
             }
         }
 
@@ -1272,25 +1273,31 @@ impl WasmWhatsAppClient {
 
     /// Set disappearing messages timer for a group (0 to disable).
     #[wasm_bindgen(js_name = groupToggleEphemeral)]
-    pub async fn group_toggle_ephemeral(&self, jid: &str, expiration: u32) -> Result<(), JsError> {
+    pub async fn group_toggle_ephemeral(
+        &self,
+        jid: &str,
+        expiration: u32,
+    ) -> Result<(), crate::errors::BridgeError> {
         let group_jid = parse_jid(jid)?;
         self.client
             .groups()
             .set_ephemeral(&group_jid, expiration)
             .await
-            .map_err(js_err)
+            .map_err(crate::errors::BridgeError::from)
     }
 
     /// Revoke a group's invite link (generates new one).
     #[wasm_bindgen(js_name = groupRevokeInvite)]
-    pub async fn group_revoke_invite(&self, jid: &str) -> Result<String, JsError> {
+    pub async fn group_revoke_invite(
+        &self,
+        jid: &str,
+    ) -> Result<String, crate::errors::BridgeError> {
         let group_jid = parse_jid(jid)?;
         let new_code = self
             .client
             .groups()
             .get_invite_link(&group_jid, true)
-            .await
-            .map_err(js_err)?;
+            .await?;
         Ok(new_code)
     }
 
@@ -1310,7 +1317,7 @@ impl WasmWhatsAppClient {
     pub async fn is_on_whatsapp(
         &self,
         phones: Vec<String>,
-    ) -> Result<Vec<crate::result_types::IsOnWhatsAppResult>, JsError> {
+    ) -> Result<Vec<crate::result_types::IsOnWhatsAppResult>, crate::errors::BridgeError> {
         let jids: Vec<Jid> = phones
             .iter()
             .map(|p| {
@@ -1323,12 +1330,7 @@ impl WasmWhatsAppClient {
             })
             .collect::<Result<Vec<_>, _>>()?;
 
-        let results = self
-            .client
-            .contacts()
-            .is_on_whatsapp(&jids)
-            .await
-            .map_err(js_err)?;
+        let results = self.client.contacts().is_on_whatsapp(&jids).await?;
 
         // Use `Jid::push_to` instead of `to_string()` — bypasses the
         // `fmt::Display` / `dyn Write` dispatch path the core ships a specialized
@@ -1361,7 +1363,7 @@ impl WasmWhatsAppClient {
         &self,
         jid: &str,
         picture_type: crate::result_types::PictureType,
-    ) -> Result<Option<crate::result_types::ProfilePictureInfo>, JsError> {
+    ) -> Result<Option<crate::result_types::ProfilePictureInfo>, crate::errors::BridgeError> {
         use crate::result_types::PictureType;
         let target = parse_jid(jid)?;
         let preview = match picture_type {
@@ -1373,8 +1375,7 @@ impl WasmWhatsAppClient {
             .client
             .contacts()
             .get_profile_picture(&target, preview)
-            .await
-            .map_err(js_err)?;
+            .await?;
 
         Ok(result.map(|pic| crate::result_types::ProfilePictureInfo {
             id: pic.id,
@@ -1386,18 +1387,16 @@ impl WasmWhatsAppClient {
 
     /// Fetch user info for one or more JIDs.
     #[wasm_bindgen(js_name = fetchUserInfo, skip_typescript)]
-    pub async fn fetch_user_info(&self, jids: Vec<String>) -> Result<JsValue, JsError> {
+    pub async fn fetch_user_info(
+        &self,
+        jids: Vec<String>,
+    ) -> Result<JsValue, crate::errors::BridgeError> {
         let parsed_jids: Vec<Jid> = jids
             .iter()
             .map(|j| parse_jid(j))
             .collect::<Result<Vec<_>, _>>()?;
 
-        let result = self
-            .client
-            .contacts()
-            .get_user_info(&parsed_jids)
-            .await
-            .map_err(js_err)?;
+        let result = self.client.contacts().get_user_info(&parsed_jids).await?;
 
         let obj = js_sys::Object::new();
         for (jid, info) in &result {
@@ -1408,9 +1407,8 @@ impl WasmWhatsAppClient {
                 picture_id: info.picture_id.clone(),
                 is_business: info.is_business,
             };
-            let js_entry = serde_wasm_bindgen::to_value(&entry).map_err(js_err)?;
-            js_sys::Reflect::set(&obj, &JsValue::from_str(&jid.to_string()), &js_entry)
-                .map_err(js_val_err)?;
+            let js_entry = serde_wasm_bindgen::to_value(&entry)?;
+            js_sys::Reflect::set(&obj, &JsValue::from_str(&jid.to_string()), &js_entry)?;
         }
         Ok(obj.into())
     }
@@ -1419,12 +1417,12 @@ impl WasmWhatsAppClient {
 
     /// Set the user's push name (display name).
     #[wasm_bindgen(js_name = setPushName)]
-    pub async fn set_push_name(&self, name: &str) -> Result<(), JsError> {
+    pub async fn set_push_name(&self, name: &str) -> Result<(), crate::errors::BridgeError> {
         self.client
             .profile()
             .set_push_name(name)
             .await
-            .map_err(js_err)
+            .map_err(crate::errors::BridgeError::from)
     }
 
     /// Set the profile picture for the logged-in user.
@@ -1432,13 +1430,8 @@ impl WasmWhatsAppClient {
     pub async fn update_profile_picture(
         &self,
         img_data: Vec<u8>,
-    ) -> Result<crate::result_types::ProfilePictureResult, JsError> {
-        let result = self
-            .client
-            .profile()
-            .set_profile_picture(img_data)
-            .await
-            .map_err(js_err)?;
+    ) -> Result<crate::result_types::ProfilePictureResult, crate::errors::BridgeError> {
+        let result = self.client.profile().set_profile_picture(img_data).await?;
 
         Ok(crate::result_types::ProfilePictureResult { id: result.id })
     }
@@ -1447,13 +1440,8 @@ impl WasmWhatsAppClient {
     #[wasm_bindgen(js_name = removeProfilePicture)]
     pub async fn remove_profile_picture(
         &self,
-    ) -> Result<crate::result_types::ProfilePictureResult, JsError> {
-        let result = self
-            .client
-            .profile()
-            .remove_profile_picture()
-            .await
-            .map_err(js_err)?;
+    ) -> Result<crate::result_types::ProfilePictureResult, crate::errors::BridgeError> {
+        let result = self.client.profile().remove_profile_picture().await?;
 
         Ok(crate::result_types::ProfilePictureResult { id: result.id })
     }
@@ -1468,11 +1456,11 @@ impl WasmWhatsAppClient {
         &self,
         group_jid: &str,
         img_data: Vec<u8>,
-    ) -> Result<crate::result_types::ProfilePictureResult, JsError> {
+    ) -> Result<crate::result_types::ProfilePictureResult, crate::errors::BridgeError> {
         use wacore_binary::JidExt;
         let target = parse_jid(group_jid)?;
         if !target.is_group() {
-            return Err(JsError::new(
+            return Err(crate::errors::internal(
                 "setGroupProfilePicture: target jid must be a group jid",
             ));
         }
@@ -1481,8 +1469,7 @@ impl WasmWhatsAppClient {
             .execute(wacore::iq::contacts::SetProfilePictureSpec::set_group(
                 &target, img_data,
             ))
-            .await
-            .map_err(js_err)?;
+            .await?;
         Ok(crate::result_types::ProfilePictureResult { id: result.id })
     }
 
@@ -1491,11 +1478,11 @@ impl WasmWhatsAppClient {
     pub async fn remove_group_profile_picture(
         &self,
         group_jid: &str,
-    ) -> Result<crate::result_types::ProfilePictureResult, JsError> {
+    ) -> Result<crate::result_types::ProfilePictureResult, crate::errors::BridgeError> {
         use wacore_binary::JidExt;
         let target = parse_jid(group_jid)?;
         if !target.is_group() {
-            return Err(JsError::new(
+            return Err(crate::errors::internal(
                 "removeGroupProfilePicture: target jid must be a group jid",
             ));
         }
@@ -1504,19 +1491,21 @@ impl WasmWhatsAppClient {
             .execute(wacore::iq::contacts::SetProfilePictureSpec::remove_group(
                 &target,
             ))
-            .await
-            .map_err(js_err)?;
+            .await?;
         Ok(crate::result_types::ProfilePictureResult { id: result.id })
     }
 
     /// Update the user's status text (about).
     #[wasm_bindgen(js_name = updateProfileStatus)]
-    pub async fn update_profile_status(&self, status: &str) -> Result<(), JsError> {
+    pub async fn update_profile_status(
+        &self,
+        status: &str,
+    ) -> Result<(), crate::errors::BridgeError> {
         self.client
             .profile()
             .set_status_text(status)
             .await
-            .map_err(js_err)
+            .map_err(crate::errors::BridgeError::from)
     }
 
     // ── Blocking ──────────────────────────────────────────────────────────
@@ -1527,23 +1516,13 @@ impl WasmWhatsAppClient {
         &self,
         jid: &str,
         action: crate::result_types::BlockAction,
-    ) -> Result<(), JsError> {
+    ) -> Result<(), crate::errors::BridgeError> {
         use crate::result_types::BlockAction;
         let target = parse_jid(jid)?;
 
         match action {
-            BlockAction::Block => self
-                .client
-                .blocking()
-                .block(&target)
-                .await
-                .map_err(js_err)?,
-            BlockAction::Unblock => self
-                .client
-                .blocking()
-                .unblock(&target)
-                .await
-                .map_err(js_err)?,
+            BlockAction::Block => self.client.blocking().block(&target).await?,
+            BlockAction::Unblock => self.client.blocking().unblock(&target).await?,
         }
         Ok(())
     }
@@ -1552,13 +1531,8 @@ impl WasmWhatsAppClient {
     #[wasm_bindgen(js_name = fetchBlocklist)]
     pub async fn fetch_blocklist(
         &self,
-    ) -> Result<Vec<crate::result_types::BlocklistEntryResult>, JsError> {
-        let entries = self
-            .client
-            .blocking()
-            .get_blocklist()
-            .await
-            .map_err(js_err)?;
+    ) -> Result<Vec<crate::result_types::BlocklistEntryResult>, crate::errors::BridgeError> {
+        let entries = self.client.blocking().get_blocklist().await?;
 
         Ok(entries
             .iter()
@@ -1573,7 +1547,7 @@ impl WasmWhatsAppClient {
 
     /// Pin or unpin a chat.
     #[wasm_bindgen(js_name = pinChat)]
-    pub async fn pin_chat(&self, jid: &str, pin: bool) -> Result<(), JsError> {
+    pub async fn pin_chat(&self, jid: &str, pin: bool) -> Result<(), crate::errors::BridgeError> {
         let chat_jid = parse_jid(jid)?;
 
         if pin {
@@ -1581,14 +1555,18 @@ impl WasmWhatsAppClient {
         } else {
             self.client.chat_actions().unpin_chat(&chat_jid).await
         }
-        .map_err(js_err)
+        .map_err(crate::errors::BridgeError::from)
     }
 
     /// Mute or unmute a chat.
     ///
     /// Pass a positive timestamp (ms) to mute until that time, or null/undefined to unmute.
     #[wasm_bindgen(js_name = muteChat)]
-    pub async fn mute_chat(&self, jid: &str, mute_until: Option<f64>) -> Result<(), JsError> {
+    pub async fn mute_chat(
+        &self,
+        jid: &str,
+        mute_until: Option<f64>,
+    ) -> Result<(), crate::errors::BridgeError> {
         let chat_jid = parse_jid(jid)?;
 
         match mute_until {
@@ -1600,12 +1578,16 @@ impl WasmWhatsAppClient {
             }
             None => self.client.chat_actions().unmute_chat(&chat_jid).await,
         }
-        .map_err(js_err)
+        .map_err(crate::errors::BridgeError::from)
     }
 
     /// Archive or unarchive a chat.
     #[wasm_bindgen(js_name = archiveChat)]
-    pub async fn archive_chat(&self, jid: &str, archive: bool) -> Result<(), JsError> {
+    pub async fn archive_chat(
+        &self,
+        jid: &str,
+        archive: bool,
+    ) -> Result<(), crate::errors::BridgeError> {
         let chat_jid = parse_jid(jid)?;
 
         if archive {
@@ -1619,7 +1601,7 @@ impl WasmWhatsAppClient {
                 .unarchive_chat(&chat_jid, None)
                 .await
         }
-        .map_err(js_err)
+        .map_err(crate::errors::BridgeError::from)
     }
 
     /// Star or unstar a message.
@@ -1629,7 +1611,7 @@ impl WasmWhatsAppClient {
         jid: &str,
         message_id: &str,
         star: bool,
-    ) -> Result<(), JsError> {
+    ) -> Result<(), crate::errors::BridgeError> {
         let chat_jid = parse_jid(jid)?;
 
         if star {
@@ -1643,30 +1625,34 @@ impl WasmWhatsAppClient {
                 .unstar_message(&chat_jid, None, message_id, true)
                 .await
         }
-        .map_err(js_err)
+        .map_err(crate::errors::BridgeError::from)
     }
 
     /// Mark a chat as read or unread via app state mutation.
     /// Different from readMessages (which sends read receipts).
     #[wasm_bindgen(js_name = markChatAsRead)]
-    pub async fn mark_chat_as_read(&self, jid: &str, read: bool) -> Result<(), JsError> {
+    pub async fn mark_chat_as_read(
+        &self,
+        jid: &str,
+        read: bool,
+    ) -> Result<(), crate::errors::BridgeError> {
         let chat_jid = parse_jid(jid)?;
         self.client
             .chat_actions()
             .mark_chat_as_read(&chat_jid, read, None)
             .await
-            .map_err(js_err)
+            .map_err(crate::errors::BridgeError::from)
     }
 
     /// Delete a chat via app state mutation.
     #[wasm_bindgen(js_name = deleteChat)]
-    pub async fn delete_chat(&self, jid: &str) -> Result<(), JsError> {
+    pub async fn delete_chat(&self, jid: &str) -> Result<(), crate::errors::BridgeError> {
         let chat_jid = parse_jid(jid)?;
         self.client
             .chat_actions()
             .delete_chat(&chat_jid, true, None)
             .await
-            .map_err(js_err)
+            .map_err(crate::errors::BridgeError::from)
     }
 
     /// Delete a message for self (not for everyone).
@@ -1676,13 +1662,13 @@ impl WasmWhatsAppClient {
         jid: &str,
         message_id: &str,
         from_me: bool,
-    ) -> Result<(), JsError> {
+    ) -> Result<(), crate::errors::BridgeError> {
         let chat_jid = parse_jid(jid)?;
         self.client
             .chat_actions()
             .delete_message_for_me(&chat_jid, None, message_id, from_me, true, None)
             .await
-            .map_err(js_err)
+            .map_err(crate::errors::BridgeError::from)
     }
 
     // ── Polls ─────────────────────────────────────────────────────────
@@ -1697,14 +1683,13 @@ impl WasmWhatsAppClient {
         name: &str,
         options: Vec<String>,
         selectable_count: u32,
-    ) -> Result<crate::result_types::CreatePollResult, JsError> {
+    ) -> Result<crate::result_types::CreatePollResult, crate::errors::BridgeError> {
         let to = parse_jid(jid)?;
         let (result, message_secret) = self
             .client
             .polls()
             .create(&to, name, &options, selectable_count)
-            .await
-            .map_err(js_err)?;
+            .await?;
         Ok(crate::result_types::CreatePollResult {
             message_id: result.message_id,
             message_secret: message_secret.to_vec(),
@@ -1720,15 +1705,14 @@ impl WasmWhatsAppClient {
         poll_creator_jid: &str,
         message_secret: &[u8],
         option_names: Vec<String>,
-    ) -> Result<String, JsError> {
+    ) -> Result<String, crate::errors::BridgeError> {
         let chat = parse_jid(chat_jid)?;
         let creator = parse_jid(poll_creator_jid)?;
         let result = self
             .client
             .polls()
             .vote(&chat, poll_msg_id, &creator, message_secret, &option_names)
-            .await
-            .map_err(js_err)?;
+            .await?;
         Ok(result.message_id)
     }
 
@@ -1739,10 +1723,10 @@ impl WasmWhatsAppClient {
         &self,
         bytes: &[u8],
         recipients: Vec<String>,
-    ) -> Result<String, JsError> {
+    ) -> Result<String, crate::errors::BridgeError> {
         use prost::Message;
         let msg = waproto::whatsapp::Message::decode(bytes)
-            .map_err(|e| JsError::new(&format!("invalid message bytes: {e}")))?;
+            .map_err(|e| crate::errors::internal(format!("invalid message bytes: {e}")))?;
         let jids: Vec<Jid> = recipients
             .iter()
             .map(|s| parse_jid(s))
@@ -1751,8 +1735,7 @@ impl WasmWhatsAppClient {
             .client
             .status()
             .send_raw(msg, &jids, Default::default())
-            .await
-            .map_err(js_err)?;
+            .await?;
         Ok(result.message_id)
     }
 
@@ -1763,7 +1746,7 @@ impl WasmWhatsAppClient {
     pub async fn read_messages(
         &self,
         keys: Vec<crate::result_types::ReadMessageKey>,
-    ) -> Result<(), JsError> {
+    ) -> Result<(), crate::errors::BridgeError> {
         use std::collections::HashMap;
         let mut grouped: HashMap<(String, Option<String>), Vec<String>> = HashMap::new();
 
@@ -1780,8 +1763,7 @@ impl WasmWhatsAppClient {
 
             self.client
                 .mark_as_read(&chat_jid, participant_jid.as_ref(), ids)
-                .await
-                .map_err(js_err)?;
+                .await?;
         }
 
         Ok(())
@@ -1791,13 +1773,11 @@ impl WasmWhatsAppClient {
 
     /// Join a group using an invite code.
     #[wasm_bindgen(js_name = groupAcceptInvite)]
-    pub async fn group_accept_invite(&self, code: &str) -> Result<String, JsError> {
-        let jid = self
-            .client
-            .groups()
-            .join_with_invite_code(code)
-            .await
-            .map_err(js_err)?;
+    pub async fn group_accept_invite(
+        &self,
+        code: &str,
+    ) -> Result<String, crate::errors::BridgeError> {
+        let jid = self.client.groups().join_with_invite_code(code).await?;
         Ok(jid.group_jid().to_string())
     }
 
@@ -1809,15 +1789,14 @@ impl WasmWhatsAppClient {
         code: &str,
         expiration: f64,
         admin_jid: &str,
-    ) -> Result<String, JsError> {
+    ) -> Result<String, crate::errors::BridgeError> {
         let group = parse_jid(group_jid)?;
         let admin = parse_jid(admin_jid)?;
         let result = self
             .client
             .groups()
             .join_with_invite_v4(&group, code, expiration as i64, &admin)
-            .await
-            .map_err(js_err)?;
+            .await?;
         Ok(result.group_jid().to_string())
     }
 
@@ -1827,13 +1806,8 @@ impl WasmWhatsAppClient {
     pub async fn group_get_invite_info(
         &self,
         code: &str,
-    ) -> Result<crate::result_types::GroupMetadataResult, JsError> {
-        let metadata = self
-            .client
-            .groups()
-            .get_invite_info(code)
-            .await
-            .map_err(js_err)?;
+    ) -> Result<crate::result_types::GroupMetadataResult, crate::errors::BridgeError> {
+        let metadata = self.client.groups().get_invite_info(code).await?;
         Ok(group_metadata_to_result(&metadata))
     }
 
@@ -1842,14 +1816,13 @@ impl WasmWhatsAppClient {
     pub async fn group_request_participants_list(
         &self,
         jid: &str,
-    ) -> Result<Vec<crate::result_types::MembershipRequestResult>, JsError> {
+    ) -> Result<Vec<crate::result_types::MembershipRequestResult>, crate::errors::BridgeError> {
         let group_jid = parse_jid(jid)?;
         let list = self
             .client
             .groups()
             .get_membership_requests(&group_jid)
-            .await
-            .map_err(js_err)?;
+            .await?;
         Ok(list
             .iter()
             .map(|r| crate::result_types::MembershipRequestResult {
@@ -1866,7 +1839,7 @@ impl WasmWhatsAppClient {
         jid: &str,
         participants: Vec<String>,
         action: crate::result_types::GroupRequestAction,
-    ) -> Result<(), JsError> {
+    ) -> Result<(), crate::errors::BridgeError> {
         use crate::result_types::GroupRequestAction;
         let group_jid = parse_jid(jid)?;
         let participant_jids: Vec<Jid> = participants
@@ -1879,15 +1852,13 @@ impl WasmWhatsAppClient {
                 self.client
                     .groups()
                     .approve_membership_requests(&group_jid, &participant_jids)
-                    .await
-                    .map_err(js_err)?;
+                    .await?;
             }
             GroupRequestAction::Reject => {
                 self.client
                     .groups()
                     .reject_membership_requests(&group_jid, &participant_jids)
-                    .await
-                    .map_err(js_err)?;
+                    .await?;
             }
         }
         Ok(())
@@ -1897,45 +1868,55 @@ impl WasmWhatsAppClient {
 
     /// Fetch all privacy settings.
     #[wasm_bindgen(js_name = fetchPrivacySettings)]
-    pub async fn fetch_privacy_settings(&self) -> Result<JsValue, JsError> {
-        let response = self.client.fetch_privacy_settings().await.map_err(js_err)?;
+    pub async fn fetch_privacy_settings(&self) -> Result<JsValue, crate::errors::BridgeError> {
+        let response = self.client.fetch_privacy_settings().await?;
         let map: std::collections::HashMap<&str, &str> = response
             .settings
             .iter()
             .map(|s| (s.category.as_str(), s.value.as_str()))
             .collect();
-        serde_wasm_bindgen::to_value(&map).map_err(js_err)
+        serde_wasm_bindgen::to_value(&map).map_err(crate::errors::BridgeError::from)
     }
 
     /// Update a single privacy setting.
     #[wasm_bindgen(js_name = updatePrivacySetting)]
-    pub async fn update_privacy_setting(&self, category: &str, value: &str) -> Result<(), JsError> {
+    pub async fn update_privacy_setting(
+        &self,
+        category: &str,
+        value: &str,
+    ) -> Result<(), crate::errors::BridgeError> {
         self.client
             .set_privacy_setting(category.into(), value.into())
-            .await
-            .map_err(js_err)?;
+            .await?;
         Ok(())
     }
 
     /// Set default disappearing messages duration (seconds). 0 to disable.
     #[wasm_bindgen(js_name = updateDefaultDisappearingMode)]
-    pub async fn update_default_disappearing_mode(&self, duration: u32) -> Result<(), JsError> {
+    pub async fn update_default_disappearing_mode(
+        &self,
+        duration: u32,
+    ) -> Result<(), crate::errors::BridgeError> {
         self.client
             .set_default_disappearing_mode(duration)
             .await
-            .map_err(js_err)
+            .map_err(crate::errors::BridgeError::from)
     }
 
     // ── Calls ────────────────────────────────────────────────────────────
 
     /// Reject an incoming call.
     #[wasm_bindgen(js_name = rejectCall)]
-    pub async fn reject_call(&self, call_id: &str, call_from: &str) -> Result<(), JsError> {
+    pub async fn reject_call(
+        &self,
+        call_id: &str,
+        call_from: &str,
+    ) -> Result<(), crate::errors::BridgeError> {
         let from_jid = parse_jid(call_from)?;
         self.client
             .reject_call(call_id, &from_jid)
             .await
-            .map_err(js_err)
+            .map_err(crate::errors::BridgeError::from)
     }
 
     // ── User status ──────────────────────────────────────────────────────
@@ -1945,17 +1926,12 @@ impl WasmWhatsAppClient {
     pub async fn fetch_status(
         &self,
         jids: Vec<String>,
-    ) -> Result<Vec<crate::result_types::FetchStatusResult>, JsError> {
+    ) -> Result<Vec<crate::result_types::FetchStatusResult>, crate::errors::BridgeError> {
         let parsed_jids: Vec<Jid> = jids
             .iter()
             .map(|s| parse_jid(s))
             .collect::<Result<_, _>>()?;
-        let infos = self
-            .client
-            .contacts()
-            .get_user_info(&parsed_jids)
-            .await
-            .map_err(js_err)?;
+        let infos = self.client.contacts().get_user_info(&parsed_jids).await?;
         Ok(infos
             .values()
             .map(|info| crate::result_types::FetchStatusResult {
@@ -1972,13 +1948,13 @@ impl WasmWhatsAppClient {
     pub async fn get_business_profile(
         &self,
         jid: &str,
-    ) -> Result<Option<crate::result_types::BusinessProfileResult>, JsError> {
+    ) -> Result<Option<crate::result_types::BusinessProfileResult>, crate::errors::BridgeError>
+    {
         let target_jid = parse_jid(jid)?;
         let profile = self
             .client
             .execute(wacore::iq::business::BusinessProfileSpec::new(&target_jid))
-            .await
-            .map_err(js_err)?;
+            .await?;
         Ok(profile.map(|p| business_profile_to_result(&p)))
     }
 
@@ -1995,7 +1971,7 @@ impl WasmWhatsAppClient {
         oldest_msg_id: &str,
         oldest_msg_from_me: bool,
         oldest_msg_timestamp_ms: f64,
-    ) -> Result<String, JsError> {
+    ) -> Result<String, crate::errors::BridgeError> {
         let chat = parse_jid(chat_jid)?;
         let msg_id = self
             .client
@@ -2006,8 +1982,7 @@ impl WasmWhatsAppClient {
                 oldest_msg_timestamp_ms as i64,
                 count,
             )
-            .await
-            .map_err(js_err)?;
+            .await?;
         Ok(msg_id)
     }
 
@@ -2019,7 +1994,7 @@ impl WasmWhatsAppClient {
         &self,
         jid: &str,
         mode: crate::result_types::MemberAddMode,
-    ) -> Result<(), JsError> {
+    ) -> Result<(), crate::errors::BridgeError> {
         use crate::result_types::MemberAddMode;
         let group_jid = parse_jid(jid)?;
         let add_mode = match mode {
@@ -2030,7 +2005,7 @@ impl WasmWhatsAppClient {
             .groups()
             .set_member_add_mode(&group_jid, add_mode)
             .await
-            .map_err(js_err)
+            .map_err(crate::errors::BridgeError::from)
     }
 
     // ── Presence ─────────────────────────────────────────────────────────
@@ -2040,7 +2015,7 @@ impl WasmWhatsAppClient {
     pub async fn send_presence(
         &self,
         status: crate::result_types::PresenceStatus,
-    ) -> Result<(), JsError> {
+    ) -> Result<(), crate::errors::BridgeError> {
         use crate::result_types::PresenceStatus;
         let presence_status = match status {
             PresenceStatus::Available => whatsapp_rust::features::PresenceStatus::Available,
@@ -2051,19 +2026,19 @@ impl WasmWhatsAppClient {
             .presence()
             .set(presence_status)
             .await
-            .map_err(js_err)
+            .map_err(crate::errors::BridgeError::from)
     }
 
     /// Subscribe to a contact's presence updates.
     #[wasm_bindgen(js_name = presenceSubscribe)]
-    pub async fn presence_subscribe(&self, jid: &str) -> Result<(), JsError> {
+    pub async fn presence_subscribe(&self, jid: &str) -> Result<(), crate::errors::BridgeError> {
         let target = parse_jid(jid)?;
 
         self.client
             .presence()
             .subscribe(&target)
             .await
-            .map_err(js_err)
+            .map_err(crate::errors::BridgeError::from)
     }
 
     // ── Newsletter ────────────────────────────────────────────────────────
@@ -2074,13 +2049,12 @@ impl WasmWhatsAppClient {
         &self,
         name: &str,
         description: Option<String>,
-    ) -> Result<crate::result_types::NewsletterMetadataResult, JsError> {
+    ) -> Result<crate::result_types::NewsletterMetadataResult, crate::errors::BridgeError> {
         let result = self
             .client
             .newsletter()
             .create(name, description.as_deref())
-            .await
-            .map_err(js_err)?;
+            .await?;
 
         Ok(newsletter_metadata_to_result(&result))
     }
@@ -2090,15 +2064,10 @@ impl WasmWhatsAppClient {
     pub async fn newsletter_metadata(
         &self,
         jid: &str,
-    ) -> Result<crate::result_types::NewsletterMetadataResult, JsError> {
+    ) -> Result<crate::result_types::NewsletterMetadataResult, crate::errors::BridgeError> {
         let target = parse_jid(jid)?;
 
-        let result = self
-            .client
-            .newsletter()
-            .get_metadata(&target)
-            .await
-            .map_err(js_err)?;
+        let result = self.client.newsletter().get_metadata(&target).await?;
 
         Ok(newsletter_metadata_to_result(&result))
     }
@@ -2108,29 +2077,27 @@ impl WasmWhatsAppClient {
     pub async fn newsletter_subscribe(
         &self,
         jid: &str,
-    ) -> Result<crate::result_types::NewsletterMetadataResult, JsError> {
+    ) -> Result<crate::result_types::NewsletterMetadataResult, crate::errors::BridgeError> {
         let target = parse_jid(jid)?;
 
-        let result = self
-            .client
-            .newsletter()
-            .join(&target)
-            .await
-            .map_err(js_err)?;
+        let result = self.client.newsletter().join(&target).await?;
 
         Ok(newsletter_metadata_to_result(&result))
     }
 
     /// Unsubscribe (leave) a newsletter.
     #[wasm_bindgen(js_name = newsletterUnsubscribe)]
-    pub async fn newsletter_unsubscribe(&self, jid: &str) -> Result<(), JsError> {
+    pub async fn newsletter_unsubscribe(
+        &self,
+        jid: &str,
+    ) -> Result<(), crate::errors::BridgeError> {
         let target = parse_jid(jid)?;
 
         self.client
             .newsletter()
             .leave(&target)
             .await
-            .map_err(js_err)
+            .map_err(crate::errors::BridgeError::from)
     }
 
     /// Send a reaction to a newsletter message.
@@ -2144,16 +2111,16 @@ impl WasmWhatsAppClient {
         jid: &str,
         server_id: &str,
         reaction: Option<String>,
-    ) -> Result<(), JsError> {
+    ) -> Result<(), crate::errors::BridgeError> {
         let target = parse_jid(jid)?;
         let sid: u64 = server_id
             .parse()
-            .map_err(|e| JsError::new(&format!("invalid server_id: {e}")))?;
+            .map_err(|e| crate::errors::internal(format!("invalid server_id: {e}")))?;
         self.client
             .newsletter()
             .send_reaction(&target, sid, reaction.as_deref().unwrap_or(""))
             .await
-            .map_err(js_err)
+            .map_err(crate::errors::BridgeError::from)
     }
 
     // ── Media reupload ────────────────────────────────────────────────────
@@ -2170,7 +2137,7 @@ impl WasmWhatsAppClient {
         media_key: &[u8],
         is_from_me: bool,
         participant: Option<String>,
-    ) -> Result<String, JsError> {
+    ) -> Result<String, crate::errors::BridgeError> {
         let chat = parse_jid(chat_jid)?;
 
         let participant_jid = participant.as_deref().map(parse_jid).transpose()?;
@@ -2183,23 +2150,18 @@ impl WasmWhatsAppClient {
             participant: participant_jid.as_ref(),
         };
 
-        let result = self
-            .client
-            .media_reupload()
-            .request(&req)
-            .await
-            .map_err(js_err)?;
+        let result = self.client.media_reupload().request(&req).await?;
 
         match result {
             whatsapp_rust::MediaRetryResult::Success { direct_path } => Ok(direct_path),
             whatsapp_rust::MediaRetryResult::NotFound => {
-                Err(JsError::new("Media not found on server"))
+                Err(crate::errors::internal("Media not found on server"))
             }
             whatsapp_rust::MediaRetryResult::DecryptionError => {
-                Err(JsError::new("Media decryption error"))
+                Err(crate::errors::internal("Media decryption error"))
             }
             whatsapp_rust::MediaRetryResult::GeneralError => {
-                Err(JsError::new("Media reupload failed"))
+                Err(crate::errors::internal("Media reupload failed"))
             }
         }
     }
@@ -2212,7 +2174,7 @@ impl WasmWhatsAppClient {
         &self,
         jid: &str,
         state: crate::result_types::ChatState,
-    ) -> Result<(), JsError> {
+    ) -> Result<(), crate::errors::BridgeError> {
         use crate::result_types::ChatState;
         let to = parse_jid(jid)?;
 
@@ -2226,7 +2188,7 @@ impl WasmWhatsAppClient {
             .chatstate()
             .send(&to, chat_state)
             .await
-            .map_err(js_err)
+            .map_err(crate::errors::BridgeError::from)
     }
 
     // ── Media ────────────────────────────────────────────────────────────
@@ -2238,12 +2200,8 @@ impl WasmWhatsAppClient {
     pub async fn get_media_conn(
         &self,
         force: bool,
-    ) -> Result<crate::result_types::MediaConnResult, JsError> {
-        let conn = self
-            .client
-            .refresh_media_conn(force)
-            .await
-            .map_err(js_err)?;
+    ) -> Result<crate::result_types::MediaConnResult, crate::errors::BridgeError> {
+        let conn = self.client.refresh_media_conn(force).await?;
 
         Ok(crate::result_types::MediaConnResult {
             auth: conn.auth.clone(),
@@ -2271,7 +2229,7 @@ impl WasmWhatsAppClient {
         file_enc_sha256: &[u8],
         file_length: f64,
         media_type: crate::result_types::MediaType,
-    ) -> Result<js_sys::Uint8Array, JsError> {
+    ) -> Result<js_sys::Uint8Array, crate::errors::BridgeError> {
         let mt: wacore::download::MediaType = media_type.into();
         let data = self
             .client
@@ -2283,8 +2241,7 @@ impl WasmWhatsAppClient {
                 file_length as u64,
                 mt,
             )
-            .await
-            .map_err(js_err)?;
+            .await?;
         Ok(js_sys::Uint8Array::from(&data[..]))
     }
 
@@ -2301,7 +2258,7 @@ impl WasmWhatsAppClient {
         file_enc_sha256: &[u8],
         file_length: f64,
         media_type: crate::result_types::MediaType,
-    ) -> Result<web_sys::ReadableStream, JsError> {
+    ) -> Result<web_sys::ReadableStream, crate::errors::BridgeError> {
         let mt: wacore::download::MediaType = media_type.into();
         let client = self.client.clone();
         let direct_path = direct_path.to_string();
@@ -2359,13 +2316,12 @@ impl WasmWhatsAppClient {
         &self,
         data: &[u8],
         media_type: crate::result_types::MediaType,
-    ) -> Result<crate::result_types::UploadMediaResult, JsError> {
+    ) -> Result<crate::result_types::UploadMediaResult, crate::errors::BridgeError> {
         let mt: wacore::download::MediaType = media_type.into();
         let resp = self
             .client
             .upload(data.to_vec(), mt, Default::default())
-            .await
-            .map_err(js_err)?;
+            .await?;
         Ok(crate::result_types::UploadMediaResult {
             url: resp.url,
             direct_path: resp.direct_path,
@@ -2386,7 +2342,7 @@ impl WasmWhatsAppClient {
         input: web_sys::ReadableStream,
         output: web_sys::WritableStream,
         media_type: crate::result_types::MediaType,
-    ) -> Result<crate::result_types::EncryptMediaResult, JsError> {
+    ) -> Result<crate::result_types::EncryptMediaResult, crate::errors::BridgeError> {
         use futures::SinkExt;
         use futures::StreamExt;
         use wacore::upload::MediaEncryptor;
@@ -2400,12 +2356,13 @@ impl WasmWhatsAppClient {
 
         const FLUSH_THRESHOLD: usize = 65536;
 
-        let mut enc = MediaEncryptor::new(mt).map_err(js_err)?;
+        let mut enc = MediaEncryptor::new(mt)?;
         let mut out_buf = Vec::with_capacity(FLUSH_THRESHOLD + 16);
         let mut copy_buf = vec![0u8; FLUSH_THRESHOLD];
 
         while let Some(chunk_result) = reader.next().await {
-            let chunk = chunk_result.map_err(|e| JsError::new(&format!("read error: {e:?}")))?;
+            let chunk =
+                chunk_result.map_err(|e| crate::errors::internal(format!("read error: {e:?}")))?;
             let arr = js_sys::Uint8Array::new(&chunk);
             let len = arr.length() as usize;
             if len == 0 {
@@ -2424,24 +2381,24 @@ impl WasmWhatsAppClient {
                 writer
                     .send(js_chunk.into())
                     .await
-                    .map_err(|e| JsError::new(&format!("write error: {e:?}")))?;
+                    .map_err(|e| crate::errors::internal(format!("write error: {e:?}")))?;
                 out_buf.clear();
             }
         }
 
-        let info = enc.finalize(&mut out_buf).map_err(js_err)?;
+        let info = enc.finalize(&mut out_buf)?;
 
         if !out_buf.is_empty() {
             let js_chunk = js_sys::Uint8Array::from(out_buf.as_slice());
             writer
                 .send(js_chunk.into())
                 .await
-                .map_err(|e| JsError::new(&format!("write error: {e:?}")))?;
+                .map_err(|e| crate::errors::internal(format!("write error: {e:?}")))?;
         }
         writer
             .close()
             .await
-            .map_err(|e| JsError::new(&format!("close error: {e:?}")))?;
+            .map_err(|e| crate::errors::internal(format!("close error: {e:?}")))?;
 
         Ok(crate::result_types::EncryptMediaResult {
             media_key: info.media_key.to_vec(),
@@ -2465,7 +2422,7 @@ impl WasmWhatsAppClient {
         file_enc_sha256: &[u8],
         file_length: f64,
         media_type: crate::result_types::MediaType,
-    ) -> Result<crate::result_types::UploadMediaResult, JsError> {
+    ) -> Result<crate::result_types::UploadMediaResult, crate::errors::BridgeError> {
         let mt: wacore::download::MediaType = media_type.into();
         let file_length = file_length as u64;
         let token = base64_url_encode(file_enc_sha256);
@@ -2474,11 +2431,7 @@ impl WasmWhatsAppClient {
         let mut force_refresh = false;
 
         for attempt in 0..=1u32 {
-            let media_conn = self
-                .client
-                .refresh_media_conn(force_refresh)
-                .await
-                .map_err(js_err)?;
+            let media_conn = self.client.refresh_media_conn(force_refresh).await?;
 
             let mut retry_auth = false;
 
@@ -2503,9 +2456,9 @@ impl WasmWhatsAppClient {
                         return Ok(crate::result_types::UploadMediaResult {
                             url: url.to_string(),
                             direct_path: dp.to_string(),
-                            media_key: media_key.try_into().map_err(js_err)?,
-                            file_sha256: file_sha256.try_into().map_err(js_err)?,
-                            file_enc_sha256: file_enc_sha256.try_into().map_err(js_err)?,
+                            media_key: media_key.try_into()?,
+                            file_sha256: file_sha256.try_into()?,
+                            file_enc_sha256: file_enc_sha256.try_into()?,
                             file_length: file_length as f64,
                         });
                     }
@@ -2519,29 +2472,35 @@ impl WasmWhatsAppClient {
                 // Get fresh ReadableStream from factory
                 let body_stream = get_body
                     .call0(&JsValue::NULL)
-                    .map_err(|e| JsError::new(&format!("getBody() failed: {e:?}")))?;
+                    .map_err(|e| crate::errors::internal(format!("getBody() failed: {e:?}")))?;
 
                 // Try streaming upload via JS HTTP client
                 let result = stream_upload_via_js(&self.client, &upload_url, body_stream).await;
 
                 match result {
                     Ok(resp) if resp.status_code < 400 => {
-                        let parsed: serde_json::Value =
-                            serde_json::from_slice(&resp.body).map_err(js_err)?;
+                        let parsed: serde_json::Value = serde_json::from_slice(&resp.body)
+                            .map_err(|e| {
+                                crate::errors::protocol_violation(format!(
+                                    "CDN upload response not JSON: {e}"
+                                ))
+                            })?;
                         let url = parsed
                             .get("url")
                             .and_then(|v| v.as_str())
-                            .ok_or_else(|| JsError::new("missing url in response"))?;
+                            .ok_or_else(|| crate::errors::internal("missing url in response"))?;
                         let dp = parsed
                             .get("direct_path")
                             .and_then(|v| v.as_str())
-                            .ok_or_else(|| JsError::new("missing direct_path in response"))?;
+                            .ok_or_else(|| {
+                                crate::errors::internal("missing direct_path in response")
+                            })?;
                         return Ok(crate::result_types::UploadMediaResult {
                             url: url.to_string(),
                             direct_path: dp.to_string(),
-                            media_key: media_key.try_into().map_err(js_err)?,
-                            file_sha256: file_sha256.try_into().map_err(js_err)?,
-                            file_enc_sha256: file_enc_sha256.try_into().map_err(js_err)?,
+                            media_key: media_key.try_into()?,
+                            file_sha256: file_sha256.try_into()?,
+                            file_enc_sha256: file_enc_sha256.try_into()?,
                             file_length: file_length as f64,
                         });
                     }
@@ -2568,7 +2527,7 @@ impl WasmWhatsAppClient {
             }
         }
 
-        Err(JsError::new("Upload failed on all hosts"))
+        Err(crate::errors::internal("Upload failed on all hosts"))
     }
 
     // ── State getters ────────────────────────────────────────────────────
@@ -2605,11 +2564,11 @@ impl WasmWhatsAppClient {
     /// Get the ADV signed device identity (account), if available.
     /// Used by upstream Baileys consumers that access `authState.creds.account`.
     #[wasm_bindgen(js_name = getAccount)]
-    pub async fn get_account(&self) -> Result<JsValue, JsError> {
+    pub async fn get_account(&self) -> Result<JsValue, crate::errors::BridgeError> {
         let snapshot = self.persistence_manager.get_device_snapshot().await;
         match &snapshot.account {
             Some(account) => crate::camel_serializer::to_js_value_camel(account)
-                .map_err(|e| JsError::new(&format!("account serialization: {e:?}"))),
+                .map_err(|e| crate::errors::internal(format!("account serialization: {e:?}"))),
             None => Ok(JsValue::UNDEFINED),
         }
     }
@@ -2655,24 +2614,27 @@ impl WasmWhatsAppClient {
     /// Send a raw binary node stanza to WhatsApp servers.
     /// Accepts a JS object matching `{ tag: string, attrs: Record<string, string>, content?: ... }`.
     #[wasm_bindgen(js_name = sendNode)]
-    pub async fn send_node(&self, node_js: JsValue) -> Result<(), JsError> {
+    pub async fn send_node(&self, node_js: JsValue) -> Result<(), crate::errors::BridgeError> {
         let node = js_to_node(&node_js)?;
-        self.client.send_node(node).await.map_err(js_err)
+        self.client
+            .send_node(node)
+            .await
+            .map_err(crate::errors::BridgeError::from)
     }
 
     /// Ensure E2E Signal sessions exist for the given JIDs.
     /// Returns true after sessions are established.
     #[wasm_bindgen(js_name = assertSessions)]
-    pub async fn assert_sessions(&self, jids: Vec<String>, _force: bool) -> Result<bool, JsError> {
+    pub async fn assert_sessions(
+        &self,
+        jids: Vec<String>,
+        _force: bool,
+    ) -> Result<bool, crate::errors::BridgeError> {
         let parsed: Vec<wacore_binary::jid::Jid> = jids
             .iter()
             .map(|j| parse_jid(j))
             .collect::<Result<_, _>>()?;
-        self.client
-            .signal()
-            .assert_sessions(&parsed)
-            .await
-            .map_err(js_err)?;
+        self.client.signal().assert_sessions(&parsed).await?;
         Ok(true)
     }
 
@@ -2684,29 +2646,24 @@ impl WasmWhatsAppClient {
         jids: Vec<String>,
         _use_cache: bool,
         _ignore_zero_devices: bool,
-    ) -> Result<JsValue, JsError> {
+    ) -> Result<JsValue, crate::errors::BridgeError> {
         let parsed: Vec<wacore_binary::jid::Jid> = jids
             .iter()
             .map(|j| parse_jid(j))
             .collect::<Result<_, _>>()?;
-        let devices = self
-            .client
-            .signal()
-            .get_user_devices(&parsed)
-            .await
-            .map_err(js_err)?;
+        let devices = self.client.signal().get_user_devices(&parsed).await?;
         // Return as JidWithDevice[] = { user: string, device?: number, jid: string }
         let arr = js_sys::Array::new_with_length(devices.len() as u32);
         for (i, jid) in devices.iter().enumerate() {
             let obj = js_sys::Object::new();
             js_sys::Reflect::set(&obj, &"user".into(), &jid.user.as_str().into())
-                .map_err(|e| JsError::new(&format!("{e:?}")))?;
+                .map_err(|e| crate::errors::internal(format!("{e:?}")))?;
             if jid.device != 0 {
                 js_sys::Reflect::set(&obj, &"device".into(), &(jid.device as f64).into())
-                    .map_err(|e| JsError::new(&format!("{e:?}")))?;
+                    .map_err(|e| crate::errors::internal(format!("{e:?}")))?;
             }
             js_sys::Reflect::set(&obj, &"jid".into(), &jid.to_string().into())
-                .map_err(|e| JsError::new(&format!("{e:?}")))?;
+                .map_err(|e| crate::errors::internal(format!("{e:?}")))?;
             arr.set(i as u32, obj.into());
         }
         Ok(arr.into())
@@ -2717,23 +2674,22 @@ impl WasmWhatsAppClient {
     /// Encrypt plaintext for a single recipient.
     /// Returns `{ type: "msg"|"pkmsg", ciphertext: Uint8Array }`.
     #[wasm_bindgen(js_name = signalEncryptMessage)]
-    pub async fn signal_encrypt_message(&self, jid: &str, data: &[u8]) -> Result<JsValue, JsError> {
+    pub async fn signal_encrypt_message(
+        &self,
+        jid: &str,
+        data: &[u8],
+    ) -> Result<JsValue, crate::errors::BridgeError> {
         let parsed = parse_jid(jid)?;
-        let (msg_type, ciphertext) = self
-            .client
-            .signal()
-            .encrypt_message(&parsed, data)
-            .await
-            .map_err(js_err)?;
+        let (msg_type, ciphertext) = self.client.signal().encrypt_message(&parsed, data).await?;
         let obj = js_sys::Object::new();
         js_sys::Reflect::set(&obj, &"type".into(), &msg_type.as_wire_str().into())
-            .map_err(|e| JsError::new(&format!("{e:?}")))?;
+            .map_err(|e| crate::errors::internal(format!("{e:?}")))?;
         js_sys::Reflect::set(
             &obj,
             &"ciphertext".into(),
             &js_sys::Uint8Array::from(ciphertext.as_slice()).into(),
         )
-        .map_err(|e| JsError::new(&format!("{e:?}")))?;
+        .map_err(|e| crate::errors::internal(format!("{e:?}")))?;
         Ok(obj.into())
     }
 
@@ -2744,16 +2700,15 @@ impl WasmWhatsAppClient {
         jid: &str,
         msg_type: &str,
         ciphertext: &[u8],
-    ) -> Result<js_sys::Uint8Array, JsError> {
+    ) -> Result<js_sys::Uint8Array, crate::errors::BridgeError> {
         let parsed = parse_jid(jid)?;
         let enc_type = wacore::message_processing::EncType::from_wire(msg_type)
-            .ok_or_else(|| JsError::new(&format!("invalid msg_type: {msg_type}")))?;
+            .ok_or_else(|| crate::errors::internal(format!("invalid msg_type: {msg_type}")))?;
         let plaintext = self
             .client
             .signal()
             .decrypt_message(&parsed, enc_type, ciphertext)
-            .await
-            .map_err(js_err)?;
+            .await?;
         Ok(js_sys::Uint8Array::from(plaintext.as_slice()))
     }
 
@@ -2765,27 +2720,26 @@ impl WasmWhatsAppClient {
         group_jid: &str,
         data: &[u8],
         _me_id: &str,
-    ) -> Result<JsValue, JsError> {
+    ) -> Result<JsValue, crate::errors::BridgeError> {
         let parsed = parse_jid(group_jid)?;
         let (skdm, ciphertext) = self
             .client
             .signal()
             .encrypt_group_message(&parsed, data)
-            .await
-            .map_err(js_err)?;
+            .await?;
         let obj = js_sys::Object::new();
         let skdm_js = match &skdm {
             Some(bytes) => js_sys::Uint8Array::from(bytes.as_slice()).into(),
             None => JsValue::UNDEFINED,
         };
         js_sys::Reflect::set(&obj, &"senderKeyDistributionMessage".into(), &skdm_js)
-            .map_err(|e| JsError::new(&format!("{e:?}")))?;
+            .map_err(|e| crate::errors::internal(format!("{e:?}")))?;
         js_sys::Reflect::set(
             &obj,
             &"ciphertext".into(),
             &js_sys::Uint8Array::from(ciphertext.as_slice()).into(),
         )
-        .map_err(|e| JsError::new(&format!("{e:?}")))?;
+        .map_err(|e| crate::errors::internal(format!("{e:?}")))?;
         Ok(obj.into())
     }
 
@@ -2796,32 +2750,37 @@ impl WasmWhatsAppClient {
         group_jid: &str,
         author_jid: &str,
         msg: &[u8],
-    ) -> Result<js_sys::Uint8Array, JsError> {
+    ) -> Result<js_sys::Uint8Array, crate::errors::BridgeError> {
         let group = parse_jid(group_jid)?;
         let sender = parse_jid(author_jid)?;
         let plaintext = self
             .client
             .signal()
             .decrypt_group_message(&group, &sender, msg)
-            .await
-            .map_err(js_err)?;
+            .await?;
         Ok(js_sys::Uint8Array::from(plaintext.as_slice()))
     }
 
     /// Check whether a Signal session exists for the given JID.
     #[wasm_bindgen(js_name = signalValidateSession)]
-    pub async fn signal_validate_session(&self, jid: &str) -> Result<bool, JsError> {
+    pub async fn signal_validate_session(
+        &self,
+        jid: &str,
+    ) -> Result<bool, crate::errors::BridgeError> {
         let parsed = parse_jid(jid)?;
         self.client
             .signal()
             .validate_session(&parsed)
             .await
-            .map_err(js_err)
+            .map_err(crate::errors::BridgeError::from)
     }
 
     /// Delete Signal sessions for the given JIDs.
     #[wasm_bindgen(js_name = signalDeleteSessions)]
-    pub async fn signal_delete_sessions(&self, jids: Vec<String>) -> Result<(), JsError> {
+    pub async fn signal_delete_sessions(
+        &self,
+        jids: Vec<String>,
+    ) -> Result<(), crate::errors::BridgeError> {
         let parsed: Vec<wacore_binary::jid::Jid> = jids
             .iter()
             .map(|j| parse_jid(j))
@@ -2830,7 +2789,7 @@ impl WasmWhatsAppClient {
             .signal()
             .delete_sessions(&parsed)
             .await
-            .map_err(js_err)
+            .map_err(crate::errors::BridgeError::from)
     }
 
     /// Look up the LID JID corresponding to a given phone number JID.
@@ -2843,7 +2802,10 @@ impl WasmWhatsAppClient {
     /// `JsStoreCallbacks` backend without a list primitive still resolves
     /// every persisted mapping without an extra usync round trip.
     #[wasm_bindgen(js_name = lidForPn)]
-    pub async fn lid_for_pn(&self, jid: &str) -> Result<Option<String>, JsError> {
+    pub async fn lid_for_pn(
+        &self,
+        jid: &str,
+    ) -> Result<Option<String>, crate::errors::BridgeError> {
         let parsed = if jid.contains('@') {
             parse_jid(jid)?
         } else {
@@ -2852,8 +2814,7 @@ impl WasmWhatsAppClient {
         Ok(self
             .client
             .get_lid_pn_entry(&parsed)
-            .await
-            .map_err(js_err)?
+            .await?
             .map(|e| format!("{}@lid", e.lid)))
     }
 
@@ -2864,7 +2825,10 @@ impl WasmWhatsAppClient {
     /// `null` when no mapping is known. Same cache-aside semantics as
     /// `lidForPn` — see that doc.
     #[wasm_bindgen(js_name = pnForLid)]
-    pub async fn pn_for_lid(&self, jid: &str) -> Result<Option<String>, JsError> {
+    pub async fn pn_for_lid(
+        &self,
+        jid: &str,
+    ) -> Result<Option<String>, crate::errors::BridgeError> {
         let parsed = if jid.contains('@') {
             parse_jid(jid)?
         } else {
@@ -2873,14 +2837,16 @@ impl WasmWhatsAppClient {
         Ok(self
             .client
             .get_lid_pn_entry(&parsed)
-            .await
-            .map_err(js_err)?
+            .await?
             .map(|e| format!("{}@s.whatsapp.net", e.phone_number)))
     }
 
     /// Convert a JID string to its Signal protocol address representation.
     #[wasm_bindgen(js_name = jidToSignalProtocolAddress)]
-    pub fn jid_to_signal_protocol_address(&self, jid: &str) -> Result<String, JsError> {
+    pub fn jid_to_signal_protocol_address(
+        &self,
+        jid: &str,
+    ) -> Result<String, crate::errors::BridgeError> {
         use wacore::types::jid::JidExt;
         let parsed = parse_jid(jid)?;
         Ok(parsed.to_protocol_address_string())
@@ -2897,7 +2863,7 @@ impl WasmWhatsAppClient {
         jids: Vec<String>,
         bytes: &[u8],
         _extra_attrs: JsValue,
-    ) -> Result<JsValue, JsError> {
+    ) -> Result<JsValue, crate::errors::BridgeError> {
         use prost::Message;
         let recipient_jids: Vec<wacore_binary::jid::Jid> = jids
             .iter()
@@ -2905,26 +2871,25 @@ impl WasmWhatsAppClient {
             .collect::<Result<_, _>>()?;
 
         let msg = waproto::whatsapp::Message::decode(bytes)
-            .map_err(|e| JsError::new(&format!("invalid message bytes: {e}")))?;
+            .map_err(|e| crate::errors::internal(format!("invalid message bytes: {e}")))?;
 
         let (nodes, should_include_device_identity) = self
             .client
             .signal()
             .create_participant_nodes(&recipient_jids, &msg)
-            .await
-            .map_err(js_err)?;
+            .await?;
 
         let obj = js_sys::Object::new();
         let nodes_js = nodes_to_js_array(&nodes)
-            .map_err(|e| JsError::new(&format!("node serialization failed: {e:?}")))?;
+            .map_err(|e| crate::errors::internal(format!("node serialization failed: {e:?}")))?;
         js_sys::Reflect::set(&obj, &"nodes".into(), &nodes_js)
-            .map_err(|e| JsError::new(&format!("{e:?}")))?;
+            .map_err(|e| crate::errors::internal(format!("{e:?}")))?;
         js_sys::Reflect::set(
             &obj,
             &"shouldIncludeDeviceIdentity".into(),
             &should_include_device_identity.into(),
         )
-        .map_err(|e| JsError::new(&format!("{e:?}")))?;
+        .map_err(|e| crate::errors::internal(format!("{e:?}")))?;
         Ok(obj.into())
     }
 
@@ -2932,11 +2897,11 @@ impl WasmWhatsAppClient {
 
     /// Send pre-marshaled bytes through the noise socket.
     #[wasm_bindgen(js_name = sendRawMessage)]
-    pub async fn send_raw_message(&self, data: &[u8]) -> Result<(), JsError> {
+    pub async fn send_raw_message(&self, data: &[u8]) -> Result<(), crate::errors::BridgeError> {
         self.client
             .send_raw_bytes(data.to_vec())
             .await
-            .map_err(js_err)
+            .map_err(crate::errors::BridgeError::from)
     }
 }
 
@@ -3006,7 +2971,7 @@ pub fn decrypt_poll_vote(
     poll_creator_jid: &str,
     voter_jid: &str,
     option_names: Vec<String>,
-) -> Result<Vec<String>, JsError> {
+) -> Result<Vec<String>, crate::errors::BridgeError> {
     let creator = parse_jid(poll_creator_jid)?;
     let voter = parse_jid(voter_jid)?;
 
@@ -3017,8 +2982,7 @@ pub fn decrypt_poll_vote(
         poll_msg_id,
         &creator,
         &voter,
-    )
-    .map_err(js_err)?;
+    )?;
 
     // Map hashes back to option names
     let option_map: Vec<([u8; 32], &str)> = option_names
@@ -3045,16 +3009,16 @@ pub fn get_aggregate_votes_in_poll_message(
     message_secret: &[u8],
     poll_msg_id: &str,
     poll_creator_jid: &str,
-) -> Result<Vec<crate::result_types::PollAggregateResult>, JsError> {
+) -> Result<Vec<crate::result_types::PollAggregateResult>, crate::errors::BridgeError> {
     let creator = parse_jid(poll_creator_jid)?;
 
     let vote_data: Vec<(Jid, Vec<u8>, Vec<u8>)> = voters
         .into_iter()
         .map(|v| {
-            let jid: Jid = v.voter.parse().map_err(js_err)?;
+            let jid: Jid = v.voter.parse()?;
             Ok((jid, v.enc_payload, v.enc_iv))
         })
-        .collect::<Result<_, JsError>>()?;
+        .collect::<Result<_, crate::errors::BridgeError>>()?;
 
     let votes_refs: Vec<(&Jid, &[u8], &[u8])> = vote_data
         .iter()
@@ -3067,8 +3031,7 @@ pub fn get_aggregate_votes_in_poll_message(
         message_secret,
         poll_msg_id,
         &creator,
-    )
-    .map_err(js_err)?;
+    )?;
 
     Ok(results
         .into_iter()
@@ -3077,11 +3040,6 @@ pub fn get_aggregate_votes_in_poll_message(
             voters: r.voters,
         })
         .collect())
-}
-
-/// Convert any error to a proper JS Error object.
-fn js_err(e: impl std::fmt::Display) -> JsError {
-    JsError::new(&e.to_string())
 }
 
 /// Intern a runtime `String` into a `&'static str`, deduplicating across
@@ -3104,8 +3062,8 @@ fn intern_static(s: String) -> &'static str {
 }
 
 /// Parse a JID string, returning a JS error on failure.
-fn parse_jid(jid: &str) -> Result<Jid, JsError> {
-    jid.parse().map_err(js_err)
+fn parse_jid(jid: &str) -> Result<Jid, crate::errors::BridgeError> {
+    jid.parse().map_err(crate::errors::BridgeError::from)
 }
 
 // ---------------------------------------------------------------------------
@@ -3190,14 +3148,14 @@ fn node_ref_to_js(node: &wacore_binary::node::NodeRef<'_>) -> Result<JsValue, Js
 }
 
 /// Convert a JS `BinaryNode` object → wacore `Node`.
-fn js_to_node(val: &JsValue) -> Result<wacore_binary::node::Node, JsError> {
+fn js_to_node(val: &JsValue) -> Result<wacore_binary::node::Node, crate::errors::BridgeError> {
     use std::borrow::Cow;
     use wacore_binary::node::{Attrs, Node, NodeContent, NodeValue};
 
     let tag: String = js_sys::Reflect::get(val, &"tag".into())
-        .map_err(|e| JsError::new(&format!("missing tag: {e:?}")))?
+        .map_err(|e| crate::errors::internal(format!("missing tag: {e:?}")))?
         .as_string()
-        .ok_or_else(|| JsError::new("tag must be a string"))?;
+        .ok_or_else(|| crate::errors::internal("tag must be a string"))?;
 
     // Parse attrs: Record<string, string> → Vec<(Cow, NodeValue)>
     let attrs_val = js_sys::Reflect::get(val, &"attrs".into()).unwrap_or(JsValue::UNDEFINED);
@@ -3272,7 +3230,7 @@ async fn stream_upload_via_js(
     client: &whatsapp_rust::Client,
     url: &str,
     body_stream: JsValue,
-) -> Result<wacore::net::HttpResponse, JsValue> {
+) -> Result<wacore::net::HttpResponse, crate::errors::BridgeError> {
     use futures::StreamExt;
 
     let rs = wasm_streams::ReadableStream::from_raw(body_stream.unchecked_into());
@@ -3280,7 +3238,7 @@ async fn stream_upload_via_js(
 
     let mut body_bytes = Vec::new();
     while let Some(chunk) = stream.next().await {
-        let chunk = chunk.map_err(|e| JsValue::from_str(&format!("stream read error: {e:?}")))?;
+        let chunk = chunk?;
         let arr = js_sys::Uint8Array::new(&chunk);
         let start = body_bytes.len();
         body_bytes.resize(start + arr.length() as usize, 0);
@@ -3296,17 +3254,17 @@ async fn stream_upload_via_js(
         .http_client
         .execute(request)
         .await
-        .map_err(|e| JsValue::from(js_err(e)))
+        .map_err(Into::into)
 }
 
 fn parse_jid_and_msg_bytes(
     jid: &str,
     bytes: &[u8],
-) -> Result<(Jid, waproto::whatsapp::Message), JsError> {
+) -> Result<(Jid, waproto::whatsapp::Message), crate::errors::BridgeError> {
     use prost::Message;
     let to = parse_jid(jid)?;
     let msg = waproto::whatsapp::Message::decode(bytes)
-        .map_err(|e| JsError::new(&format!("invalid message bytes: {e}")))?;
+        .map_err(|e| crate::errors::internal(format!("invalid message bytes: {e}")))?;
     Ok((to, msg))
 }
 

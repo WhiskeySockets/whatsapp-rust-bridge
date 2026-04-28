@@ -82,9 +82,25 @@ export interface BusinessSubscription {
 /** Type of business status update. */
 export type BusinessUpdateType = "removed_as_business" | "verified_name_changed" | "profile_updated" | "products_updated" | "collections_updated" | "subscriptions_updated" | "unknown";
 
+/** Minimal cached form of a Noise certificate. Mirrors the JSON shape WA Web persists in `waNoiseInfo.certificateChainBuffer` (only `key` plus the validity window — signatures and issuer_serial are intentionally dropped). */
+export interface CachedNoiseCert {
+  /** 32-byte X25519 public key from `NoiseCertificate.Details.key`. */
+  key: any;
+  /** Unix epoch seconds. Validation window from `NoiseCertificate.Details`. */
+  not_before: number;
+  not_after: number;
+}
+
+/** Cached form of the server's two-cert chain. `leaf.key` is the server static public key consumed by Noise IK; the intermediate is kept solely to mirror WA Web's expiry checks. */
+export interface CachedServerCertChain {
+  intermediate: CachedNoiseCert;
+  leaf: CachedNoiseCert;
+}
+
 /** Fields kept per-variant (not a shared `BasicCallMeta`) so the `serde` shape mirrors the stanza 1:1 for downstream JS consumers. */
 export type CallAction =
-  | { type: "offer"; call_id: string; call_creator: Jid; caller_pn?: Jid | null; caller_country_code?: string | null; device_class?: string | null; joinable: boolean; is_video: boolean; audio: CallAudioCodec[] }
+  | { type: "offer"; call_id: string; call_creator: Jid; caller_pn?: Jid | null; caller_country_code?: string | null; device_class?: string | null; joinable: boolean; is_video: boolean; audio: CallAudioCodec[]; group_jid?: Jid | null }
+  | { type: "offer_notice"; call_id: string; call_creator: Jid; is_video: boolean; is_group: boolean }
   | { type: "pre_accept"; call_id: string; call_creator: Jid }
   | { type: "accept"; call_id: string; call_creator: Jid }
   | { type: "reject"; call_id: string; call_creator: Jid }
@@ -213,6 +229,8 @@ export interface Device {
   nct_salt?: Uint8Array | null;
   /** Runtime-only marker that an authoritative nct_salt_sync mutation was seen. This prevents stale history sync data from resurrecting a cleared salt. */
   nct_salt_sync_seen: boolean;
+  /** Server cert chain cached from the last successful XX (or XX-fallback) handshake. Enables Noise IK on the next connect by exposing `leaf.key` as the server's static public key, and lets us reject stale entries via `not_after` before even attempting IK. `None` forces XX on the next connect. */
+  server_cert_chain?: CachedServerCertChain | null;
 }
 
 /** Device element from notification.  Wire format: ```xml <device jid="185169143189667:75@lid" key-index="2" lid="..."/> ```  Device ID is extracted from the JID's device part (e.g., 75 from "user:75@lid").  Per WhatsApp Web: if both `jid` and `lid` attributes are present, the device IDs must match or the notification is rejected. */

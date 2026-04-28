@@ -75,6 +75,7 @@ symphonia = { version = "0.5.4", default-features = false, features = [
   "ogg",
 ], optional = true }
 talc = { version = "5", default-features = false }
+thiserror = { version = "2.0.17", default-features = false }
 tsify-next = { version = "0.5", default-features = false, features = ["js"] }
 uuid = { version = "1.18.1", default-features = false, features = ["v4", "js"] }
 

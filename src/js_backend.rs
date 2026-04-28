@@ -175,8 +175,14 @@ impl JsBackend {
     ) -> Result<Option<T>> {
         match self.js_get(store, key).await? {
             Some(bytes) => {
-                let value: T = serde_json::from_slice(&bytes)
-                    .map_err(|e| store_err(format!("deserialize {store}/{key}: {e}")))?;
+                let value: T = serde_json::from_slice(&bytes).map_err(|e| {
+                    wacore::store::error::StoreError::Serialization(Box::new(JsonStoreError {
+                        op: "deserialize",
+                        store: store.to_string(),
+                        key: key.to_string(),
+                        source: e,
+                    }))
+                })?;
                 Ok(Some(value))
             }
             None => Ok(None),
@@ -189,8 +195,14 @@ impl JsBackend {
         key: &str,
         value: &T,
     ) -> Result<()> {
-        let bytes = serde_json::to_vec(value)
-            .map_err(|e| store_err(format!("serialize {store}/{key}: {e}")))?;
+        let bytes = serde_json::to_vec(value).map_err(|e| {
+            wacore::store::error::StoreError::Serialization(Box::new(JsonStoreError {
+                op: "serialize",
+                store: store.to_string(),
+                key: key.to_string(),
+                source: e,
+            }))
+        })?;
         self.js_set(store, key, &bytes).await
     }
 }
@@ -209,7 +221,7 @@ impl SignalStore for JsBackend {
     async fn load_identity(&self, address: &str) -> Result<Option<[u8; 32]>> {
         match self.js_get(STORE_IDENTITY, address).await? {
             Some(bytes) => Ok(Some(bytes.try_into().map_err(|v: Vec<u8>| {
-                store_err(format!(
+                wacore::store::error::StoreError::Validation(format!(
                     "identity key for {address} has invalid length {}",
                     v.len()
                 ))
@@ -775,13 +787,33 @@ async fn resolve_promise(value: JsValue) -> std::result::Result<JsValue, JsValue
     }
 }
 
-fn js_err_to_store_err(context: &str, e: JsValue) -> wacore::store::error::StoreError {
-    let msg = e.as_string().unwrap_or_else(|| format!("{e:?}"));
-    wacore::store::error::StoreError::Database(format!("JS {context}: {msg}"))
+/// Errors raised by the JS-provided storage callbacks (`get`/`set`/`delete`).
+/// Distinct from `serde_json` (de)serialization failures and from validation
+/// errors so consumers can downcast off `StoreError::Database`'s source chain
+/// to discriminate.
+#[derive(Debug, thiserror::Error)]
+#[error("JS {context}: {message}")]
+pub(crate) struct JsCallbackError {
+    pub context: &'static str,
+    pub message: String,
 }
 
-fn store_err(msg: String) -> wacore::store::error::StoreError {
-    wacore::store::error::StoreError::Serialization(msg)
+/// Wraps a `serde_json` (de)serialization failure with the `<store>/<key>`
+/// context. Source chain preserves the original `serde_json::Error` for
+/// downcast.
+#[derive(Debug, thiserror::Error)]
+#[error("{op} {store}/{key}")]
+pub(crate) struct JsonStoreError {
+    pub op: &'static str,
+    pub store: String,
+    pub key: String,
+    #[source]
+    pub source: serde_json::Error,
+}
+
+fn js_err_to_store_err(context: &'static str, e: JsValue) -> wacore::store::error::StoreError {
+    let message = e.as_string().unwrap_or_else(|| format!("{e:?}"));
+    wacore::store::error::StoreError::Database(Box::new(JsCallbackError { context, message }))
 }
 
 /// Simple hex encoding for byte slices (avoids adding `hex` crate dependency).

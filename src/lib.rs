@@ -15,6 +15,7 @@ pub mod sticker_metadata;
 pub mod camel_serializer;
 pub mod client_profile;
 pub mod device_props;
+pub mod errors;
 mod generated_types;
 pub mod js_backend;
 pub mod js_cache_store;
@@ -43,15 +44,6 @@ pub(crate) use wasm_send_sync;
 use serde::Serialize;
 use tsify_next::Tsify;
 use wasm_bindgen::prelude::*;
-
-/// Convert a JsValue error to JsError. Shared across WASM wrapper modules.
-pub(crate) fn js_val_to_error(e: JsValue) -> JsError {
-    if let Some(s) = e.as_string() {
-        JsError::new(&s)
-    } else {
-        JsError::new(&format!("{e:?}"))
-    }
-}
 
 /// Enabled features in this build.
 /// Use this to check feature availability at runtime before calling feature-gated functions.
