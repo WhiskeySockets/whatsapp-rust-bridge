@@ -2,9 +2,11 @@
   "compilerOptions": {
     "target": "es2022",
     "module": "esnext",
-    "lib": ["es2022"],
+    "lib": ["es2022", "esnext.typedarrays"],
+    "types": ["node"],
     "strict": true,
-    "moduleResolution": "node",
+    "rootDir": "./ts",
+    "moduleResolution": "bundler",
     "esModuleInterop": true,
     "skipLibCheck": true,
     "forceConsistentCasingInFileNames": true,

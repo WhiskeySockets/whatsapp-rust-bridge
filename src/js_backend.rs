@@ -457,6 +457,30 @@ impl ProtocolStore for JsBackend {
         Ok(())
     }
 
+    async fn delete_sender_key_device_rows(&self, device_jids: &[&str]) -> Result<()> {
+        if device_jids.is_empty() {
+            return Ok(());
+        }
+        let targets: std::collections::HashSet<&str> = device_jids.iter().copied().collect();
+        let groups: Vec<String> = self
+            .js_get_json(STORE_META, "sender_key_groups")
+            .await?
+            .unwrap_or_default();
+        for group in &groups {
+            let mut devices: Vec<(String, bool)> = self
+                .js_get_json(STORE_SENDER_KEY_DEVICES, group)
+                .await?
+                .unwrap_or_default();
+            let before = devices.len();
+            devices.retain(|(jid, _)| !targets.contains(jid.as_str()));
+            if devices.len() != before {
+                self.js_set_json(STORE_SENDER_KEY_DEVICES, group, &devices)
+                    .await?;
+            }
+        }
+        Ok(())
+    }
+
     async fn clear_all_sender_key_devices(&self) -> Result<()> {
         let groups: Vec<String> = self
             .js_get_json(STORE_META, "sender_key_groups")
