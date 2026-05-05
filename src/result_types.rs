@@ -266,13 +266,6 @@ pub struct ReadMessageKey {
     pub participant: Option<String>,
 }
 
-/// Result from `createGroup`.
-#[derive(Serialize, Tsify)]
-#[tsify(into_wasm_abi)]
-pub struct CreateGroupResult {
-    pub gid: String,
-}
-
 /// Result from `createPoll`.
 #[derive(Serialize, Tsify)]
 #[tsify(into_wasm_abi)]

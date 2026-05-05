@@ -1106,13 +1106,17 @@ impl WasmWhatsAppClient {
 
     /// Create a new group.
     ///
-    /// Returns an object with `{ gid: string }`.
+    /// Returns the full `GroupMetadataResult` parsed directly from the
+    /// server's create response — no follow-up `getGroupMetadata` IQ
+    /// needed. Mirrors WhatsApp Web / upstream Baileys: the create reply
+    /// already carries the complete `<group>` node (id, subject,
+    /// creation, creator, participants, …).
     #[wasm_bindgen(js_name = createGroup)]
     pub async fn group_create(
         &self,
         subject: &str,
         participants: Vec<String>,
-    ) -> Result<crate::result_types::CreateGroupResult, crate::errors::BridgeError> {
+    ) -> Result<crate::result_types::GroupMetadataResult, crate::errors::BridgeError> {
         use whatsapp_rust::features::GroupParticipantOptions;
 
         let participant_options: Vec<GroupParticipantOptions> = participants
@@ -1125,9 +1129,7 @@ impl WasmWhatsAppClient {
 
         let result = self.client.groups().create_group(options).await?;
 
-        Ok(crate::result_types::CreateGroupResult {
-            gid: result.gid.to_string(),
-        })
+        Ok(group_metadata_to_result(&result.metadata))
     }
 
     /// Update a group's subject (name).
