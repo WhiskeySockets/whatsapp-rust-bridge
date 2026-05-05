@@ -106,7 +106,6 @@ bridge_events! {
         MarkChatAsReadUpdate     => "mark_chat_as_read_update"      => "MarkChatAsReadUpdate",
         DeleteChatUpdate         => "delete_chat_update"            => "DeleteChatUpdate",
         DeleteMessageForMeUpdate => "delete_message_for_me_update"  => "DeleteMessageForMeUpdate",
-        HistorySync              => "history_sync"                  => "Record<string, unknown>",
         OfflineSyncPreview       => "offline_sync_preview"          => "OfflineSyncPreview",
         OfflineSyncCompleted     => "offline_sync_completed"        => "OfflineSyncCompleted",
         DeviceListUpdate         => "device_list_update"            => "DeviceListUpdate",
@@ -134,6 +133,12 @@ bridge_events! {
         "qr_scanned_without_multidevice"  => "Record<string, never>",
         "client_outdated"                 => "Record<string, never>",
         "raw_node"                        => "{ tag: string; attrs: Record<string, string>; content?: unknown }",
+        // HistorySync ships the fully-decoded `proto.IHistorySync` (camelCase
+        // keys, Uint8Array bytes, defaults skipped — same convention as the
+        // `message` event) plus three top-level metadata fields the bridge
+        // already knew without parsing the proto. The raw bytes stay
+        // server-side; consumers get a typed structured payload.
+        "history_sync"                    => "import('./proto-types').proto.IHistorySync & { syncType: number; chunkOrder?: number; progress?: number; peerDataRequestSessionId?: string }",
     }
 }
 
@@ -463,6 +468,27 @@ fn event_to_js_special(event: &Event) -> Result<JsValue, JsValue> {
             let data = node_ref_to_js(node.get())?;
             ("raw_node", data)
         }
+        Event::HistorySync(lazy) => {
+            // Drop if the proto blob can't be decoded — consumers can't act on it.
+            let Some(parsed) = lazy.get() else {
+                log::warn!("history_sync event with undecodable bytes; dropping");
+                return Ok(JsValue::UNDEFINED);
+            };
+            let d = crate::camel_serializer::to_js_value_camel(parsed)?;
+            // Overlay notification-level metadata; `peerDataRequestSessionId` is
+            // present only for ON_DEMAND syncs, absent for server-pushed ones.
+            js_sys::Reflect::set(&d, &"syncType".into(), &lazy.sync_type().into())?;
+            if let Some(co) = lazy.chunk_order() {
+                js_sys::Reflect::set(&d, &"chunkOrder".into(), &co.into())?;
+            }
+            if let Some(p) = lazy.progress() {
+                js_sys::Reflect::set(&d, &"progress".into(), &p.into())?;
+            }
+            if let Some(sid) = lazy.peer_data_request_session_id() {
+                js_sys::Reflect::set(&d, &"peerDataRequestSessionId".into(), &sid.into())?;
+            }
+            ("history_sync", d.into())
+        }
         // All other variants are handled by serialize_event! in event_to_js
         other => {
             log::warn!(
@@ -541,6 +567,28 @@ fn event_to_json_special(event: &Event) -> Result<serde_json::Value, String> {
         Event::RawNode(node) => {
             let val = serde_json::to_value(node.get()).map_err(|e| e.to_string())?;
             ("raw_node", val)
+        }
+        Event::HistorySync(lazy) => {
+            let Some(parsed) = lazy.get() else {
+                return Ok(serde_json::Value::Null);
+            };
+            let mut val = crate::camel_serializer::to_json_value_camel(parsed)?;
+            if let Some(obj) = val.as_object_mut() {
+                obj.insert("syncType".into(), serde_json::Value::from(lazy.sync_type()));
+                if let Some(co) = lazy.chunk_order() {
+                    obj.insert("chunkOrder".into(), serde_json::Value::from(co));
+                }
+                if let Some(p) = lazy.progress() {
+                    obj.insert("progress".into(), serde_json::Value::from(p));
+                }
+                if let Some(sid) = lazy.peer_data_request_session_id() {
+                    obj.insert(
+                        "peerDataRequestSessionId".into(),
+                        serde_json::Value::from(sid),
+                    );
+                }
+            }
+            ("history_sync", val)
         }
         _other => {
             return Ok(serde_json::Value::Null);
