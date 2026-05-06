@@ -597,8 +597,39 @@ fn event_to_json_special(event: &Event) -> Result<serde_json::Value, String> {
     Ok(serde_json::json!({ "type": event_type, "data": data }))
 }
 
-/// Default WhatsApp Web version. Hardcoded to skip HTTP version-check on startup.
-const DEFAULT_WA_WEB_VERSION: (u32, u32, u32) = (2, 3000, 1031424117);
+/// Parse `[major, minor, patch]` from a JS value into `(u32, u32, u32)`.
+/// Returns `Ok(None)` if the value is null/undefined/missing.
+fn parse_optional_version(
+    value: Option<&JsValue>,
+) -> Result<Option<(u32, u32, u32)>, crate::errors::BridgeError> {
+    let Some(v) = value else { return Ok(None) };
+    if v.is_null() || v.is_undefined() {
+        return Ok(None);
+    }
+    if !js_sys::Array::is_array(v) {
+        return Err(crate::errors::internal(
+            "version must be a [major, minor, patch] array",
+        ));
+    }
+    let arr = js_sys::Array::from(v);
+    if arr.length() != 3 {
+        return Err(crate::errors::internal(
+            "version array must have exactly 3 elements [major, minor, patch]",
+        ));
+    }
+    let parse = |i: u32| -> Result<u32, crate::errors::BridgeError> {
+        let n = arr.get(i).as_f64().ok_or_else(|| {
+            crate::errors::internal("version array elements must be numbers")
+        })?;
+        if !n.is_finite() || n < 0.0 || n > u32::MAX as f64 || n.fract() != 0.0 {
+            return Err(crate::errors::internal(
+                "version array elements must be non-negative integers fitting in u32",
+            ));
+        }
+        Ok(n as u32)
+    };
+    Ok(Some((parse(0)?, parse(1)?, parse(2)?)))
+}
 
 // ---------------------------------------------------------------------------
 // Initialization
@@ -647,6 +678,7 @@ pub async fn create_whatsapp_client(
     on_event: Option<js_sys::Function>,
     store: Option<JsValue>,
     cache_config_js: Option<JsValue>,
+    version_js: Option<JsValue>,
 ) -> Result<WasmWhatsAppClient, crate::errors::BridgeError> {
     let runtime = Arc::new(WasmRuntime) as Arc<dyn wacore::runtime::Runtime>;
     let backend = match store {
@@ -684,13 +716,14 @@ pub async fn create_whatsapp_client(
         );
 
     let cache_config = build_cache_config(cache_config_js.as_ref())?;
+    let override_version = parse_optional_version(version_js.as_ref())?;
 
     let (client, sync_rx) = whatsapp_rust::Client::new_with_cache_config(
         runtime.clone(),
         persistence_manager.clone(),
         transport_factory,
         http_client,
-        Some(DEFAULT_WA_WEB_VERSION),
+        override_version,
         cache_config,
     )
     .await;
@@ -969,23 +1002,6 @@ impl WasmWhatsAppClient {
     #[wasm_bindgen(js_name = setClientProfile)]
     pub async fn set_client_profile(&self, input: crate::client_profile::ClientProfileInput) {
         self.client.set_client_profile(input.into()).await;
-    }
-
-    /// Override the WhatsApp Web version used for the connection.
-    /// Accepts [major, minor, patch] array.
-    #[wasm_bindgen(js_name = setVersion)]
-    pub fn set_version(&self, major: u32, minor: u32, patch: u32) {
-        use wacore::store::commands::DeviceCommand;
-        // This sets the app version on the device, which is sent during login.
-        // The actual protocol version is set once at client creation and can't
-        // be changed after, but this ensures subsequent reconnections use it.
-        let pm = self.persistence_manager.clone();
-        let rt = self.runtime.clone();
-        rt.spawn(Box::pin(async move {
-            pm.process_command(DeviceCommand::SetAppVersion((major, minor, patch)))
-                .await;
-        }))
-        .detach();
     }
 
     // ── Pairing ──────────────────────────────────────────────────────────
