@@ -1,5 +1,5 @@
 use js_sys::{Object, Reflect, Uint8Array};
-use rand::{TryRngCore, rngs::OsRng};
+use rand::rngs::StdRng;
 use std::cell::RefCell;
 use wasm_bindgen::prelude::*;
 
@@ -92,7 +92,7 @@ impl SessionCipher {
             &mut identity_store,
             &mut prekey_store,
             &signed_prekey_store,
-            &mut OsRng.unwrap_err(),
+            &mut rand::make_rng::<StdRng>(),
             UsePQRatchet::No,
         )
         .await
@@ -125,7 +125,7 @@ impl SessionCipher {
             &self.remote_address.0,
             &mut session_store,
             &mut identity_store,
-            &mut OsRng.unwrap_err(),
+            &mut rand::make_rng::<StdRng>(),
         )
         .await
         .map_err(|e| {
