@@ -24,7 +24,7 @@
         "bench": "bun run build && bun run benches/binary.ts && bun run benches/signal.ts && bun run benches/curve.ts && bun run benches/crypto.ts",
         "bench:node": "bun run build && node --expose-gc benches/binary.ts && node --expose-gc benches/signal.ts && node --expose-gc benches/curve.ts && node --expose-gc benches/crypto.ts",
         "build:wasm": "node scripts/build-wasm.mjs",
-        "build:ts": "bun build ts/index.ts --outfile dist/index.js",
+        "build:ts": "bun build ts/index.ts --outfile dist/index.js --target=node",
         "prebuild": "rm -rf dist",
         "postbuild": "tsc -p tsconfig.json --outDir dist",
         "build": "bun run prebuild && bun run build:wasm && bun run build:ts && bun run postbuild",

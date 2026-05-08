@@ -1,9 +1,11 @@
-import { initSync } from "../pkg/whatsapp_rust_bridge.js";
+import { initSync, setCryptoProvider } from "../pkg/whatsapp_rust_bridge.js";
 
 import {
   nosimdWasmBase64,
   simdWasmBase64,
 } from "./macro.js" with { type: "macro" };
+
+import { makeNodeCryptoProvider } from "./node-crypto-provider.js";
 
 // Minimal WASM module that uses i8x16.splat + i8x16.popcnt. WebAssembly.validate
 // returns false on engines without SIMD (e.g. V8 on x86 without SSE4.1).
@@ -43,5 +45,17 @@ if (simdSupported && tryInit(simdWasmBase64())) {
   initSync({ module: base64ToUint8Array(nosimdWasmBase64()) });
 }
 
+// Route libsignal's AES-CBC / AES-GCM / HMAC through node:crypto (OpenSSL
+// with AES-NI). Soft-fallback if node:crypto isn't available — the wasm
+// already ships its own pure-Rust implementations as the default provider.
+let nativeCryptoActive = false;
+try {
+  setCryptoProvider(makeNodeCryptoProvider());
+  nativeCryptoActive = true;
+} catch {
+  // fall through; libsignal keeps using the default RustCryptoProvider
+}
+
 export const __wasmSimdActive: boolean = simdUsed;
+export const __nativeCryptoActive: boolean = nativeCryptoActive;
 export * from "../pkg/whatsapp_rust_bridge.js";

@@ -8,6 +8,7 @@ pub mod group_cipher;
 pub mod group_types;
 #[cfg(feature = "image")]
 pub mod image_utils;
+pub mod js_crypto;
 pub mod key_helper;
 pub mod logger;
 pub mod noise_session;
