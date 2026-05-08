@@ -1,9 +1,5 @@
+import { readFileSync } from "node:fs";
 import { initSync } from "../pkg/whatsapp_rust_bridge.js";
-
-import {
-  nosimdWasmBase64,
-  simdWasmBase64,
-} from "./macro.js" with { type: "macro" };
 
 // Minimal WASM module that uses i8x16.splat + i8x16.popcnt. WebAssembly.validate
 // returns false on engines without SIMD (e.g. V8 on x86 without SSE4.1).
@@ -12,18 +8,10 @@ const SIMD_PROBE = new Uint8Array([
   8, 0, 65, 0, 253, 15, 253, 98, 11,
 ]);
 
-function base64ToUint8Array(base64: string): Uint8Array {
-  const binaryString = atob(base64);
-  const bytes = new Uint8Array(binaryString.length);
-  for (let i = 0; i < binaryString.length; i++) {
-    bytes[i] = binaryString.charCodeAt(i);
-  }
-  return bytes;
-}
-
-function tryInit(b64: string): boolean {
+function tryInit(filename: string): boolean {
   try {
-    initSync({ module: base64ToUint8Array(b64) });
+    const url = new URL(filename, import.meta.url);
+    initSync({ module: readFileSync(url) });
     return true;
   } catch {
     return false;
@@ -37,10 +25,12 @@ const forceNoSimd =
 const simdSupported = !forceNoSimd && WebAssembly.validate(SIMD_PROBE);
 
 let simdUsed = false;
-if (simdSupported && tryInit(simdWasmBase64())) {
+if (simdSupported && tryInit("whatsapp_rust_bridge_bg.simd.wasm")) {
   simdUsed = true;
-} else {
-  initSync({ module: base64ToUint8Array(nosimdWasmBase64()) });
+} else if (!tryInit("whatsapp_rust_bridge_bg.nosimd.wasm")) {
+  throw new Error(
+    "whatsapp-rust-bridge: failed to load WASM module (neither SIMD nor non-SIMD variant could be initialized)",
+  );
 }
 
 export const __wasmSimdActive: boolean = simdUsed;
