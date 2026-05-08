@@ -80,10 +80,7 @@ pub(crate) fn js_to_node_ref(val: &EncodingNode) -> Result<NodeRef<'static>, JsV
         ))))
     } else if content_js.is_instance_of::<Uint8Array>() {
         let byte_array: Uint8Array = content_js.unchecked_into();
-        let len = byte_array.length() as usize;
-        let mut bytes = vec![0; len];
-        byte_array.copy_to(&mut bytes);
-        Ok(Some(NodeContentRef::Bytes(Cow::Owned(bytes))))
+        Ok(Some(NodeContentRef::Bytes(Cow::Owned(byte_array.to_vec()))))
     } else if Array::is_array(&content_js) {
         let arr = Array::from(&content_js);
         let nodes = (0..arr.length())
@@ -217,10 +214,7 @@ impl InternalBinaryNode {
 
         let result: Option<Content> = match self.node_ref().content.as_deref() {
             Some(NodeContentRef::Bytes(bytes)) => {
-                let bytes_ref = bytes.as_ref();
-                let u8arr = Uint8Array::new_with_length(bytes_ref.len() as u32);
-                u8arr.copy_from(bytes_ref);
-                Some(u8arr.unchecked_into())
+                Some(Uint8Array::from(bytes.as_ref()).unchecked_into())
             }
             Some(NodeContentRef::String(s)) => Some(JsValue::from_str(s).unchecked_into()),
             Some(NodeContentRef::Nodes(nodes)) => {
@@ -254,10 +248,7 @@ impl InternalBinaryNode {
 pub fn encode_node(node_val: EncodingNode) -> Result<Uint8Array, JsValue> {
     let node_ref = js_to_node_ref(&node_val)?;
     let bytes = marshal_ref(&node_ref).map_err(|e| JsValue::from_str(&e.to_string()))?;
-
-    let result = Uint8Array::new_with_length(bytes.len() as u32);
-    result.copy_from(&bytes);
-    Ok(result)
+    Ok(Uint8Array::from(bytes.as_slice()))
 }
 
 #[wasm_bindgen(js_name = decodeNode)]

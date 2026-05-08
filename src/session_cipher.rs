@@ -11,9 +11,7 @@ use wacore_libsignal::protocol::{self as libsignal, SessionStore, UsePQRatchet};
 
 #[inline]
 fn bytes_to_uint8array(bytes: &[u8]) -> Uint8Array {
-    let result = Uint8Array::new_with_length(bytes.len() as u32);
-    result.copy_from(bytes);
-    result
+    Uint8Array::from(bytes)
 }
 
 #[wasm_bindgen]
