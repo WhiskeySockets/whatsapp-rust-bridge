@@ -5,7 +5,7 @@ use std::mem;
 use std::rc::Rc;
 use wacore_binary::{
     marshal::{marshal_ref, unmarshal_ref},
-    node::{NodeContentRef, NodeRef, ValueRef},
+    node::{AttrsRef, NodeContentRef, NodeRef, NodeStr, ValueRef},
     util::unpack,
 };
 use wasm_bindgen::prelude::*;
@@ -64,7 +64,10 @@ pub(crate) fn js_to_node_ref(val: &EncodingNode) -> Result<NodeRef<'static>, JsV
             continue;
         };
 
-        attrs.push((Cow::Owned(key), ValueRef::String(Cow::Owned(value_str))));
+        attrs.push((
+            NodeStr::Owned(key.into()),
+            ValueRef::String(NodeStr::Owned(value_str.into())),
+        ));
     }
 
     let content_js = val.content();
@@ -72,7 +75,9 @@ pub(crate) fn js_to_node_ref(val: &EncodingNode) -> Result<NodeRef<'static>, JsV
     let content = if content_js.is_undefined() {
         Ok(None)
     } else if let Some(string_value) = content_js.as_string() {
-        Ok(Some(NodeContentRef::String(Cow::Owned(string_value))))
+        Ok(Some(NodeContentRef::String(NodeStr::Owned(
+            string_value.into(),
+        ))))
     } else if content_js.is_instance_of::<Uint8Array>() {
         let byte_array: Uint8Array = content_js.unchecked_into();
         let len = byte_array.length() as usize;
@@ -88,12 +93,16 @@ pub(crate) fn js_to_node_ref(val: &EncodingNode) -> Result<NodeRef<'static>, JsV
                 js_to_node_ref(&child_node)
             })
             .collect::<Result<Vec<NodeRef<'static>>, _>>()?;
-        Ok(Some(NodeContentRef::Nodes(Box::new(nodes))))
+        Ok(Some(NodeContentRef::Nodes(nodes.into_boxed_slice())))
     } else {
         Err(JsValue::from_str("Invalid content type"))
     };
 
-    Ok(NodeRef::new(Cow::Owned(val.tag()), attrs, content?))
+    Ok(NodeRef::new(
+        NodeStr::Owned(val.tag().into()),
+        AttrsRef::from_vec(attrs),
+        content?,
+    ))
 }
 
 #[wasm_bindgen(typescript_custom_section)]
@@ -120,13 +129,10 @@ impl InternalBinaryNode {
     }
 
     #[inline]
-    fn convert_attrs(attrs: &[(Cow<'_, str>, ValueRef<'_>)]) -> Attrs {
+    fn convert_attrs(attrs: &AttrsRef<'_>) -> Attrs {
         let obj = Object::new();
-        for (k, v) in attrs.iter() {
-            let js_value = match v.as_str() {
-                Some(s) => JsValue::from_str(s),
-                None => JsValue::from_str(&v.to_string()),
-            };
+        for (k, v) in attrs.as_slice().iter() {
+            let js_value = JsValue::from_str(&v.as_str());
             let _ = js_sys::Reflect::set(&obj, &JsValue::from_str(k), &js_value);
         }
         obj.unchecked_into()
