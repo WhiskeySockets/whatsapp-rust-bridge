@@ -109,9 +109,7 @@ export interface BinaryNode {
 pub struct InternalBinaryNode {
     _owned_data: Rc<[u8]>,
     node_ref: NodeRef<'static>,
-    #[wasm_bindgen(skip)]
     cached_attrs: UnsafeCell<Option<Attrs>>,
-    #[wasm_bindgen(skip)]
     cached_content: UnsafeCell<Option<Content>>,
 }
 
