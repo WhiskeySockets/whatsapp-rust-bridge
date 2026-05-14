@@ -3,8 +3,10 @@
 //! Wraps `whatsapp_rust::Client` with JS-provided adapters for
 //! transport (WebSocket), storage (InMemory/JS), and HTTP (fetch).
 
+use std::cell::RefCell;
 use std::sync::{Arc, Mutex};
 
+use futures::channel::oneshot;
 use log::info;
 use wacore::types::events::{Event, EventHandler};
 use wacore_binary::jid::Jid;
@@ -15,6 +17,33 @@ use crate::js_http::JsHttpClientAdapter;
 use crate::js_time;
 use crate::js_transport::JsTransportFactory;
 use crate::runtime::WasmRuntime;
+
+thread_local! {
+    /// Receivers signaled when a `Drop`-spawned cleanup task completes.
+    /// `create_whatsapp_client` drains this before starting so a new client
+    /// is never constructed while a previous client's async teardown still
+    /// has tasks parked on JsFutures on the shared WASM heap. Event-driven —
+    /// no timers.
+    static PENDING_DROP_CLEANUPS: RefCell<Vec<oneshot::Receiver<()>>> =
+        const { RefCell::new(Vec::new()) };
+}
+
+fn register_drop_cleanup() -> oneshot::Sender<()> {
+    let (tx, rx) = oneshot::channel();
+    PENDING_DROP_CLEANUPS.with(|p| p.borrow_mut().push(rx));
+    tx
+}
+
+async fn drain_drop_cleanups() {
+    loop {
+        let drained: Vec<oneshot::Receiver<()>> =
+            PENDING_DROP_CLEANUPS.with(|p| std::mem::take(&mut *p.borrow_mut()));
+        if drained.is_empty() {
+            break;
+        }
+        let _ = futures::future::join_all(drained).await;
+    }
+}
 
 // ---------------------------------------------------------------------------
 // TypeScript type declarations
@@ -618,9 +647,10 @@ fn parse_optional_version(
         ));
     }
     let parse = |i: u32| -> Result<u32, crate::errors::BridgeError> {
-        let n = arr.get(i).as_f64().ok_or_else(|| {
-            crate::errors::internal("version array elements must be numbers")
-        })?;
+        let n = arr
+            .get(i)
+            .as_f64()
+            .ok_or_else(|| crate::errors::internal("version array elements must be numbers"))?;
         if !n.is_finite() || n < 0.0 || n > u32::MAX as f64 || n.fract() != 0.0 {
             return Err(crate::errors::internal(
                 "version array elements must be non-negative integers fitting in u32",
@@ -680,6 +710,12 @@ pub async fn create_whatsapp_client(
     cache_config_js: Option<JsValue>,
     version_js: Option<JsValue>,
 ) -> Result<WasmWhatsAppClient, crate::errors::BridgeError> {
+    // Block on every in-flight `Drop` cleanup before allocating new state.
+    // Each `Drop` registers a oneshot; we await all of them. Closes the race
+    // where a freshly constructed client shares the WASM heap with a previous
+    // client's still-draining disconnect future.
+    drain_drop_cleanups().await;
+
     let runtime = Arc::new(WasmRuntime) as Arc<dyn wacore::runtime::Runtime>;
     let backend = match store {
         Some(ref store_val) if !store_val.is_null() && !store_val.is_undefined() => {
@@ -749,6 +785,8 @@ pub async fn create_whatsapp_client(
         sync_rx: Some(sync_rx),
         persistence_manager,
         saver_handle: Mutex::new(Some(saver_handle)),
+        run_handle: Mutex::new(None),
+        sync_worker_handle: Mutex::new(None),
     })
 }
 
@@ -768,6 +806,11 @@ pub struct WasmWhatsAppClient {
     /// `disconnect()` so the in-flight 5s `sleep` doesn't keep the Node.js
     /// event loop alive.
     saver_handle: Mutex<Option<wacore::runtime::AbortHandle>>,
+    /// Spawned by `run()`; aborted on `Drop` so a `free()` without prior
+    /// `disconnect()` doesn't leave the loop polling against the dropped
+    /// wrapper.
+    run_handle: Mutex<Option<wacore::runtime::AbortHandle>>,
+    sync_worker_handle: Mutex<Option<wacore::runtime::AbortHandle>>,
 }
 
 #[wasm_bindgen]
@@ -790,27 +833,28 @@ impl WasmWhatsAppClient {
         let runtime = self.runtime.clone();
         let sync_rx = self.sync_rx.take();
 
-        // Start sync worker — processes history sync and app state sync tasks.
+        // Sync worker — processes history sync and app state sync tasks.
         // Must drain promptly to prevent the sync channel (capacity 32) from
         // blocking the message processing loop.
         if let Some(receiver) = sync_rx {
             let worker_client = client.clone();
-            runtime
-                .spawn(Box::pin(async move {
-                    while let Ok(task) = receiver.recv().await {
-                        worker_client.process_sync_task(task).await;
-                    }
-                    info!("Sync worker shutting down.");
-                }))
-                .detach();
+            let handle = runtime.spawn(Box::pin(async move {
+                while let Ok(task) = receiver.recv().await {
+                    worker_client.process_sync_task(task).await;
+                }
+                info!("Sync worker shutting down.");
+            }));
+            *self
+                .sync_worker_handle
+                .lock()
+                .unwrap_or_else(|e| e.into_inner()) = Some(handle);
         }
 
-        runtime
-            .spawn(Box::pin(async move {
-                client.run().await;
-                info!("Client run loop exited.");
-            }))
-            .detach();
+        let handle = runtime.spawn(Box::pin(async move {
+            client.run().await;
+            info!("Client run loop exited.");
+        }));
+        *self.run_handle.lock().unwrap_or_else(|e| e.into_inner()) = Some(handle);
 
         Ok(())
     }
@@ -914,6 +958,24 @@ impl WasmWhatsAppClient {
         {
             handle.abort();
         }
+        // Drop the spawn-side `Abortable` wrappers so any straggler JsFuture
+        // (e.g. a setImmediate yield about to fire) is released on next poll.
+        if let Some(handle) = self
+            .run_handle
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .take()
+        {
+            handle.abort();
+        }
+        if let Some(handle) = self
+            .sync_worker_handle
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .take()
+        {
+            handle.abort();
+        }
         if let Err(e) = self.persistence_manager.flush().await {
             log::warn!("Failed to flush state on disconnect: {e}");
         }
@@ -928,6 +990,22 @@ impl WasmWhatsAppClient {
         self.client.logout().await?;
         if let Some(handle) = self
             .saver_handle
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .take()
+        {
+            handle.abort();
+        }
+        if let Some(handle) = self
+            .run_handle
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .take()
+        {
+            handle.abort();
+        }
+        if let Some(handle) = self
+            .sync_worker_handle
             .lock()
             .unwrap_or_else(|e| e.into_inner())
             .take()
@@ -2968,6 +3046,53 @@ impl WasmWhatsAppClient {
             .send_raw_bytes(data.to_vec())
             .await
             .map_err(crate::errors::BridgeError::from)
+    }
+}
+
+impl Drop for WasmWhatsAppClient {
+    /// Teardown for the `free()` path (explicit or via wasm-bindgen's
+    /// `FinalizationRegistry`). When the caller skipped `disconnect()`, this
+    /// guarantees the detached background tasks observe shutdown and the
+    /// transport gets closed — without it the orphaned tasks keep awaiting
+    /// JsFutures whose `Closure` state has been freed, which surfaces later
+    /// as `RuntimeError: Out of bounds memory access` on the shared WASM
+    /// heap. Callers should still prefer `await disconnect()` first; this
+    /// is the safety net for the GC path.
+    fn drop(&mut self) {
+        // Signal shutdown to `Arc<Client>` synchronously. Detached children
+        // (every `.detach()` in `whatsapp_rust/src/client.rs` — keepalive
+        // loop, message processors, retry loops, …) observe `is_running` /
+        // `shutdown_notifier` and exit on their next poll.
+        self.client.signal_shutdown_sync();
+
+        // Abort the bridge-owned wrappers (run loop + sync worker + saver).
+        // The async cleanup task spawned below holds `Arc<Client>` so the
+        // aborted futures have valid state to unwind through.
+        for slot in [
+            &self.saver_handle,
+            &self.run_handle,
+            &self.sync_worker_handle,
+        ] {
+            if let Some(handle) = slot.lock().unwrap_or_else(|e| e.into_inner()).take() {
+                handle.abort();
+            }
+        }
+
+        // Drive teardown event-driven: `disconnect()` cancels the transport
+        // (closing the channels detached children are parked on) and runs
+        // `outbound_flush` to drain pending writes. `done` is awaited by the
+        // next `create_whatsapp_client` so a new client can't start sharing
+        // the heap until this completes.
+        let client = self.client.clone();
+        let persistence_manager = self.persistence_manager.clone();
+        let done = register_drop_cleanup();
+        wasm_bindgen_futures::spawn_local(async move {
+            client.disconnect().await;
+            if let Err(e) = persistence_manager.flush().await {
+                log::warn!("Drop-side persistence flush failed: {e}");
+            }
+            let _ = done.send(());
+        });
     }
 }
 

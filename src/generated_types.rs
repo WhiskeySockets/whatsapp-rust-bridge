@@ -139,7 +139,7 @@ export interface ConnectFailure {
 /** Wire codes: 400=Generic, 401=LoggedOut, 402=TempBanned, 403=MainDeviceGone, 406=UnknownLogout, 405=ClientOutdated, 409=BadUserAgent, 413=CatExpired, 414=CatInvalid, 415=NotFound, 418=ClientUnknown, 500=InternalServerError, 501=Experimental, 503=ServiceUnavailable */
 export type ConnectFailureReason = number;
 
-/** A contact changed their phone number.  Emitted from `<notification type="contacts"><modify old="..." new="..." old_lid="..." new_lid="..."/>`.  WA Web creates two LID-PN mappings (`old_lid→old_jid`, `new_lid→new_jid`) and generates a system notification message in both old and new chats. */
+/** A contact changed their phone number.  Emitted from `<notification type="contacts"><modify old="..." new="..." old_lid="..." new_lid="..."/>`.  The library updates the global LID-PN cache when both `old_lid` and `new_lid` are present, mirroring `WAWebDBCreateLidPnMappings`. No Signal session is wiped (WA Web `WAWebHandleContactNotification` also leaves sessions intact). Group participant updates arrive via separate `w:gp2` notifications, so per-group caches are not touched here. Consumers can subscribe and refresh their own caches if needed. */
 export interface ContactNumberChanged {
   /** Old phone number JID. */
   old_jid: Jid;
@@ -231,6 +231,8 @@ export interface Device {
   nct_salt_sync_seen: boolean;
   /** Server cert chain cached from the last successful XX (or XX-fallback) handshake. Enables Noise IK on the next connect by exposing `leaf.key` as the server's static public key, and lets us reject stale entries via `not_after` before even attempting IK. `None` forces XX on the next connect. */
   server_cert_chain?: CachedServerCertChain | null;
+  /** Login counter sent as `ClientPayload.lc` on every login. WA Web's `WAWebUserPrefsGeneral.getLoginCounter()` reads (and bumps) this from localStorage on each connect; the server uses it as an anti-abuse signal. Persisted so it survives restarts. */
+  login_counter: number;
 }
 
 /** Device element from notification.  Wire format: ```xml <device jid="185169143189667:75@lid" key-index="2" lid="..."/> ```  Device ID is extracted from the JID's device part (e.g., 75 from "user:75@lid").  Per WhatsApp Web: if both `jid` and `lid` attributes are present, the device IDs must match or the notification is rejected. */
@@ -376,13 +378,42 @@ export type GroupNotificationAction =
   | { type: "delete"; reason?: string | null }
   | { type: "link"; link_type: string }
   | { type: "unlink"; unlink_type: string; unlink_reason?: string | null }
+  | { type: "linked_group_promote"; participants: GroupParticipantInfo[] }
+  | { type: "linked_group_demote"; participants: GroupParticipantInfo[] }
+  | { type: "suspended" }
+  | { type: "unsuspended" }
+  | { type: "auto_add_disabled" }
+  | { type: "is_capi_hosted_group" }
+  | { type: "group_safety_check" }
+  | { type: "limit_sharing_enabled"; trigger?: number | null }
+  | { type: "allow_admin_reports" }
+  | { type: "not_allow_admin_reports" }
+  | { type: "reports" }
+  | { type: "allow_non_admin_sub_group_creation" }
+  | { type: "not_allow_non_admin_sub_group_creation" }
+  | { type: "created_sub_group_suggestion" }
+  | { type: "revoked_sub_group_suggestions" }
+  | { type: "change_number"; new_owner?: Jid | null; sub_group_suggestions: Jid[] }
   | { type: string; tag: string };
 
-/** Participant info extracted from `<participant>` child elements.  Wire format: ```xml <participant jid="1234567890@s.whatsapp.net" phone_number="1234567890@s.whatsapp.net"/> ``` */
+/** Participant info extracted from `<participant>` child elements.  Wire format: ```xml <participant jid="..." type="..." lid="..." phone_number="..." username="..." display_name="..." join_time="..."/> ```  `display_name` is the server-rendered label (e.g. `"+55∙∙∙∙∙∙∙∙∙79"` when the requester is not in the participant's contacts). `type` flags admin/superadmin tier; LID-addressed groups also carry `lid` and `username`. WA Web's `WAWebHandleGroupNotification` y() reads all of these into the participant model so the UI can render notifications and patch admin caches without resolving the contact locally. */
 export interface GroupParticipantInfo {
   jid: Jid;
   phone_number?: Jid | null;
+  /** Server-provided display label for this participant. Only populated for `<participant>` children inside group notifications; `None` for `<requested_user>` (WA Web doesn't read it there either). */
+  display_name?: string | null;
+  /** Admin tier. Defaults to `Participant` when the attr is missing. */
+  type?: GroupParticipantType | null;
+  /** LID JID when this `<participant>` carries a separate `lid` attr. Distinct from `jid` which may already be a LID. */
+  lid?: Jid | null;
+  /** Username, gated by `WAWebUsernameGatingUtils`. Empty in classic PN-addressed groups. */
+  username?: string | null;
+  /** Unix seconds since the participant joined the group. Used by admin UI for tenure display. */
+  join_time?: number | null;
 }
+
+/** Admin tier from `<participant type="...">`. Mirrors `GROUP_PARTICIPANT_TYPES` in `WAWebGroupApiConst`. */
+export type GroupParticipantType = "participant" | "admin" | "superadmin";
 
 /** Query request type. */
 export type GroupQueryRequestType = "interactive";
@@ -510,6 +541,14 @@ export interface MessageInfo {
   is_offline: boolean;
   /** Set when this message was recovered via PDO rather than normal decryption. Contains the PDO request message ID. */
   unavailable_request_id?: string | null;
+  /** Server-store timestamp in microseconds (envelope `sts` attr). Used by WA Web for read-self watermark ordering across companion devices. */
+  server_timestamp_us?: number | null;
+  /** Envelope `verified_level` attr (e.g. "unknown"/"low"/"high"). For business messages this is the server-asserted verification tier; for regular messages it is absent. */
+  verified_level?: string | null;
+  /** Envelope `verified_name` int attr (business name certificate serial). Separate from the `verified_name` child cert bytes already on this struct. */
+  verified_name_serial?: number | null;
+  /** Envelope `peer_recipient_pn` attr. Present on companion-device self-synced DM stanzas to identify the peer's PN (so the receipt goes to the right routing target). */
+  peer_recipient_pn?: Jid | null;
 }
 
 export interface MessageSource {
@@ -565,6 +604,16 @@ export interface MsgMetaInfo {
   deprecated_lid_session?: boolean | null;
   thread_message_id?: string | null;
   thread_message_sender_jid?: Jid | null;
+  /** `<meta content_type=...>` attr. Server marks reactions/edits as `"add_on"`; mirrors `WAWebHandleMsgParser` b()'s metadata read. */
+  content_type?: string | null;
+  /** `<meta appdata=...>` attr. `"default"` is the only observed value. */
+  appdata?: string | null;
+  /** `<reporting><reporting_tag>` content bytes (16 or 20). Pre-requisite for the server-side report-abuse flow. */
+  reporting_tag?: Uint8Array | null;
+  /** `<reporting><reporting_token>` content bytes (16). Pre-requisite for the server-side report-abuse flow. */
+  reporting_token?: Uint8Array | null;
+  /** `v` attr on `<reporting_token>`. WA Web defaults to 1 when missing. */
+  reporting_token_version?: number | null;
 }
 
 export interface MuteUpdate {
