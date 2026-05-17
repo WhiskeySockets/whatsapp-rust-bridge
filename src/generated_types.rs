@@ -624,6 +624,9 @@ export interface MuteUpdate {
   from_full_sync: boolean;
 }
 
+/** Wire codes: 421=StaleGroupAddressingMode, 475=NewChatMessagesCapped, 487=ParsingError, 488=UnrecognizedStanza, 489=UnrecognizedStanzaClass, 490=UnrecognizedStanzaType, 491=InvalidProtobuf, 493=InvalidHostedCompanionStanza, 495=MissingMessageSecret, 496=SignalErrorOldCounter, 499=MessageDeletedOnPeer, 500=UnhandledError, 550=UnsupportedAdminRevoke, 551=UnsupportedLIDGroup, 552=DBOperationFailed */
+export type NackReason = number;
+
 /** A newsletter live update notification, typically containing updated reaction counts for one or more messages. */
 export interface NewsletterLiveUpdate {
   /** The newsletter channel this update belongs to. */
