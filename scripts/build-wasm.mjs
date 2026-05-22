@@ -7,7 +7,11 @@ import { fileURLToPath } from "node:url";
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const root = resolve(__dirname, "..");
 const pkgWasm = resolve(root, "pkg/whatsapp_rust_bridge_bg.wasm");
-const outDir = resolve(root, "assets/wasm");
+// Ship wasms straight into dist/ so the runtime loader (ts/index.ts) can
+// `readFileSync(new URL(name, import.meta.url))` against them at startup
+// without going through a base64 macro.
+const outDir = resolve(root, "dist");
+const variantFilename = (variant) => `whatsapp_rust_bridge_bg.${variant}.wasm`;
 
 const wasmOptFlags = [
   "-O4",
@@ -56,7 +60,7 @@ function build(variant) {
     { RUSTFLAGS: rustflags },
   );
 
-  const outFile = resolve(outDir, `${variant}.wasm`);
+  const outFile = resolve(outDir, variantFilename(variant));
   const optFlags = [
     ...wasmOptFlags,
     isSimd ? "--enable-simd" : "--disable-simd",
@@ -75,9 +79,9 @@ if (!existsSync(outDir)) mkdirSync(outDir, { recursive: true });
 build("simd");
 build("nosimd");
 
-// Make pkg/whatsapp_rust_bridge_bg.wasm point to the SIMD variant for the
-// wasm-bindgen JS wrapper's default URL resolution (rebuild simd last so
-// pkg ends in a clean state for `wasm-pack publish`-style consumers).
-copyFileSync(resolve(outDir, "simd.wasm"), pkgWasm);
+// Mirror the SIMD variant back into pkg/ so `wasm-pack publish`-style
+// consumers and the wasm-bindgen JS wrapper's default URL resolution still
+// find a binary under the canonical name.
+copyFileSync(resolve(outDir, variantFilename("simd")), pkgWasm);
 
 console.log("\nDual wasm build complete.");
