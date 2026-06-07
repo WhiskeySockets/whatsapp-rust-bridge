@@ -442,6 +442,8 @@ export interface IdentityChange {
   user: Jid;
   /** Optional LID for the user */
   lid_user?: Jid | null;
+  /** `true` when detected locally while saving a peer's new identity during decrypt (mirrors WA Web `saveIdentity` -> `handleNewIdentity`), `false` when triggered by the server's `<identity/>` notification. */
+  implicit: boolean;
 }
 
 export interface IncomingCall {
@@ -465,6 +467,26 @@ export interface KeyIndexInfo {
   timestamp: number;
   /** Signed key index bytes (only present for add) */
   signed_bytes?: Uint8Array | null;
+}
+
+/** A label was associated with or removed from a chat on a linked device. `action.labeled == Some(true)` means the label was added to the chat. */
+export interface LabelAssociationUpdate {
+  /** The label identifier. */
+  label_id: string;
+  /** The chat the label was associated with or removed from. */
+  chat_jid: Jid;
+  timestamp: number;
+  action: LabelAssociationAction;
+  from_full_sync: boolean;
+}
+
+/** A label was created, renamed/recolored, or deleted on a linked device. `action.deleted == Some(true)` means the label was removed. */
+export interface LabelEditUpdate {
+  /** The label identifier (the index key, not a JID). */
+  label_id: string;
+  timestamp: number;
+  action: LabelEditAction;
+  from_full_sync: boolean;
 }
 
 /** The source from which a LID-PN mapping was learned. Different sources have different trust levels and handling for identity changes. */
@@ -767,6 +789,7 @@ export interface Receipt {
 
 export type ReceiptType =
   | { type: "delivered" }
+  | { type: "sent" }
   | { type: "sender" }
   | { type: "retry" }
   | { type: "enc_rekey_retry" }

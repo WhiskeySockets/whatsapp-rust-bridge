@@ -39,6 +39,7 @@ export const createWhatsAppClient: (
   store?: JsStoreCallbacks | null,
   cache?: CacheConfig | null,
   version?: readonly [number, number, number] | null,
+  wantedPreKeyCount?: number | null,
 ) => Promise<WasmWhatsAppClient> = _createWhatsAppClient as any;
 
 // All types come from pkg (Tsify types + generated wacore types via typescript_custom_section)

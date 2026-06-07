@@ -135,6 +135,8 @@ bridge_events! {
         MarkChatAsReadUpdate     => "mark_chat_as_read_update"      => "MarkChatAsReadUpdate",
         DeleteChatUpdate         => "delete_chat_update"            => "DeleteChatUpdate",
         DeleteMessageForMeUpdate => "delete_message_for_me_update"  => "DeleteMessageForMeUpdate",
+        LabelEditUpdate          => "label_edit_update"             => "LabelEditUpdate",
+        LabelAssociationUpdate   => "label_association_update"      => "LabelAssociationUpdate",
         OfflineSyncPreview       => "offline_sync_preview"          => "OfflineSyncPreview",
         OfflineSyncCompleted     => "offline_sync_completed"        => "OfflineSyncCompleted",
         DeviceListUpdate         => "device_list_update"            => "DeviceListUpdate",
@@ -393,6 +395,11 @@ export function initWasmEngine(logger?: any, crypto?: JsCryptoCallbacks): void;
  * @param http_config HTTP client callbacks (execute via fetch)
  * @param on_event Optional event callback — receives typed WhatsApp events in order
  * @param store Optional JS storage callbacks — if provided, enables persistent storage
+ * @param cache_config Optional cache TTL/capacity and custom store overrides
+ * @param version Optional [major, minor, patch] WhatsApp Web version override
+ * @param wanted_pre_key_count Optional pre-key upload batch size (default 812);
+ *   clamped to the protocol-safe range at upload time. Smaller batches reduce
+ *   memory pressure on embedded/WASM hosts.
  */
 export function createWhatsAppClient(
   transport_config: JsTransportCallbacks,
@@ -400,6 +407,8 @@ export function createWhatsAppClient(
   on_event?: ((event: WhatsAppEvent) => void) | null,
   store?: JsStoreCallbacks | null,
   cache_config?: CacheConfig | null,
+  version?: readonly [number, number, number] | null,
+  wanted_pre_key_count?: number | null,
 ): Promise<WasmWhatsAppClient>;
 
 /** Cache entry configuration. */
@@ -900,6 +909,27 @@ fn parse_optional_version(
     Ok(Some((parse(0)?, parse(1)?, parse(2)?)))
 }
 
+/// Parse the optional pre-key upload batch size. The core clamps to the
+/// protocol-safe range at upload time, so we only reject inputs that can't be a
+/// valid count here (non-numeric / negative / fractional / beyond u32).
+fn parse_optional_count(
+    value: Option<&JsValue>,
+) -> Result<Option<usize>, crate::errors::BridgeError> {
+    let Some(v) = value else { return Ok(None) };
+    if v.is_null() || v.is_undefined() {
+        return Ok(None);
+    }
+    let n = v
+        .as_f64()
+        .ok_or_else(|| crate::errors::internal("wantedPreKeyCount must be a number"))?;
+    if !n.is_finite() || n < 0.0 || n > u32::MAX as f64 || n.fract() != 0.0 {
+        return Err(crate::errors::internal(
+            "wantedPreKeyCount must be a non-negative integer fitting in u32",
+        ));
+    }
+    Ok(Some(n as usize))
+}
+
 // ---------------------------------------------------------------------------
 // Initialization
 // ---------------------------------------------------------------------------
@@ -948,6 +978,7 @@ pub async fn create_whatsapp_client(
     store: Option<JsValue>,
     cache_config_js: Option<JsValue>,
     version_js: Option<JsValue>,
+    wanted_pre_key_count_js: Option<JsValue>,
 ) -> Result<WasmWhatsAppClient, crate::errors::BridgeError> {
     // Block on every in-flight `Drop` cleanup before allocating new state.
     // Each `Drop` registers a oneshot; we await all of them. Closes the race
@@ -1055,6 +1086,7 @@ pub async fn create_whatsapp_client(
 
     let cache_config = build_cache_config(cache_config_js.as_ref())?;
     let override_version = parse_optional_version(version_js.as_ref())?;
+    let wanted_pre_key_count = parse_optional_count(wanted_pre_key_count_js.as_ref())?;
 
     let (client, sync_rx) = whatsapp_rust::Client::new_with_cache_config(
         runtime.clone(),
@@ -1065,6 +1097,12 @@ pub async fn create_whatsapp_client(
         cache_config,
     )
     .await;
+
+    // Apply before connecting so it takes effect on the first pre-key upload;
+    // smaller batches matter for the WASM/embedded heap (default is 812).
+    if let Some(count) = wanted_pre_key_count {
+        client.set_wanted_pre_key_count(count);
+    }
 
     // Start the periodic saver AFTER the Client exists so we can subscribe to
     // its shutdown signal. The returned `AbortHandle` is stored on the wrapper
@@ -1212,7 +1250,7 @@ impl WasmWhatsAppClient {
     /// Fetch the account's reachout-timelock state.
     ///
     /// Wraps the `WAWebMexFetchReachoutTimelockJobQuery` MEX persisted
-    /// query (id sourced from `wacore::iq::mex_ids::reachout_timelock::FETCH`)
+    /// query (id sourced from `wacore::iq::mex_operations::fetch_reachout_timelock`)
     /// and returns the `xwa2_fetch_account_reachout_timelock` payload as a
     /// raw JSON object — typically:
     ///
@@ -1226,14 +1264,22 @@ impl WasmWhatsAppClient {
     /// Callers map snake_case → idiomatic shape themselves.
     #[wasm_bindgen(js_name = "fetchReachoutTimelock")]
     pub async fn fetch_reachout_timelock(&self) -> Result<JsValue, crate::errors::BridgeError> {
-        use wacore::iq::mex_ids;
+        use wacore::iq::mex::MexDoc;
+        use wacore::iq::mex_operations::fetch_reachout_timelock as op;
         use whatsapp_rust::features::MexRequest;
 
+        // The hand-maintained `mex_ids` table was dropped (#728) in favor of the
+        // typed `mex_operations` registry. Rebuild the `MexDoc` from the op's
+        // `NAME`/`DOC_ID` constants — same persisted-query id as before — and keep
+        // the generic raw-JSON passthrough (we want the untyped payload here).
         let response = self
             .client
             .mex()
             .query(MexRequest {
-                doc: mex_ids::reachout_timelock::FETCH,
+                doc: MexDoc {
+                    name: op::NAME,
+                    id: op::DOC_ID,
+                },
                 variables: serde_json::json!({}),
             })
             .await?;

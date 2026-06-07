@@ -96,9 +96,75 @@ function resolve(typeName: string): MessageFns<any> {
   throw new Error(`unknown proto type: ${typeName}`);
 }
 
+// The bridge serializes protobuf 64-bit fields (int64/uint64/sfixed64/…) as
+// protobufjs-style `Long` objects `{ low, high, unsigned }` (see
+// `src/camel_serializer.rs`) so consumers can `JSON.stringify` events without
+// the BigInt serialization error. But the ts-proto encoder (`@bufbuild/protobuf`)
+// only accepts `number | bigint | string` for those fields — handed a `Long`
+// *object* it does `BigInt(obj)`, which throws. This bites when re-encoding a
+// message that embeds a decoded message, e.g. `contextInfo.quotedMessage` from a
+// quoted reply (`sendMessage(..., { quoted })`), whose nested i64 fields are
+// still `Long` objects. Normalize them to precision-safe BigInt before encoding.
+// `unsigned` is the discriminant (matches the serializer's own Long detection),
+// so plain `{ low, high }` data objects are left untouched.
+type LongObject = { low: number; high: number; unsigned: boolean };
+
+function isLongObject(v: unknown): v is LongObject {
+  // `unsigned` (a boolean) is the discriminant: testing it first short-circuits
+  // virtually every non-Long object in one comparison, and matches the guard in
+  // camel_serializer.rs — a plain `{ low, high }` data object without `unsigned`
+  // is NOT a Long and is left untouched.
+  return (
+    typeof v === "object" &&
+    v !== null &&
+    typeof (v as LongObject).unsigned === "boolean" &&
+    typeof (v as LongObject).low === "number" &&
+    typeof (v as LongObject).high === "number"
+  );
+}
+
+function longToBigInt(l: LongObject): bigint {
+  const lo = BigInt(l.low >>> 0);
+  const hi = l.unsigned ? BigInt(l.high >>> 0) : BigInt(l.high | 0);
+  return hi * 4294967296n + lo;
+}
+
+// Replace every nested `Long` object with a BigInt, allocation-consciously:
+//  - Zero allocation on the clean path: a message with no Long objects (the
+//    common non-quoted send) is returned by reference, untouched — no GC churn.
+//  - Structural sharing: only the objects/arrays ON THE PATH to a Long are
+//    copied (`{ ...obj }` / `slice()`); unchanged subtrees are shared by ref.
+//  - Never mutates the input (the locally-echoed message keeps its Long objects).
+//  - Short-circuits on primitives and `Uint8Array`/typed-array byte fields.
+// Runs once per `encodeProto` — the outgoing-message path, not a hot receive loop.
+function normalizeLongObjects(value: unknown): unknown {
+  if (isLongObject(value)) return longToBigInt(value);
+  if (value === null || typeof value !== "object") return value;
+  if (ArrayBuffer.isView(value) || value instanceof ArrayBuffer) return value;
+  if (Array.isArray(value)) {
+    let copy: unknown[] | undefined;
+    for (let i = 0; i < value.length; i++) {
+      const nv = normalizeLongObjects(value[i]);
+      if (nv !== value[i]) (copy ??= value.slice())[i] = nv;
+    }
+    return copy ?? value;
+  }
+  const obj = value as Record<string, unknown>;
+  let copy: Record<string, unknown> | undefined;
+  // `for...in` (not `Object.keys`) is deliberate: it visits keys WITHOUT
+  // allocating a keys array, keeping the clean path zero-allocation. ts-proto
+  // message objects are plain (no enumerable prototype props), so nothing extra
+  // is visited.
+  for (const k in obj) {
+    const nv = normalizeLongObjects(obj[k]);
+    if (nv !== obj[k]) (copy ??= { ...obj })[k] = nv;
+  }
+  return copy ?? value;
+}
+
 export function encodeProto(typeName: string, obj: unknown): Uint8Array {
   const fns = resolve(typeName);
-  return fns.encode(fns.fromPartial(obj ?? {})).finish();
+  return fns.encode(fns.fromPartial(normalizeLongObjects(obj ?? {}))).finish();
 }
 
 export function decodeProto(typeName: string, data: Uint8Array): unknown {
