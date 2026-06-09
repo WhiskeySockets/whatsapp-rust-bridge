@@ -751,20 +751,6 @@ export type PrivacyCategory = "last" | "online" | "profile" | "status" | "groupa
 
 export type PrivacySensitiveType = "1";
 
-export type PrivacySetting = "all" | "contacts" | "contact_blacklist" | "match_last_seen" | "known" | "none" | "undefined";
-
-export type PrivacySettingType = "group_add" | "last" | "status" | "profile" | "read_receipts" | "online" | "call_add";
-
-export interface PrivacySettings {
-  group_add?: PrivacySetting | null;
-  last_seen?: PrivacySetting | null;
-  status?: PrivacySetting | null;
-  profile?: PrivacySetting | null;
-  read_receipts?: PrivacySetting | null;
-  call_add?: PrivacySetting | null;
-  online?: PrivacySetting | null;
-}
-
 export type PrivacyValue = "all" | "contacts" | "none" | "contact_blacklist" | "match_last_seen" | "known" | "off" | "on_standard" | string;
 
 /** Profile picture type (preview thumbnail or full-size). */

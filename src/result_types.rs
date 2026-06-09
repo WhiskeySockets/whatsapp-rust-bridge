@@ -175,6 +175,9 @@ pub struct UserInfoResult {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub picture_id: Option<String>,
     pub is_business: bool,
+    /// Verified business name from the usync `<business><verified_name>` cert, if any.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub verified_name: Option<String>,
 }
 
 /// A participant change result from `groupParticipantsUpdate`.
@@ -296,6 +299,9 @@ pub struct IsOnWhatsAppResult {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub pn_jid: Option<String>,
     pub is_business: bool,
+    /// Verified business name from the usync `<business><verified_name>` cert, if any.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub verified_name: Option<String>,
 }
 
 /// Result from `fetchStatus`.

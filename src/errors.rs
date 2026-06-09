@@ -167,7 +167,9 @@ impl BridgeError {
 /// below worth surfacing.
 fn iq_to_bridge(e: &IqError) -> Option<BridgeError> {
     Some(match e {
-        IqError::ServerError { code, text } => BridgeError::Server {
+        // `..` ignores the `error_type`/`backoff` fields added in whatsapp-rust #747;
+        // BridgeError::Server surfaces only code/text. Surface them here if ever needed.
+        IqError::ServerError { code, text, .. } => BridgeError::Server {
             server_code: *code,
             server_text: text.clone(),
         },
@@ -185,12 +187,16 @@ fn iq_to_bridge(e: &IqError) -> Option<BridgeError> {
         | IqError::ClientState(_)
         | IqError::EncodeError(_)
         | IqError::ParseError(_) => return None,
+        // `IqError` is #[non_exhaustive] upstream (whatsapp-rust #735): an unknown
+        // future variant has no actionable mapping here, so defer to the chain
+        // walk — it falls back to `Internal` carrying the full Display chain.
+        _ => return None,
     })
 }
 
 fn wacore_iq_to_bridge(e: &wacore::request::IqError) -> Option<BridgeError> {
     Some(match e {
-        wacore::request::IqError::ServerError { code, text } => BridgeError::Server {
+        wacore::request::IqError::ServerError { code, text, .. } => BridgeError::Server {
             server_code: *code,
             server_text: text.clone(),
         },
@@ -202,6 +208,9 @@ fn wacore_iq_to_bridge(e: &wacore::request::IqError) -> Option<BridgeError> {
         wacore::request::IqError::InternalChannelClosed => BridgeError::Internal {
             message: e.to_string(),
         },
+        // `wacore::request::IqError` is #[non_exhaustive] upstream (whatsapp-rust
+        // #735): defer unknown future variants to the chain walk (Internal fallback).
+        _ => return None,
     })
 }
 
@@ -475,6 +484,8 @@ mod tests {
         let iq = IqError::ServerError {
             code: 400,
             text: "bad-request".into(),
+            error_type: None,
+            backoff: None,
         };
         let be: BridgeError = iq.into();
         match be {
@@ -494,6 +505,8 @@ mod tests {
         let iq = IqError::ServerError {
             code: 400,
             text: "bad-request".into(),
+            error_type: None,
+            backoff: None,
         };
         let pe: PairError = PairError::RequestFailed(iq);
         let be: BridgeError = pe.into();

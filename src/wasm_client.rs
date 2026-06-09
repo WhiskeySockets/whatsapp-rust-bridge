@@ -1860,6 +1860,7 @@ impl WasmWhatsAppClient {
                 lid: r.lid.as_ref().map(jid_to_owned),
                 pn_jid: r.pn_jid.as_ref().map(jid_to_owned),
                 is_business: r.is_business,
+                verified_name: r.verified_name.as_ref().and_then(|v| v.name.clone()),
             })
             .collect())
     }
@@ -1915,6 +1916,7 @@ impl WasmWhatsAppClient {
                 status: info.status.clone(),
                 picture_id: info.picture_id.clone(),
                 is_business: info.is_business,
+                verified_name: info.verified_name.as_ref().and_then(|v| v.name.clone()),
             };
             let js_entry = serde_wasm_bindgen::to_value(&entry)?;
             js_sys::Reflect::set(&obj, &JsValue::from_str(&jid.to_string()), &js_entry)?;
@@ -2113,6 +2115,30 @@ impl WasmWhatsAppClient {
         .map_err(crate::errors::BridgeError::from)
     }
 
+    /// Save or rename a contact, syncing the name to the user's linked devices
+    /// (a `contact` app-state mutation). `jid` must be a bare phone-number JID
+    /// (the core rejects LID/group/device-specific JIDs).
+    #[wasm_bindgen(js_name = saveContact)]
+    pub async fn save_contact(
+        &self,
+        jid: &str,
+        full_name: Option<String>,
+        first_name: Option<String>,
+        save_on_primary_addressbook: bool,
+    ) -> Result<(), crate::errors::BridgeError> {
+        let contact_jid = parse_jid(jid)?;
+        self.client
+            .chat_actions()
+            .save_contact(
+                &contact_jid,
+                full_name,
+                first_name,
+                save_on_primary_addressbook,
+            )
+            .await
+            .map_err(crate::errors::BridgeError::from)
+    }
+
     /// Star or unstar a message.
     #[wasm_bindgen(js_name = starMessage)]
     pub async fn star_message(
@@ -2272,6 +2298,38 @@ impl WasmWhatsAppClient {
 
             self.client
                 .mark_as_read(&chat_jid, participant_jid.as_ref(), ids)
+                .await?;
+        }
+
+        Ok(())
+    }
+
+    /// Mark voice/video notes as played by sending played receipts
+    /// (`<receipt type="played"|"played-self">`). Groups keys by chat +
+    /// participant exactly like [`Self::read_messages`]; the core picks
+    /// `played` vs `played-self` (newsletters) and sets `participant` only for
+    /// group/broadcast chats, so the JS side just hands over the message keys.
+    #[wasm_bindgen(js_name = markPlayed)]
+    pub async fn mark_played(
+        &self,
+        keys: Vec<crate::result_types::ReadMessageKey>,
+    ) -> Result<(), crate::errors::BridgeError> {
+        use std::collections::HashMap;
+        let mut grouped: HashMap<(String, Option<String>), Vec<String>> = HashMap::new();
+
+        for key in keys {
+            grouped
+                .entry((key.remote_jid, key.participant))
+                .or_default()
+                .push(key.id);
+        }
+
+        for ((chat_jid_str, participant_str), ids) in grouped {
+            let chat_jid = parse_jid(&chat_jid_str)?;
+            let participant_jid = participant_str.as_deref().map(parse_jid).transpose()?;
+
+            self.client
+                .mark_as_played(&chat_jid, participant_jid.as_ref(), ids)
                 .await?;
         }
 
