@@ -297,7 +297,20 @@ impl JsBackend {
 
     async fn js_delete_prefix(&self, store: &str, prefix: &str) -> Result<Option<u32>> {
         let Some(wb) = &self.write_back else {
-            return self.js_delete_prefix_raw(store, prefix).await;
+            // No write-back cache. Prefer the host's deletePrefix; if it has none,
+            // fall back to enumerate-then-delete. js_list_keys_raw errors when the
+            // host also lacks listKeys, so a host with neither capability surfaces
+            // an error instead of silently leaving stale keys behind.
+            if let Some(n) = self.js_delete_prefix_raw(store, prefix).await? {
+                return Ok(Some(n));
+            }
+            let keys = self.js_list_keys_raw(store, Some(prefix)).await?;
+            if !keys.is_empty() && !self.js_delete_many_raw(store, &keys).await? {
+                for k in &keys {
+                    self.js_delete_raw(store, k).await?;
+                }
+            }
+            return Ok(Some(keys.len() as u32));
         };
         // Need the full matching key set (backend + un-flushed cache) so the
         // delete also tombstones cache-only keys. Prefer the enumerate path; if
@@ -311,10 +324,20 @@ impl JsBackend {
             }
             Ok(Some(keys.len() as u32))
         } else {
-            let backend_count = self.js_delete_prefix_raw(store, prefix).await?;
+            // No listKeys to enumerate cache-only keys, so the backend can only be
+            // cleared by the host's deletePrefix. If it has none, error rather than
+            // tombstoning the cache alone and leaving stale backend keys behind.
+            let backend_count = self.js_delete_prefix_raw(store, prefix).await?.ok_or_else(|| {
+                js_err_to_store_err(
+                    "deletePrefix",
+                    JsValue::from_str(
+                        "host has neither deletePrefix nor listKeys; cannot clear store by prefix",
+                    ),
+                )
+            })?;
             let mut cache = wb.lock().await;
             let cache_count = cache.tombstone_prefix(store, prefix);
-            Ok(Some(backend_count.unwrap_or(0).max(cache_count)))
+            Ok(Some(backend_count.max(cache_count)))
         }
     }
 
