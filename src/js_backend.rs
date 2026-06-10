@@ -48,6 +48,9 @@ const STORE_TC_TOKEN: &str = "tc_token";
 const STORE_SENT_MESSAGE: &str = "sent_message";
 const STORE_MSG_SECRET: &str = "msg_secret";
 const STORE_META: &str = "meta";
+/// `STORE_META` key holding the self-index of mutation-MAC keys (`"<name>:<hex>"`),
+/// maintained on non-enumerate hosts so `clear_mutation_macs` can enumerate them.
+const MUTATION_MAC_INDEX: &str = "mutation_mac_keys";
 
 // ---------------------------------------------------------------------------
 // Public API: backend factory
@@ -297,20 +300,7 @@ impl JsBackend {
 
     async fn js_delete_prefix(&self, store: &str, prefix: &str) -> Result<Option<u32>> {
         let Some(wb) = &self.write_back else {
-            // No write-back cache. Prefer the host's deletePrefix; if it has none,
-            // fall back to enumerate-then-delete. js_list_keys_raw errors when the
-            // host also lacks listKeys, so a host with neither capability surfaces
-            // an error instead of silently leaving stale keys behind.
-            if let Some(n) = self.js_delete_prefix_raw(store, prefix).await? {
-                return Ok(Some(n));
-            }
-            let keys = self.js_list_keys_raw(store, Some(prefix)).await?;
-            if !keys.is_empty() && !self.js_delete_many_raw(store, &keys).await? {
-                for k in &keys {
-                    self.js_delete_raw(store, k).await?;
-                }
-            }
-            return Ok(Some(keys.len() as u32));
+            return self.js_delete_prefix_raw(store, prefix).await;
         };
         // Need the full matching key set (backend + un-flushed cache) so the
         // delete also tombstones cache-only keys. Prefer the enumerate path; if
@@ -324,20 +314,10 @@ impl JsBackend {
             }
             Ok(Some(keys.len() as u32))
         } else {
-            // No listKeys to enumerate cache-only keys, so the backend can only be
-            // cleared by the host's deletePrefix. If it has none, error rather than
-            // tombstoning the cache alone and leaving stale backend keys behind.
-            let backend_count = self.js_delete_prefix_raw(store, prefix).await?.ok_or_else(|| {
-                js_err_to_store_err(
-                    "deletePrefix",
-                    JsValue::from_str(
-                        "host has neither deletePrefix nor listKeys; cannot clear store by prefix",
-                    ),
-                )
-            })?;
+            let backend_count = self.js_delete_prefix_raw(store, prefix).await?;
             let mut cache = wb.lock().await;
             let cache_count = cache.tombstone_prefix(store, prefix);
-            Ok(Some(backend_count.max(cache_count)))
+            Ok(Some(backend_count.unwrap_or(0).max(cache_count)))
         }
     }
 
@@ -878,9 +858,29 @@ impl AppSyncStore for JsBackend {
         _version: u64,
         mutations: &[AppStateMutationMAC],
     ) -> Result<()> {
+        let mut keys = Vec::with_capacity(mutations.len());
         for m in mutations {
             let key = format!("{}:{}", name, to_hex(&m.index_mac));
             self.js_set(STORE_MUTATION_MAC, &key, &m.value_mac).await?;
+            keys.push(key);
+        }
+        // Track the keys so clear_mutation_macs can enumerate them on hosts that
+        // can't list a namespace (mirrors sender_key_groups).
+        if self.needs_self_index() && !keys.is_empty() {
+            let mut idx: Vec<String> = self
+                .js_get_json(STORE_META, MUTATION_MAC_INDEX)
+                .await?
+                .unwrap_or_default();
+            let mut seen: std::collections::HashSet<String> = idx.iter().cloned().collect();
+            let before = idx.len();
+            for key in &keys {
+                if seen.insert(key.clone()) {
+                    idx.push(key.clone());
+                }
+            }
+            if idx.len() != before {
+                self.js_set_json(STORE_META, MUTATION_MAC_INDEX, &idx).await?;
+            }
         }
         Ok(())
     }
@@ -895,16 +895,65 @@ impl AppSyncStore for JsBackend {
             let key = format!("{}:{}", name, to_hex(im));
             self.js_delete(STORE_MUTATION_MAC, &key).await?;
         }
+        // Keep the self-index in step with the deletions.
+        if self.needs_self_index() && !index_macs.is_empty() {
+            let mut idx: Vec<String> = self
+                .js_get_json(STORE_META, MUTATION_MAC_INDEX)
+                .await?
+                .unwrap_or_default();
+            if !idx.is_empty() {
+                let removing: std::collections::HashSet<String> = index_macs
+                    .iter()
+                    .map(|im| format!("{}:{}", name, to_hex(im)))
+                    .collect();
+                let before = idx.len();
+                idx.retain(|k| !removing.contains(k));
+                if idx.len() != before {
+                    self.js_set_json(STORE_META, MUTATION_MAC_INDEX, &idx).await?;
+                }
+            }
+        }
         Ok(())
     }
 
     async fn clear_mutation_macs(&self, name: &str) -> Result<()> {
         // Drop every mutation MAC for this collection on snapshot re-sync so the MAC
         // store is rebuilt from the snapshot. Keys are "<name>:<hex(index_mac)>"; the
-        // trailing ':' scopes the prefix to this exact collection (so "regular" can't
-        // also wipe "regular_high").
-        self.js_delete_prefix(STORE_MUTATION_MAC, &format!("{name}:"))
-            .await?;
+        // trailing ':' scopes deletion to this exact collection (so "regular" can't
+        // also wipe "regular_high"). Mirrors clear_all_sender_key_devices: a native
+        // prefix delete when the host has one, else enumerate (listKeys on enumerate
+        // hosts, the self-index otherwise) and delete the collection's keys.
+        let prefix = format!("{name}:");
+        if !(self.has_prefix_delete
+            && self
+                .js_delete_prefix(STORE_MUTATION_MAC, &prefix)
+                .await?
+                .is_some())
+        {
+            let keys: Vec<String> = self
+                .all_keys(STORE_MUTATION_MAC, MUTATION_MAC_INDEX)
+                .await?
+                .into_iter()
+                .filter(|k| k.starts_with(&prefix))
+                .collect();
+            if !keys.is_empty() && !self.js_delete_many(STORE_MUTATION_MAC, &keys).await? {
+                for k in &keys {
+                    self.js_delete(STORE_MUTATION_MAC, k).await?;
+                }
+            }
+        }
+        // Drop the cleared keys from the self-index.
+        if self.needs_self_index() {
+            let remaining: Vec<String> = self
+                .js_get_json::<Vec<String>>(STORE_META, MUTATION_MAC_INDEX)
+                .await?
+                .unwrap_or_default()
+                .into_iter()
+                .filter(|k| !k.starts_with(&prefix))
+                .collect();
+            self.js_set_json(STORE_META, MUTATION_MAC_INDEX, &remaining)
+                .await?;
+        }
         Ok(())
     }
 
