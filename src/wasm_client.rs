@@ -2168,7 +2168,9 @@ impl WasmWhatsAppClient {
     }
 
     /// React to a DM, group, or status@broadcast message. Empty/null `emoji`
-    /// removes a previous reaction. For a Community Announcement Group the core
+    /// removes a previous reaction. For group/status targets `key.participant`
+    /// must carry the original sender (DMs don't need it; for your own message
+    /// `fromMe: true` suffices). For a Community Announcement Group the core
     /// encrypts the reaction with the target's `messageSecret` and sends
     /// `enc_reaction_message` (WA Web `WAWebReactionEncryptMsgData`) — plaintext
     /// reactions are rejected there, so this path must be used instead of a
@@ -2197,7 +2199,8 @@ impl WasmWhatsAppClient {
 
     /// Comment on a channel (CAG) post. `bytes` is the encoded body `Message`
     /// proto (encoding belongs to JS, like `sendMessageBytes`); `parent_key`
-    /// references the post and must carry `participant` (the post author).
+    /// references the post: `participant` is the post author, or `fromMe: true`
+    /// for your own post (the core then resolves your LID/PN as the author).
     /// Requires the parent's `messageSecret`, captured when the post was
     /// received — the core derives the addon key and sends the encrypted
     /// comment envelope. Returns the comment's message id.
@@ -2208,6 +2211,13 @@ impl WasmWhatsAppClient {
         parent_key: crate::result_types::TargetMessageKey,
         bytes: &[u8],
     ) -> Result<String, crate::errors::BridgeError> {
+        // Without either, the core would fall back to the chat JID as the
+        // author and fail the secret lookup the slow way — reject up front.
+        if parent_key.participant.is_none() && !parent_key.from_me {
+            return Err(crate::errors::internal(
+                "parent_key needs participant (the post author) or fromMe: true",
+            ));
+        }
         let (chat, body) = parse_jid_and_msg_bytes(jid, bytes)?;
         let key = waproto::whatsapp::MessageKey {
             remote_jid: Some(chat.to_string()),

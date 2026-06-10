@@ -74,12 +74,16 @@ describe("encodeProto with protobufjs Long objects (quoted reply path)", () => {
 
   test("input object is not mutated (Long objects survive on the original)", () => {
     const long = longOf(BigInt(TS_SMALL), false);
+    // Snapshot before encoding: `kept` is the same reference as `long`, so
+    // comparing kept fields to long fields would pass even after an in-place
+    // mutation — only a pre-encode copy catches that.
+    const snapshot = { ...long };
     const msg = quotedReplyMsg(long, undefined);
     encodeProto("Message", msg);
     const kept = (msg.extendedTextMessage.contextInfo.quotedMessage.videoMessage as any)
       .mediaKeyTimestamp;
     expect(kept).toBe(long);
-    expect(kept.low).toBe(long.low);
+    expect(kept).toEqual(snapshot);
   });
 
   test("clean message without Longs still encodes (fast path)", () => {
