@@ -732,6 +732,13 @@ impl SignalStore for JsBackend {
         self.js_delete(STORE_PREKEY, &id.to_string()).await
     }
 
+    async fn mark_prekeys_uploaded(&self, _ids: &[u32]) -> Result<()> {
+        // Like InMemoryBackend: no per-row uploaded flag (store_prekey ignores
+        // it); the upload window lives in the Device watermarks. The contract
+        // that matters — never resurrecting deleted rows — holds trivially.
+        Ok(())
+    }
+
     async fn get_max_prekey_id(&self) -> Result<u32> {
         match self.js_get(STORE_META, "max_prekey_id").await? {
             Some(bytes) => {
@@ -871,15 +878,20 @@ impl AppSyncStore for JsBackend {
                 .js_get_json(STORE_META, MUTATION_MAC_INDEX)
                 .await?
                 .unwrap_or_default();
-            let mut seen: std::collections::HashSet<String> = idx.iter().cloned().collect();
-            let before = idx.len();
-            for key in &keys {
-                if seen.insert(key.clone()) {
-                    idx.push(key.clone());
+            let seen: std::collections::HashSet<&str> = idx.iter().map(String::as_str).collect();
+            let mut fresh: Vec<String> = Vec::new();
+            for key in keys {
+                // Linear intra-batch dedup: `fresh` is batch-sized, and this
+                // avoids a second owned HashSet of the whole index.
+                if !seen.contains(key.as_str()) && !fresh.contains(&key) {
+                    fresh.push(key);
                 }
             }
-            if idx.len() != before {
-                self.js_set_json(STORE_META, MUTATION_MAC_INDEX, &idx).await?;
+            drop(seen);
+            if !fresh.is_empty() {
+                idx.extend(fresh);
+                self.js_set_json(STORE_META, MUTATION_MAC_INDEX, &idx)
+                    .await?;
             }
         }
         Ok(())
@@ -909,7 +921,8 @@ impl AppSyncStore for JsBackend {
                 let before = idx.len();
                 idx.retain(|k| !removing.contains(k));
                 if idx.len() != before {
-                    self.js_set_json(STORE_META, MUTATION_MAC_INDEX, &idx).await?;
+                    self.js_set_json(STORE_META, MUTATION_MAC_INDEX, &idx)
+                        .await?;
                 }
             }
         }
@@ -923,6 +936,8 @@ impl AppSyncStore for JsBackend {
         // also wipe "regular_high"). Mirrors clear_all_sender_key_devices: a native
         // prefix delete when the host has one, else enumerate (listKeys on enumerate
         // hosts, the self-index otherwise) and delete the collection's keys.
+        // Known migration gap: on self-index hosts, MACs stored before the index
+        // existed are invisible here (they were never cleared pre-#766 either).
         let prefix = format!("{name}:");
         if !(self.has_prefix_delete
             && self
@@ -942,17 +957,27 @@ impl AppSyncStore for JsBackend {
                 }
             }
         }
-        // Drop the cleared keys from the self-index.
+        // Drop the cleared keys from the self-index; delete the meta key when
+        // nothing remains (mirrors clear_all_sender_key_devices), skip the
+        // write when nothing matched.
         if self.needs_self_index() {
-            let remaining: Vec<String> = self
-                .js_get_json::<Vec<String>>(STORE_META, MUTATION_MAC_INDEX)
+            let idx: Vec<String> = self
+                .js_get_json(STORE_META, MUTATION_MAC_INDEX)
                 .await?
-                .unwrap_or_default()
+                .unwrap_or_default();
+            let before = idx.len();
+            let remaining: Vec<String> = idx
                 .into_iter()
                 .filter(|k| !k.starts_with(&prefix))
                 .collect();
-            self.js_set_json(STORE_META, MUTATION_MAC_INDEX, &remaining)
-                .await?;
+            if remaining.is_empty() {
+                if before != 0 {
+                    self.js_delete(STORE_META, MUTATION_MAC_INDEX).await?;
+                }
+            } else if remaining.len() != before {
+                self.js_set_json(STORE_META, MUTATION_MAC_INDEX, &remaining)
+                    .await?;
+            }
         }
         Ok(())
     }

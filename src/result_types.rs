@@ -273,6 +273,21 @@ pub struct ReadMessageKey {
     pub participant: Option<String>,
 }
 
+/// Key of an existing message targeted by `sendReaction` / `sendCommentBytes`.
+/// The chat JID comes from the method's `jid` argument; `participant` is the
+/// original sender (required for group/status targets).
+#[derive(Deserialize, Tsify)]
+#[tsify(from_wasm_abi)]
+#[serde(rename_all = "camelCase")]
+pub struct TargetMessageKey {
+    pub id: String,
+    #[tsify(optional)]
+    #[serde(default)]
+    pub from_me: bool,
+    #[tsify(optional)]
+    pub participant: Option<String>,
+}
+
 /// Result from `createPoll`.
 #[derive(Serialize, Tsify)]
 #[tsify(into_wasm_abi)]

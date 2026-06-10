@@ -234,8 +234,10 @@ export interface Device {
   edge_routing_info?: Uint8Array | null;
   /** Hash from the last props (A/B experiment config) fetch. Sent on subsequent connects to enable delta updates instead of full fetches. */
   props_hash?: string | null;
-  /** Monotonically increasing counter for one-time pre-key ID generation. Matches WhatsApp Web's `NEXT_PK_ID` pattern: only increases, never resets. Prevents prekey ID collisions when prekeys are consumed non-sequentially. */
+  /** Monotonically increasing counter for one-time pre-key ID generation. Matches WhatsApp Web's `NEXT_PK_ID` pattern: only increases, never resets. Advances at GENERATION time (WA Web `savePreKeys`), so it covers every key that exists in the store, uploaded or not. */
   next_pre_key_id: number;
+  /** Watermark of the first generated-but-not-yet-uploaded one-time prekey, matching WA Web's `FIRST_UNUPLOAD_PK_ID`. `next_pre_key_id - this` is the pool of leftover keys an upload re-offers before generating new ones. `0` = unset (legacy device); initialised on the first upload. */
+  first_unupload_pre_key_id: number;
   /** Persisted flag matching WA Web's `signal_sever_has_pre_keys` metadata. */
   server_has_prekeys: boolean;
   /** NCT salt provisioned by the server via app state sync or history sync. */
@@ -360,6 +362,8 @@ export type EditAttribute = "" | "1" | "2" | "3" | "7" | "8" | string;
 export interface GroupInfo {
   participants: Jid[];
   addressing_mode: AddressingMode;
+  /** Whether this group is a Community Announcement Group (WA Web `isCag`, derived from `default_sub_group`). `None` means the persisted blob predates the field, so the answer is unknown and callers must re-query. */
+  is_community_announce?: boolean | null;
 }
 
 /** All possible group notification action types.  Maps 1:1 to `GROUP_NOTIFICATION_TAG` child element tags from WhatsApp Web.  The `#[wire = "..."]` attribute is the SINGLE source of truth for each variant's wire tag: the JSON discriminator (via the auto-derived `Serialize`), the parser dispatch (via the auto-generated sibling `GroupNotificationActionTag` enum), and `wire_tag()` / `tag_name()` all read from the same table. */
@@ -507,7 +511,7 @@ export type LearningSource = "usync" | "peer_pn_message" | "peer_lid_message" | 
 
 /** An entry in the LID-PN cache containing the full mapping information. */
 export interface LidPnEntry {
-  /** The LID user part (e.g., "100000012345678") */
+  /** The LID user part (e.g., "100000012345678"). `Arc<str>`: the cache stores each mapping under both directions, so the identifier strings are shared between the entry and the cache keys instead of re-allocated per copy (this cache is unbounded by design). */
   lid: string;
   /** The phone number user part (e.g., "559980000001") */
   phone_number: string;
@@ -584,6 +588,8 @@ export interface MessageInfo {
   verified_name_serial?: number | null;
   /** Envelope `peer_recipient_pn` attr. Present on companion-device self-synced DM stanzas to identify the peer's PN (so the receipt goes to the right routing target). */
   peer_recipient_pn?: Jid | null;
+  /** Parent post key when the dispatched message is a decrypted CAG channel comment (`enc_comment_message`). The inner `Message` proto has no slot for the threading link, so it surfaces here. */
+  comment_target?: MessageKey | null;
   /** Broadcast-contact-list recipients from `<participants><to jid>` on an incoming broadcast/status stanza. Populated only for broadcasts; used to validate a `deviceSentMessage.phash` (WA Web `validateBclHash`). Empty otherwise. */
   bcl_participants: Jid[];
 }

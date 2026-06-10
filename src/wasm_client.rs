@@ -2167,6 +2167,63 @@ impl WasmWhatsAppClient {
         .map_err(crate::errors::BridgeError::from)
     }
 
+    /// React to a DM, group, or status@broadcast message. Empty/null `emoji`
+    /// removes a previous reaction. For a Community Announcement Group the core
+    /// encrypts the reaction with the target's `messageSecret` and sends
+    /// `enc_reaction_message` (WA Web `WAWebReactionEncryptMsgData`) — plaintext
+    /// reactions are rejected there, so this path must be used instead of a
+    /// JS-built `reactionMessage` proto. Returns the reaction's message id.
+    #[wasm_bindgen(js_name = sendReaction)]
+    pub async fn send_reaction(
+        &self,
+        jid: &str,
+        key: crate::result_types::TargetMessageKey,
+        emoji: Option<String>,
+    ) -> Result<String, crate::errors::BridgeError> {
+        let chat = parse_jid(jid)?;
+        let target_key = waproto::whatsapp::MessageKey {
+            remote_jid: Some(chat.to_string()),
+            from_me: Some(key.from_me),
+            id: Some(key.id),
+            participant: key.participant,
+        };
+        let result = self
+            .client
+            .send_reaction(chat, target_key, emoji.as_deref().unwrap_or(""))
+            .await
+            .map_err(crate::errors::BridgeError::from)?;
+        Ok(result.message_id)
+    }
+
+    /// Comment on a channel (CAG) post. `bytes` is the encoded body `Message`
+    /// proto (encoding belongs to JS, like `sendMessageBytes`); `parent_key`
+    /// references the post and must carry `participant` (the post author).
+    /// Requires the parent's `messageSecret`, captured when the post was
+    /// received — the core derives the addon key and sends the encrypted
+    /// comment envelope. Returns the comment's message id.
+    #[wasm_bindgen(js_name = sendCommentBytes)]
+    pub async fn send_comment_bytes(
+        &self,
+        jid: &str,
+        parent_key: crate::result_types::TargetMessageKey,
+        bytes: &[u8],
+    ) -> Result<String, crate::errors::BridgeError> {
+        let (chat, body) = parse_jid_and_msg_bytes(jid, bytes)?;
+        let key = waproto::whatsapp::MessageKey {
+            remote_jid: Some(chat.to_string()),
+            from_me: Some(parent_key.from_me),
+            id: Some(parent_key.id),
+            participant: parent_key.participant,
+        };
+        let result = self
+            .client
+            .comments()
+            .send_message(chat, key, body)
+            .await
+            .map_err(crate::errors::BridgeError::from)?;
+        Ok(result.message_id)
+    }
+
     /// Mark a chat as read or unread via app state mutation.
     /// Different from readMessages (which sends read receipts).
     #[wasm_bindgen(js_name = markChatAsRead)]
@@ -3147,7 +3204,9 @@ impl WasmWhatsAppClient {
     /// Get the current push name.
     #[wasm_bindgen(js_name = getPushName)]
     pub async fn get_push_name(&self) -> String {
-        self.client.get_push_name().await
+        // Sync since whatsapp-rust #808 (cached Arc<Device> snapshot); kept
+        // async so the JS surface stays Promise-based.
+        self.client.get_push_name()
     }
 
     /// Get the own JID (phone number JID) if logged in.
@@ -3156,10 +3215,7 @@ impl WasmWhatsAppClient {
     /// This is the JID used for addressing in messages.
     #[wasm_bindgen(js_name = getJid)]
     pub async fn get_jid(&self) -> Option<String> {
-        self.client
-            .get_pn()
-            .await
-            .map(|j| j.to_non_ad().to_string())
+        self.client.get_pn().map(|j| j.to_non_ad().to_string())
     }
 
     /// Get the own LID (linked identity) if available.
@@ -3167,17 +3223,14 @@ impl WasmWhatsAppClient {
     /// Returns the non-AD LID (without device suffix), e.g. "100000012345678@lid".
     #[wasm_bindgen(js_name = getLid)]
     pub async fn get_lid(&self) -> Option<String> {
-        self.client
-            .get_lid()
-            .await
-            .map(|j| j.to_non_ad().to_string())
+        self.client.get_lid().map(|j| j.to_non_ad().to_string())
     }
 
     /// Get the ADV signed device identity (account), if available.
     /// Used by upstream Baileys consumers that access `authState.creds.account`.
     #[wasm_bindgen(js_name = getAccount)]
     pub async fn get_account(&self) -> Result<JsValue, crate::errors::BridgeError> {
-        let snapshot = self.persistence_manager.get_device_snapshot().await;
+        let snapshot = self.persistence_manager.get_device_snapshot();
         match &snapshot.account {
             Some(account) => crate::camel_serializer::to_js_value_camel(account)
                 .map_err(|e| crate::errors::internal(format!("account serialization: {e:?}"))),
@@ -3645,7 +3698,10 @@ pub fn decrypt_poll_vote(
     let creator_str = creator.to_non_ad().to_string();
     let voter_str = voter.to_non_ad().to_string();
     let selected_hashes = wacore::poll::decrypt_poll_vote_with_fallback(
-        wacore::poll::PollVoteCiphertext { enc_payload, enc_iv },
+        wacore::poll::PollVoteCiphertext {
+            enc_payload,
+            enc_iv,
+        },
         message_secret,
         poll_msg_id,
         wacore::poll::PollVoteAddressing {

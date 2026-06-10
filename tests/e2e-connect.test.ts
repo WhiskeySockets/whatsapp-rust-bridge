@@ -10,7 +10,7 @@ import {
   createWhatsAppClient,
   type WhatsAppEvent,
 } from "../dist/index.js";
-import { createTransport, createHttp, waitForEvent } from "./helpers.js";
+import { createTransport, createHttp, waitForEvent, autoScanQr } from "./helpers.js";
 
 process.env.NODE_TLS_REJECT_UNAUTHORIZED = "0";
 
@@ -43,7 +43,7 @@ describe("WASM Client E2E", () => {
 
     client.run();
 
-    await waitForEvent(events, "pair_success", 20000);
+    await Promise.all([autoScanQr(events), waitForEvent(events, "pair_success", 20000)]);
 
     console.log("  Events:", events.map(e => e.type));
     expect(events.some(e => e.type === "qr")).toBe(true);

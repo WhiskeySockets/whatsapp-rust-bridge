@@ -21,6 +21,7 @@ import {
   createHttp,
   waitForEvent,
   waitForEventMatching,
+  autoScanQr,
 } from "./helpers.js";
 
 process.env.NODE_TLS_REJECT_UNAUTHORIZED = "0";
@@ -91,13 +92,13 @@ describe("Two-client E2E messaging", () => {
     // before Client B starts, ensuring mock server state is clean.
     alice = await createTestClient("alice");
     alice.client.run();
-    await waitForEvent(alice.events, "pair_success", 20000);
+    await Promise.all([autoScanQr(alice.events), waitForEvent(alice.events, "pair_success", 20000)]);
     await waitForEvent(alice.events, "connected", 45000);
     console.log("  Alice connected!");
 
     bob = await createTestClient("bob");
     bob.client.run();
-    await waitForEvent(bob.events, "pair_success", 20000);
+    await Promise.all([autoScanQr(bob.events), waitForEvent(bob.events, "pair_success", 20000)]);
     await waitForEvent(bob.events, "connected", 45000);
     console.log("  Bob connected!");
 

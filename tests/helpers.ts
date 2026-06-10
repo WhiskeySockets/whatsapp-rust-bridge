@@ -32,6 +32,9 @@ export function createTransport(label?: string): JsTransportCallbacks {
       disconnectTarget = activeWs;
       if (activeWs) {
         activeWs.removeAllListeners();
+        // A late error on the orphaned socket (e.g. server reset during the
+        // post-pairing restart) must not crash the process as unhandled.
+        activeWs.on("error", () => {});
       }
 
       if (label) console.log(`  [${label}] ws connecting...`);
@@ -77,6 +80,7 @@ export function createTransport(label?: string): JsTransportCallbacks {
       const toClose = disconnectTarget ?? activeWs;
       if (toClose) {
         toClose.removeAllListeners();
+        toClose.on("error", () => {});
         toClose.close();
       }
       if (toClose === activeWs) {
@@ -113,6 +117,33 @@ export function createHttp(): JsHttpClientConfig {
       }
     },
   } satisfies JsHttpClientConfig;
+}
+
+/**
+ * Auto-scan the pairing QR like a phone would: waits for the first `qr` event
+ * and POSTs its code to the mock server's `/admin/mock-phone/scan-qr` admin
+ * endpoint, which triggers pair-success. Mirrors whatsapp-rust's
+ * `spawn_qr_autoresponder_http` — the server only auto-pairs after a scan.
+ */
+export async function autoScanQr(
+  events: Array<{ type: string; data?: unknown }>,
+  timeoutMs = 15000
+): Promise<void> {
+  const qr = (await waitForEvent(events, "qr", timeoutMs)) as {
+    type: string;
+    data: { code: string };
+  };
+  const admin = new URL(MOCK_SERVER_URL.replace(/^ws/, "http"));
+  const res = await fetch(`${admin.protocol}//${admin.host}/admin/mock-phone/scan-qr`, {
+    method: "POST",
+    body: qr.data.code,
+    // Bun option for the mock server's self-signed cert; harmless elsewhere
+    // (Node needs NODE_TLS_REJECT_UNAUTHORIZED=0 like the ws transport).
+    tls: { rejectUnauthorized: false },
+  } as RequestInit);
+  if (!res.ok) {
+    throw new Error(`scan-qr admin POST failed: ${res.status} ${await res.text()}`);
+  }
 }
 
 /**
