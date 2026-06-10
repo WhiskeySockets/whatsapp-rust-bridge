@@ -134,6 +134,8 @@ bridge_events! {
         StarUpdate               => "star_update"                   => "StarUpdate",
         MarkChatAsReadUpdate     => "mark_chat_as_read_update"      => "MarkChatAsReadUpdate",
         DeleteChatUpdate         => "delete_chat_update"            => "DeleteChatUpdate",
+        ClearChatUpdate          => "clear_chat_update"             => "ClearChatUpdate",
+        UserStatusMuteUpdate     => "user_status_mute_update"       => "UserStatusMuteUpdate",
         DeleteMessageForMeUpdate => "delete_message_for_me_update"  => "DeleteMessageForMeUpdate",
         LabelEditUpdate          => "label_edit_update"             => "LabelEditUpdate",
         LabelAssociationUpdate   => "label_association_update"      => "LabelAssociationUpdate",
@@ -1733,7 +1735,8 @@ impl WasmWhatsAppClient {
         for (key, metadata) in &groups {
             let result = group_metadata_to_result(metadata);
             let js_metadata = serde_wasm_bindgen::to_value(&result)?;
-            js_sys::Reflect::set(&obj, &JsValue::from_str(key), &js_metadata)?;
+            // #767: get_participating now keys by Jid (was String) — stringify for the JS object key.
+            js_sys::Reflect::set(&obj, &JsValue::from_str(&key.to_string()), &js_metadata)?;
         }
         Ok(obj.into())
     }
@@ -1917,6 +1920,7 @@ impl WasmWhatsAppClient {
                 picture_id: info.picture_id.clone(),
                 is_business: info.is_business,
                 verified_name: info.verified_name.as_ref().and_then(|v| v.name.clone()),
+                devices: info.devices.clone(),
             };
             let js_entry = serde_wasm_bindgen::to_value(&entry)?;
             js_sys::Reflect::set(&obj, &JsValue::from_str(&jid.to_string()), &js_entry)?;
@@ -2190,6 +2194,26 @@ impl WasmWhatsAppClient {
             .map_err(crate::errors::BridgeError::from)
     }
 
+    /// Clear a chat's messages while keeping the chat (WA Web's clearChat), via an
+    /// app-state mutation. `delete_starred` also removes starred messages and
+    /// `delete_media` also removes downloaded media (both flags live in the mutation
+    /// index, not the proto). Mirrors `deleteChat` in passing `None` for the message
+    /// range, i.e. clears the whole chat.
+    #[wasm_bindgen(js_name = clearChat)]
+    pub async fn clear_chat(
+        &self,
+        jid: &str,
+        delete_starred: bool,
+        delete_media: bool,
+    ) -> Result<(), crate::errors::BridgeError> {
+        let chat_jid = parse_jid(jid)?;
+        self.client
+            .chat_actions()
+            .clear_chat(&chat_jid, delete_starred, delete_media, None)
+            .await
+            .map_err(crate::errors::BridgeError::from)
+    }
+
     /// Delete a message for self (not for everyone).
     #[wasm_bindgen(js_name = deleteMessageForMe)]
     pub async fn delete_message_for_me(
@@ -2296,8 +2320,10 @@ impl WasmWhatsAppClient {
             let chat_jid = parse_jid(&chat_jid_str)?;
             let participant_jid = participant_str.as_deref().map(parse_jid).transpose()?;
 
+            // #775: mark_as_read now takes &[&str] (alloc-aware); borrow the owned ids.
+            let id_refs: Vec<&str> = ids.iter().map(String::as_str).collect();
             self.client
-                .mark_as_read(&chat_jid, participant_jid.as_ref(), ids)
+                .mark_as_read(&chat_jid, participant_jid.as_ref(), &id_refs)
                 .await?;
         }
 
@@ -2328,8 +2354,10 @@ impl WasmWhatsAppClient {
             let chat_jid = parse_jid(&chat_jid_str)?;
             let participant_jid = participant_str.as_deref().map(parse_jid).transpose()?;
 
+            // #775: mark_as_played now takes &[&str] (alloc-aware); borrow the owned ids.
+            let id_refs: Vec<&str> = ids.iter().map(String::as_str).collect();
             self.client
-                .mark_as_played(&chat_jid, participant_jid.as_ref(), ids)
+                .mark_as_played(&chat_jid, participant_jid.as_ref(), &id_refs)
                 .await?;
         }
 
@@ -2690,6 +2718,23 @@ impl WasmWhatsAppClient {
             .map_err(crate::errors::BridgeError::from)
     }
 
+    /// Mute or unmute a newsletter's follower-activity notifications — the channel
+    /// mute a subscriber toggles (WA Web `MUTE_FOLLOWER_ACTIVITY`). `muted = true`
+    /// silences them. The separate owner-only admin-activity mute is not exposed.
+    #[wasm_bindgen(js_name = newsletterMute)]
+    pub async fn newsletter_mute(
+        &self,
+        jid: &str,
+        muted: bool,
+    ) -> Result<(), crate::errors::BridgeError> {
+        let target = parse_jid(jid)?;
+        self.client
+            .newsletter()
+            .set_follower_mute(&target, muted)
+            .await
+            .map_err(crate::errors::BridgeError::from)
+    }
+
     // ── Media reupload ────────────────────────────────────────────────────
 
     /// Request the server to re-upload expired media.
@@ -2800,14 +2845,14 @@ impl WasmWhatsAppClient {
         let mt: wacore::download::MediaType = media_type.into();
         let data = self
             .client
-            .download_from_params(
+            .download_from_params(&whatsapp_rust::download::DownloadParams::encrypted(
                 direct_path,
                 media_key,
                 file_sha256,
                 file_enc_sha256,
                 file_length as u64,
                 mt,
-            )
+            ))
             .await?;
         Ok(js_sys::Uint8Array::from(&data[..]))
     }
@@ -2841,14 +2886,14 @@ impl WasmWhatsAppClient {
             use futures::SinkExt;
 
             match client
-                .download_from_params(
-                    &direct_path,
+                .download_from_params(&whatsapp_rust::download::DownloadParams::encrypted(
+                    direct_path.as_str(),
                     &media_key,
                     &file_sha256,
                     &file_enc_sha256,
                     file_length,
                     mt,
-                )
+                ))
                 .await
             {
                 Ok(data) => {
@@ -3600,8 +3645,7 @@ pub fn decrypt_poll_vote(
     let creator_str = creator.to_non_ad().to_string();
     let voter_str = voter.to_non_ad().to_string();
     let selected_hashes = wacore::poll::decrypt_poll_vote_with_fallback(
-        enc_payload,
-        enc_iv,
+        wacore::poll::PollVoteCiphertext { enc_payload, enc_iv },
         message_secret,
         poll_msg_id,
         wacore::poll::PollVoteAddressing {
@@ -3655,8 +3699,10 @@ pub fn get_aggregate_votes_in_poll_message(
         let voter_jid: Jid = v.voter.parse()?;
         let voter_str = voter_jid.to_non_ad().to_string();
         match wacore::poll::decrypt_poll_vote_with_fallback(
-            &v.enc_payload,
-            &v.enc_iv,
+            wacore::poll::PollVoteCiphertext {
+                enc_payload: &v.enc_payload,
+                enc_iv: &v.enc_iv,
+            },
             message_secret,
             poll_msg_id,
             wacore::poll::PollVoteAddressing {

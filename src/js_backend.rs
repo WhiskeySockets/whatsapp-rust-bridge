@@ -875,6 +875,16 @@ impl AppSyncStore for JsBackend {
         Ok(())
     }
 
+    async fn clear_mutation_macs(&self, name: &str) -> Result<()> {
+        // Drop every mutation MAC for this collection on snapshot re-sync so the MAC
+        // store is rebuilt from the snapshot. Keys are "<name>:<hex(index_mac)>"; the
+        // trailing ':' scopes the prefix to this exact collection (so "regular" can't
+        // also wipe "regular_high").
+        self.js_delete_prefix(STORE_MUTATION_MAC, &format!("{name}:"))
+            .await?;
+        Ok(())
+    }
+
     async fn get_latest_sync_key_id(&self) -> Result<Option<Vec<u8>>> {
         self.js_get(STORE_META, "latest_sync_key_id").await
     }

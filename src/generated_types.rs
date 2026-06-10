@@ -130,6 +130,19 @@ export interface ChatPresenceUpdate {
 /** Chat state type for typing indicators. */
 export type ChatStateType = "composing" | "recording" | "paused";
 
+/** A chat's messages were cleared (kept) on a linked device. */
+export interface ClearChatUpdate {
+  /** The chat being cleared. */
+  jid: Jid;
+  /** From the index, not the proto — ClearChatAction only has messageRange. */
+  delete_starred: boolean;
+  /** From the index, not the proto. */
+  delete_media: boolean;
+  timestamp: number;
+  action: ClearChatAction;
+  from_full_sync: boolean;
+}
+
 export interface ConnectFailure {
   reason: ConnectFailureReason;
   message: string;
@@ -771,6 +784,8 @@ export interface Receipt {
   message_ids: string[];
   timestamp: number;
   type: ReceiptType;
+  /** True when the receipt carried the `offline` attribute, i.e. it was drained from the server's offline queue on reconnect rather than delivered live. Mirrors WA Web `incomingMsgReceiptParser` (`offline: maybeAttrString`). */
+  offline: boolean;
 }
 
 export type ReceiptType =
@@ -853,6 +868,17 @@ export interface UserAboutUpdate {
   jid: Jid;
   status: string;
   timestamp: number;
+}
+
+/** A contact/group/newsletter's status updates were muted/unmuted on a linked device. */
+export interface UserStatusMuteUpdate {
+  /** The entity whose status was (un)muted. */
+  jid: Jid;
+  /** `true` = status muted, `false` = unmuted. */
+  muted: boolean;
+  timestamp: number;
+  action: UserStatusMuteAction;
+  from_full_sync: boolean;
 }
 
 /** Usync context. */

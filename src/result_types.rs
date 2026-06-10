@@ -178,6 +178,10 @@ pub struct UserInfoResult {
     /// Verified business name from the usync `<business><verified_name>` cert, if any.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub verified_name: Option<String>,
+    /// Device IDs from the usync `<devices>` sublist the same query returns. Empty when
+    /// the server returned no device list.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub devices: Vec<u16>,
 }
 
 /// A participant change result from `groupParticipantsUpdate`.

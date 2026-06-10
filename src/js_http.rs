@@ -51,7 +51,8 @@ impl HttpClient for JsHttpClientAdapter {
         }
 
         let body_js = match &request.body {
-            Some(b) => Uint8Array::from(b.as_slice()).into(),
+            // #774: HttpRequest.body is now `Bytes` (was Vec<u8>); index to a &[u8] slice.
+            Some(b) => Uint8Array::from(&b[..]).into(),
             None => JsValue::NULL,
         };
 
