@@ -93,6 +93,7 @@ use waproto::whatsapp::{
 };
 
 use crate::legacy_session::{ChainSeeds, MessageKeySeed, SessionMeta, SessionSeeds};
+use crate::session_record::SessionRecord;
 use wasm_bindgen::prelude::*;
 use wasm_bindgen_futures::JsFuture;
 
@@ -113,12 +114,17 @@ use wacore_libsignal::store::sender_key_name::SenderKeyName as CoreSenderKeyName
 #[wasm_bindgen(typescript_custom_section)]
 const TS_SIGNAL_STORAGE: &str = r#"
 export interface SignalStorage {
-    // Raw proto bytes OR a Baileys session object — the latter is migrated, so an
-    // existing Baileys store works as-is (drop-in).
+    // Set `dropInBaileysFormat: true` to opt into the revertible Baileys-JSON
+    // on-disk format: `storeSession` then receives the libsignal-node session
+    // object (and `storeSenderKey` its JSON bytes), and a Baileys session object
+    // returned from `loadSession` is migrated transparently. Default and
+    // `storeSessionRaw` keep the native format.
+    dropInBaileysFormat?: boolean;
+    // May return native proto bytes OR (drop-in) a Baileys session object.
     loadSession(address: string): Uint8Array | object | null | undefined | Promise<Uint8Array | object | null | undefined>;
-    // Drop-in: receives the Baileys session JSON to persist (revertible). Provide
-    // `storeSessionRaw` instead for native proto bytes (faster, not interchangeable).
-    storeSession(address: string, session: any): void | Promise<void>;
+    // Default: a `SessionRecord` (call `.serialize()`). Drop-in: the Baileys
+    // session JSON object. `storeSessionRaw`: native proto bytes (no SessionRecord).
+    storeSession(address: string, session: SessionRecord | any): void | Promise<void>;
     storeSessionRaw?(address: string, record: Uint8Array): void | Promise<void>;
     getOurIdentity(): KeyPair | Promise<KeyPair>;
     getOurRegistrationId(): number | Promise<number>;
@@ -200,6 +206,7 @@ pub struct JsStorageAdapter {
     cached_sender_keys: Rc<RefCell<HashMap<String, CoreSenderKeyRecord>>>,
     cached_identities: Rc<RefCell<HashMap<String, Vec<u8>>>>,
     has_store_session_raw: Rc<RefCell<Option<bool>>>,
+    is_drop_in: Rc<RefCell<Option<bool>>>,
     last_address_cache: Rc<RefCell<Option<(String, String)>>>,
     last_sender_key_cache: Rc<RefCell<Option<(String, String, String)>>>,
 }
@@ -215,6 +222,7 @@ impl JsStorageAdapter {
             cached_sender_keys: Rc::new(RefCell::new(HashMap::new())),
             cached_identities: Rc::new(RefCell::new(HashMap::new())),
             has_store_session_raw: Rc::new(RefCell::new(None)),
+            is_drop_in: Rc::new(RefCell::new(None)),
             last_address_cache: Rc::new(RefCell::new(None)),
             last_sender_key_cache: Rc::new(RefCell::new(None)),
         }
@@ -229,6 +237,22 @@ impl JsStorageAdapter {
             .unwrap_or(false);
         self.has_store_session_raw.borrow_mut().replace(has_raw);
         has_raw
+    }
+
+    /// Drop-in (Baileys JSON) mode is OPT-IN via a truthy `dropInBaileysFormat`
+    /// on the store. Default (and `storeSessionRaw`) keep the native proto path,
+    /// so an existing consumer whose `storeSession` calls `record.serialize()`
+    /// isn't silently handed a plain object.
+    fn is_drop_in(&self) -> bool {
+        if let Some(v) = *self.is_drop_in.borrow() {
+            return v;
+        }
+        let v = js_sys::Reflect::get(&self.js_storage, &JsValue::from_str("dropInBaileysFormat"))
+            .ok()
+            .and_then(|x| x.as_bool())
+            .unwrap_or(false);
+        self.is_drop_in.borrow_mut().replace(v);
+        v
     }
 
     #[inline]
@@ -296,7 +320,7 @@ impl JsStorageAdapter {
         sender_ratchet_key: &libsignal::PublicKey,
         counter: u32,
     ) -> Vec<SkipSnapshot> {
-        if self.has_store_session_raw() {
+        if !self.is_drop_in() {
             return Vec::new();
         }
         let address_str = self.get_address_string(address);
@@ -466,7 +490,7 @@ impl JsStorageAdapter {
     /// Rewrite the session JSON after a gap decrypt commits new seeds — wacore's
     /// own store ran before they existed. Drop-in mode only.
     pub(crate) async fn repersist_session_json(&self, address: &libsignal::ProtocolAddress) {
-        if self.has_store_session_raw() {
+        if !self.is_drop_in() {
             return;
         }
         let address_str = self.get_address_string(address);
@@ -1250,19 +1274,24 @@ impl SessionStore for JsStorageAdapter {
             .borrow_mut()
             .insert(address_str.clone(), record);
 
-        if self.has_store_session_raw() {
-            // Native fast path: hand back the raw wacore proto bytes.
+        // Drop-in (opt-in): persist Baileys JSON (with captured seeds). Raw:
+        // hand back proto bytes. Default: a `SessionRecord` whose `.serialize()`
+        // a legacy consumer calls — unchanged from before this feature.
+        let result = if self.is_drop_in() {
+            return self.write_session_json(&address_str, &bytes).await;
+        } else if self.has_store_session_raw() {
             let uint8 = Uint8Array::from(bytes.as_slice());
-            let result = self.js_storage.js_store_session_raw(&address_str, &uint8);
-            let promise_value = result.map_err(js_to_signal_error)?;
-            resolve_maybe_promise(promise_value)
-                .await
-                .map_err(js_to_signal_error)?;
-            Ok(())
+            self.js_storage.js_store_session_raw(&address_str, &uint8)
         } else {
-            // Drop-in path: persist Baileys JSON (with captured seeds re-attached).
-            self.write_session_json(&address_str, &bytes).await
-        }
+            let js_record: JsValue = SessionRecord::new(bytes).into();
+            self.js_storage.js_store_session(&address_str, js_record)
+        };
+
+        let promise_value = result.map_err(js_to_signal_error)?;
+        resolve_maybe_promise(promise_value)
+            .await
+            .map_err(js_to_signal_error)?;
+        Ok(())
     }
 }
 
@@ -1518,13 +1547,13 @@ impl SenderKeyStore for JsStorageAdapter {
             .borrow_mut()
             .insert(key_id.clone(), record);
 
-        // Drop-in mode (no storeSessionRaw) persists the Baileys sender-key JSON
-        // so a group session can revert; raw mode keeps the native proto bytes.
-        let out_bytes = if self.has_store_session_raw() {
-            bytes
-        } else {
+        // Drop-in mode persists the Baileys sender-key JSON so a group session can
+        // revert; otherwise keep the native proto bytes.
+        let out_bytes = if self.is_drop_in() {
             crate::legacy_session::sender_key_record_to_legacy_json(&bytes)
                 .map_err(js_to_signal_error)?
+        } else {
+            bytes
         };
         let uint8 = Uint8Array::from(out_bytes.as_slice());
 

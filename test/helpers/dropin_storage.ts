@@ -9,6 +9,8 @@ import {
 } from "../../dist";
 
 export class DropInStorage {
+  // Opt into the Baileys-JSON drop-in format (the bridge defaults to proto).
+  dropInBaileysFormat = true;
   sessions = new Map<string, any>();
   senderKeys = new Map<string, Uint8Array>();
   private identities = new Map<string, Uint8Array>();
