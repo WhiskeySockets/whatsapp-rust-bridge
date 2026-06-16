@@ -5,21 +5,15 @@ use js_sys::{Promise, Uint8Array};
 use prost::Message;
 use sha2::Sha256;
 
-// Mirror wacore's skipped-key bounds (libsignal consts.rs) so the seed sidecar
-// stays in step with the receiver-chain cache it shadows.
+// Mirror wacore's skipped-key bounds (libsignal consts.rs).
 const MAX_FORWARD_JUMPS: u32 = 25_000;
 const MAX_MESSAGE_KEYS: usize = 2000;
-// Per-address chain cap for the seed sidecar (defense-in-depth; only authenticated
-// messages ever reach it). Sized above wacore's worst case — MAX_RECEIVER_CHAINS
-// (5) across the current + up to CLOSED_SESSIONS_MAX (40) archived sessions —
-// so a legitimate multi-session record never has valid seeds evicted.
+// Above wacore's worst case (5 receiver chains × ~41 sessions) so a legit
+// multi-session record never has valid seeds evicted.
 const MAX_CACHED_CHAINS: usize = 256;
 
-/// Pre-decrypt snapshot of just enough state to compute a message's skipped-key
-/// seeds — captured cheaply (no DH, no chain stepping) BEFORE wacore decrypts,
-/// and only consumed AFTER the message authenticates. A forged message is
-/// dropped here, so it can never drive the DH ratchet, the HMAC stepping, or a
-/// cache/disk write.
+/// Enough pre-decrypt state to compute a message's skipped seeds, captured cheaply
+/// and only consumed post-auth — so a forged message drives no DH/stepping/write.
 pub(crate) enum SkipSnapshot {
     /// Gap within an existing receiver chain: step forward from its chain key.
     Existing {
@@ -38,18 +32,16 @@ pub(crate) enum SkipSnapshot {
     },
 }
 
-/// The 32-byte message-key seed wacore caches for a skipped key:
-/// `HMAC-SHA256(chainKey, [0x01])` (its `MESSAGE_KEY_SEED`). Byte-identical to
-/// what libsignal-node stores, so re-emitting it round-trips losslessly.
+/// The skipped-key seed: `HMAC-SHA256(chainKey, [0x01])` — what libsignal-node
+/// stores, so re-emitting it round-trips losslessly.
 fn message_key_seed(chain_key: &[u8; 32]) -> Vec<u8> {
     let mut mac = Hmac::<Sha256>::new_from_slice(chain_key).expect("HMAC accepts any key length");
     mac.update(&[0x01]);
     mac.finalize().into_bytes().to_vec()
 }
 
-/// Build a pre-decrypt skip-seed candidate from one session state (cheap: no DH,
-/// no stepping). `allow_new_chain` is true only for the current session — a new
-/// DH ratchet never lands on an archived one.
+/// A skip-seed candidate from one session state. `allow_new_chain` only for the
+/// current session — a new DH ratchet never lands on an archived one.
 fn skip_candidate(
     state: &libsignal::SessionState,
     sender_ratchet_key: &libsignal::PublicKey,
@@ -117,14 +109,11 @@ use wacore_libsignal::store::sender_key_name::SenderKeyName as CoreSenderKeyName
 #[wasm_bindgen(typescript_custom_section)]
 const TS_SIGNAL_STORAGE: &str = r#"
 export interface SignalStorage {
-    // May return raw bytes (native proto) OR a libsignal-node session object
-    // (`{_sessions, version}` / a flat session) — the bridge migrates the latter
-    // transparently, so an existing Baileys store can be used as-is (drop-in).
+    // Raw proto bytes OR a Baileys session object — the latter is migrated, so an
+    // existing Baileys store works as-is (drop-in).
     loadSession(address: string): Uint8Array | object | null | undefined | Promise<Uint8Array | object | null | undefined>;
-    // Drop-in default: receives the libsignal-node session JSON object to persist
-    // (same shape Baileys stores), keeping the on-disk format revertible. Provide
-    // `storeSessionRaw` instead to receive the native proto bytes (faster, not
-    // interchangeable with Baileys).
+    // Drop-in: receives the Baileys session JSON to persist (revertible). Provide
+    // `storeSessionRaw` instead for native proto bytes (faster, not interchangeable).
     storeSession(address: string, session: any): void | Promise<void>;
     storeSessionRaw?(address: string, record: Uint8Array): void | Promise<void>;
     getOurIdentity(): KeyPair | Promise<KeyPair>;
@@ -201,9 +190,8 @@ pub struct JsStorageAdapter {
     cached_identity_key_pair: Rc<RefCell<Option<IdentityKeyPair>>>,
     cached_registration_id: Rc<RefCell<Option<u32>>>,
     cached_sessions: Rc<RefCell<HashMap<String, CoreSessionRecord>>>,
-    // Skipped-key seeds captured when importing a libsignal-node session, kept
-    // per address so the drop-in write path can re-emit them in the Baileys JSON
-    // (wacore's record can't carry them). Empty for bridge-originated sessions.
+    // Skipped-key seeds the wacore record can't carry, per address, so the drop-in
+    // write path can re-emit them in the Baileys JSON.
     cached_seeds: Rc<RefCell<HashMap<String, SessionSeeds>>>,
     cached_sender_keys: Rc<RefCell<HashMap<String, CoreSenderKeyRecord>>>,
     cached_identities: Rc<RefCell<HashMap<String, Vec<u8>>>>,
@@ -288,23 +276,16 @@ impl JsStorageAdapter {
         let local_identity_public: Vec<u8> = local_identity.public_key().serialize().into();
         let local_reg_id = self.get_local_registration_id().await?;
 
-        // Seeds + per-session meta ride alongside the record so the drop-in write
-        // path can re-emit them in the Baileys JSON (the wacore record can't).
+        // Seeds + meta ride alongside the record for the drop-in write path.
         match legacy_value_to_record(&value, local_identity_public, local_reg_id)? {
             Some((record, seeds)) => Ok(Some((record.encode_to_vec(), seeds))),
             None => Ok(None),
         }
     }
 
-    /// Drop-in losslessness, phase 1 (pre-decrypt, CHEAP): record just enough to
-    /// later compute the seeds for keys this message will skip — without doing the
-    /// DH ratchet or any HMAC stepping yet. wacore may decrypt a gap via the
-    /// current session OR a promoted archived one, so snapshot a candidate from
-    /// EVERY session (current + previous): each archived session that already owns
-    /// the message's receiver chain, plus the current session for a brand-new
-    /// ratchet. The post-auth commit derives them all and the export self-validates
-    /// (`seed_matches_record`), so candidates from the wrong session are dropped.
-    /// Returns an empty Vec in raw mode / when there's nothing to read.
+    /// Phase 1 (pre-decrypt, cheap): a skip candidate per session. wacore may
+    /// decrypt via the current session or a promoted archived one, so snapshot all;
+    /// the export's `seed_matches_record` later drops the wrong-session candidates.
     pub(crate) async fn snapshot_skip(
         &self,
         address: &libsignal::ProtocolAddress,
@@ -315,8 +296,7 @@ impl JsStorageAdapter {
             return Vec::new();
         }
         let address_str = self.get_address_string(address);
-        // Populate the session cache once (clones only on a cold miss); read by
-        // reference below — no per-message record clone.
+        // Populate the cache once, then read by reference (no per-message clone).
         if !self.cached_sessions.borrow().contains_key(&address_str) {
             let _ = SessionStore::load_session(self, address).await;
         }
@@ -347,11 +327,8 @@ impl JsStorageAdapter {
         snaps
     }
 
-    /// Phase 2 (post-decrypt, AUTHENTICATED): turn a snapshot into seeds and merge
-    /// them. Only now do we run the DH ratchet replication (`RootKey::create_chain`
-    /// — X25519 + "WhisperRatchet" KDF, reusing wacore primitives) and the HMAC
-    /// chain stepping. Returns whether anything was captured (so the caller knows
-    /// to re-persist the just-written JSON with the new seeds).
+    /// Phase 2 (post-auth): derive a snapshot's seeds (running the DH ratchet /
+    /// stepping only now) and merge them. Returns whether anything was captured.
     pub(crate) fn commit_skip_snapshot(
         &self,
         address: &libsignal::ProtocolAddress,
@@ -395,9 +372,8 @@ impl JsStorageAdapter {
         captured
     }
 
-    /// Post-auth: commit every skip snapshot from a decrypt and, if any seeds were
-    /// captured, rewrite the session JSON so they survive a revert. Shared by both
-    /// decrypt paths.
+    /// Commit every skip snapshot and, if any seeds were captured, rewrite the
+    /// session JSON so they survive a revert. Shared by both decrypt paths.
     pub(crate) async fn commit_skipped(
         &self,
         address: &libsignal::ProtocolAddress,
@@ -412,9 +388,8 @@ impl JsStorageAdapter {
         }
     }
 
-    /// Merge freshly-captured seeds into the per-address sidecar, keyed by chain.
-    /// Bounds memory like wacore bounds its caches: at most `MAX_MESSAGE_KEYS`
-    /// indices per chain and `MAX_CACHED_CHAINS` chains per address.
+    /// Merge captured seeds into the sidecar, keyed by chain. Bounded by
+    /// `MAX_MESSAGE_KEYS` per chain and `MAX_CACHED_CHAINS` per address.
     fn merge_seeds(&self, address: &str, ratchet_key: Vec<u8>, seeds: Vec<MessageKeySeed>) {
         if seeds.is_empty() {
             return;
@@ -452,10 +427,9 @@ impl JsStorageAdapter {
         }
     }
 
-    /// Record `baseKeyType = OURS` for a base key. Called while a bridge-native
-    /// initiator session still has `pendingPreKey` — the only window to learn it,
-    /// since wacore keeps no baseKeyType and the ack later clears pendingPreKey.
-    /// Never downgrades an explicit value carried over from an import.
+    /// Record `baseKeyType = OURS` while a bridge-native initiator still has
+    /// `pendingPreKey` — the only window, since wacore keeps no baseKeyType and the
+    /// ack clears pendingPreKey. Never downgrades an imported value.
     fn mark_base_key_ours(&self, address: &str, base_key: &[u8]) {
         let mut cache = self.cached_seeds.borrow_mut();
         let entry = cache.entry(address.to_string()).or_default();
@@ -474,10 +448,8 @@ impl JsStorageAdapter {
         }
     }
 
-    /// Rewrite the persisted session JSON for `address` from the cached record +
-    /// sidecar seeds. Called after a gap decrypt commits new seeds, since wacore's
-    /// own store (during decrypt) ran before those seeds existed. Drop-in mode
-    /// only; no-op otherwise.
+    /// Rewrite the session JSON after a gap decrypt commits new seeds — wacore's
+    /// own store ran before they existed. Drop-in mode only.
     pub(crate) async fn repersist_session_json(&self, address: &libsignal::ProtocolAddress) {
         if self.has_store_session_raw() {
             return;
@@ -498,8 +470,7 @@ impl JsStorageAdapter {
     async fn write_session_json(&self, address_str: &str, record_bytes: &[u8]) -> SignalResult<()> {
         let record_struct = RecordStructure::decode(record_bytes)
             .map_err(|e| invalid_js_data("store_session", format!("decode record: {e}")))?;
-        // Learn baseKeyType=OURS for a bridge-native initiator session while its
-        // pendingPreKey is still present (see mark_base_key_ours).
+        // Capture baseKeyType=OURS while pendingPreKey is present (mark_base_key_ours).
         if let Some(cs) = record_struct.current_session.as_ref()
             && cs.pending_pre_key.is_some()
             && let Some(base_key) = cs.alice_base_key.as_deref()
@@ -598,11 +569,9 @@ impl JsStorageAdapter {
     }
 }
 
-/// Convert one libsignal-node session entry into a wacore `SessionStructure`,
-/// the skipped-key seed chains it carries, and the per-session metadata wacore
-/// can't store (`baseKeyType`, `lastRemoteEphemeralKey`). `local_identity_public`
-/// /`local_reg_id` aren't part of the libsignal-node interchange — pass empty/0
-/// when only the seeds matter (the reverse path drops them anyway).
+/// One libsignal-node session entry -> wacore `SessionStructure` + its seed
+/// chains + sidecar meta. `local_identity_public`/`local_reg_id` aren't part of
+/// the interchange — pass empty/0 when only the seeds matter.
 fn legacy_entry_to_session(
     session_data: &JsValue,
     local_identity_public: &[u8],
@@ -634,10 +603,8 @@ fn legacy_entry_to_session(
         get_string(&index_info, "baseKey").unwrap_or_default(),
     ));
 
-    // Per-session metadata wacore's proto can't represent — carried in the sidecar
-    // so the reverse path is lossless (baseKeyType after an ack clears
-    // pendingPreKey, lastRemoteEphemeralKey, and the indexInfo timestamps that
-    // drive libsignal-node's attempt order + age pruning).
+    // Sidecar meta for fields wacore's proto can't hold (baseKeyType,
+    // lastRemoteEphemeralKey, indexInfo timestamps).
     let meta = SessionMeta {
         base_key: base_key.clone(),
         base_key_type: get_number(&index_info, "baseKeyType").unwrap_or(0.0) as u32,
@@ -677,15 +644,12 @@ fn legacy_entry_to_session(
 
         let chain_key_obj = get_object(&chain, "chainKey")
             .ok_or_else(|| invalid_js_data("migrate", "Missing chainKey for legacy chain entry"))?;
-        // JS `chainKey.counter` is the last-consumed counter (fresh = -1); wacore's
-        // `ChainKey.index` is the next-to-derive (fresh = 0), so they differ by one.
-        // Add before the cast so -1 maps to 0 instead of saturating; without this,
-        // forward-stepped messages BadMac.
+        // JS counter (last-used, fresh -1) -> wacore index (next-to-derive, fresh
+        // 0). Add before the cast so -1 maps to 0 rather than saturating.
         let chain_index =
             (get_number(&chain_key_obj, "counter").unwrap_or(-1.0) + 1.0).max(0.0) as u32;
-        // A closed receiver chain has its `chainKey.key` deleted — keep the index
-        // but leave the key absent so it stays closed instead of resurrecting as
-        // an empty-key live chain.
+        // A closed receiver chain has no `chainKey.key` — keep the index, leave the
+        // key absent so it stays closed instead of becoming an empty-key live chain.
         let chain_key_bytes = get_string(&chain_key_obj, "key")
             .map(decode_b64)
             .filter(|b| !b.is_empty());
@@ -751,11 +715,8 @@ fn legacy_entry_to_session(
         }
     }
 
-    // pendingPreKey: the alice-side discriminator; preserving it keeps an
-    // initiator's not-yet-acked session sending PreKeyWhisperMessages.
-    // `get_object` returns `Some(undefined)` for an absent key, so filter to a
-    // real object — otherwise we'd forge an empty pendingPreKey and wacore would
-    // reject the session with "invalid pending PreKey message base key".
+    // Filter to a real object: `get_object` returns `Some(undefined)` for an
+    // absent key, and a forged empty pendingPreKey makes wacore reject the session.
     let pending_pre_key = get_object(session_data, "pendingPreKey")
         .filter(|ppk| ppk.is_object())
         .map(|ppk| PendingPreKey {
@@ -858,10 +819,8 @@ fn legacy_value_to_record(
 
     // Most-recently-closed first (matches libsignal-node's removeOldSessions order).
     previous.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
-    // No open session → leave `current_session` empty (do NOT promote an archived
-    // one). libsignal-node refuses to encrypt with no open session and the bridge
-    // must mirror that, while still keeping the archived sessions for decrypt and
-    // for a lossless revert (no phantom open session resurrected).
+    // No open session → leave `current_session` empty (don't promote an archived
+    // one): libsignal-node refuses to encrypt without one, so mirror that.
     let previous_sessions: Vec<SessionStructure> = previous.into_iter().map(|(s, _)| s).collect();
     if current.is_none() && previous_sessions.is_empty() {
         return Ok(None);
@@ -879,10 +838,8 @@ fn legacy_value_to_record(
     )))
 }
 
-/// Parse a libsignal-node session JSON into the bridge's persisted pair
-/// `{ record, seeds }` (both `Uint8Array`). Inverse of `exportLegacySession`;
-/// together they round-trip a Baileys session losslessly. Returns `null` when
-/// the value isn't a migratable session.
+/// Baileys session JSON -> the bridge's `{ record, seeds }` pair (both
+/// `Uint8Array`). Inverse of `exportLegacySession`; `null` if not migratable.
 #[wasm_bindgen(js_name = importLegacySession)]
 pub fn import_legacy_session(value: JsValue) -> Result<JsValue, JsValue> {
     let (record, seeds) = match legacy_value_to_record(&value, Vec::new(), 0)
@@ -906,19 +863,8 @@ pub fn import_legacy_session(value: JsValue) -> Result<JsValue, JsValue> {
     Ok(out.into())
 }
 
-/// libsignal-node caches each skipped message key as the raw 32-byte HMAC seed
-/// (`HMAC-SHA256(chainKey, [0x01])`), keyed by counter. wacore's `MessageKey`
-/// instead stores the post-HKDF split (cipher/mac/iv), so reuse wacore's own
-/// `MessageKeyGenerator` to derive it from the seed — same KDF, no duplicated
-/// crypto and no change to the upstream WhatsApp proto.
-///
-/// The previous code stuffed the seed straight into `cipher_key` and zeroed
-/// mac/iv, corrupting every skipped key and breaking out-of-order decryption.
-/// Malformed (non-32-byte) seeds are dropped — the protocol just asks for a
-/// retry of that one out-of-order message.
-/// libsignal-node tolerates a bare 32-byte DJB public key; wacore requires the
-/// 0x05-prefixed 33-byte form. Normalize on import so an unprefixed key (rare,
-/// but accepted upstream) doesn't get rejected. Leaves 33-byte keys untouched.
+/// Bare 32-byte DJB pubkey (Baileys tolerates it) -> the 0x05-prefixed 33-byte
+/// form wacore requires. Leaves 33-byte keys untouched.
 fn ensure_pubkey_33(bytes: Vec<u8>) -> Vec<u8> {
     if bytes.len() == 32 {
         let mut prefixed = Vec::with_capacity(33);
@@ -930,6 +876,9 @@ fn ensure_pubkey_33(bytes: Vec<u8>) -> Vec<u8> {
     }
 }
 
+/// Baileys stores each skipped key as the raw seed; wacore wants the post-HKDF
+/// split, so derive it via wacore's `MessageKeyGenerator`. Malformed (non-32-byte)
+/// seeds are dropped (the peer retries that one message).
 fn legacy_message_keys(msg_keys: Vec<(u32, Vec<u8>)>) -> Vec<MessageKey> {
     msg_keys
         .into_iter()
@@ -1278,8 +1227,7 @@ impl SessionStore for JsStorageAdapter {
                 .map_err(js_to_signal_error)?;
             Ok(())
         } else {
-            // Drop-in path: persist the libsignal-node JSON so the on-disk format
-            // stays Baileys-compatible (re-attaching captured skipped-key seeds).
+            // Drop-in path: persist Baileys JSON (with captured seeds re-attached).
             self.write_session_json(&address_str, &bytes).await
         }
     }

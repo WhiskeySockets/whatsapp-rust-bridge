@@ -78,8 +78,7 @@ impl SessionCipher {
                 JsValue::from_str(&msg)
             })?;
 
-        // Snapshot pre-decrypt state for skipped-key seed capture (cheap; reused
-        // session only — a pkmsg that creates a fresh session has no chain yet).
+        // Snapshot before decrypt advances the chain (no-op for a fresh session).
         let inner = prekey_message.message();
         let skip_snapshot = self
             .storage_adapter
@@ -111,18 +110,13 @@ impl SessionCipher {
             JsValue::from_str(&msg)
         })?;
 
-        // The promoted session is already durable (message_decrypt_prekey stored it
-        // through to JS), so remove the consumed one-time prekey — the v0.6 API
-        // reports it instead of deleting it internally. Best-effort: the message is
-        // already decrypted, so a removal failure must NOT drop the delivered
-        // plaintext (a redelivered pkmsg just reuses the promoted session without
-        // re-consuming the prekey).
+        // v0.6 reports the consumed prekey instead of deleting it. Best-effort:
+        // the message is already decrypted, so a removal failure must not drop the
+        // delivered plaintext (a redelivered pkmsg reuses the promoted session).
         if let Some(prekey_id) = result.consumed_prekey_id {
             let _ = prekey_store.remove_pre_key(prekey_id).await;
         }
 
-        // Message authenticated → compute the skipped seeds and rewrite the JSON
-        // wacore just stored (without them) so they survive a revert.
         self.storage_adapter
             .commit_skipped(&self.remote_address.0, skip_snapshot)
             .await;
@@ -143,8 +137,7 @@ impl SessionCipher {
             JsValue::from_str(&msg)
         })?;
 
-        // Phase 1 (cheap, pre-decrypt): snapshot the state needed to compute the
-        // seeds for keys this decrypt will skip, before wacore advances the chain.
+        // Snapshot before decrypt advances the chain (seeds committed post-auth).
         let skip_snapshot = self
             .storage_adapter
             .snapshot_skip(
@@ -170,8 +163,7 @@ impl SessionCipher {
             JsValue::from_str(&msg)
         })?;
 
-        // Phase 2 (post-auth): now that the MAC checked out, derive the skipped
-        // seeds and rewrite the JSON wacore stored without them.
+        // MAC checked out → commit the skipped seeds (see commit_skipped).
         self.storage_adapter
             .commit_skipped(&self.remote_address.0, skip_snapshot)
             .await;

@@ -1,15 +1,9 @@
-//! Lossless interop with the libsignal-node (Baileys upstream) on-disk session
-//! format. wacore stores a session as the official WhatsApp `RecordStructure`
-//! protobuf; libsignal-node stores a JSON `{_sessions, version}` object whose
-//! skipped message keys are raw 32-byte HKDF seeds. wacore keeps only the
-//! post-HKDF split (cipher/mac/iv) and HKDF is one-way, so the seeds cannot be
-//! recovered from a wacore record alone.
+//! Baileys (libsignal-node) on-disk session JSON <-> wacore record.
 //!
-//! To make the round-trip lossless WITHOUT changing the upstream proto, the
-//! bridge keeps those seeds in a small local `SessionSeeds` message (defined
-//! here with `prost` derives — same wire format as a `.proto`, but no `protoc`
-//! build dependency) persisted alongside the wacore record. `export_legacy_session`
-//! rebuilds the exact libsignal-node JSON from the pair.
+//! wacore stores the post-HKDF message-key split and HKDF is one-way, so the
+//! skipped-key seeds Baileys needs can't be recovered from a record alone — they
+//! ride in a local `SessionSeeds` sidecar (prost-derived to avoid a `protoc`
+//! build dep) rather than changing the upstream proto.
 
 use base64::prelude::*;
 use js_sys::{Array, Object, Reflect, Uint8Array};
@@ -22,8 +16,7 @@ use waproto::whatsapp::{RecordStructure, SenderKeyRecordStructure, SessionStruct
 
 use wacore_libsignal::protocol::MessageKeyGenerator;
 
-/// A captured seed is trustworthy only if it re-derives to the exact split
-/// wacore stored for that key — reuse wacore's own derivation to check.
+/// Trust a captured seed only if it re-derives to the split wacore stored.
 fn seed_matches_record(seed: &[u8; 32], index: u32, record: &MessageKey) -> bool {
     let derived = MessageKeyGenerator::new_from_seed(seed, index).into_pb();
     derived.cipher_key == record.cipher_key
@@ -37,9 +30,8 @@ const BASE_KEY_TYPE_THEIRS: f64 = 2.0;
 const CHAIN_TYPE_SENDING: f64 = 1.0;
 const CHAIN_TYPE_RECEIVING: f64 = 2.0;
 
-/// Sidecar for the libsignal-node session details the wacore proto can't carry:
-/// skipped-key seeds (per chain) and per-session metadata (`baseKeyType`,
-/// `lastRemoteEphemeralKey`). Hand-derived `prost::Message` (no `.proto`/`protoc`).
+/// libsignal-node session details the wacore proto can't carry (skipped-key
+/// seeds + per-session meta), kept alongside the record.
 #[derive(Clone, PartialEq, Message)]
 pub struct SessionSeeds {
     #[prost(message, repeated, tag = "1")]
@@ -48,10 +40,9 @@ pub struct SessionSeeds {
     pub sessions: Vec<SessionMeta>,
 }
 
-/// Per-session libsignal-node fields absent from wacore's `SessionStructure`,
-/// keyed by the session's base key. `base_key_type`: 1=OURS, 2=THEIRS, 0=unknown.
-/// `has_index_info` distinguishes a real imported indexInfo (whose timestamps we
-/// preserve verbatim) from a bridge-native session (synthesize on export).
+/// Per-session libsignal-node fields missing from wacore, keyed by base key.
+/// `base_key_type`: 1=OURS 2=THEIRS 0=unknown. `has_index_info`: imported
+/// (timestamps preserved) vs bridge-native (synthesized).
 #[derive(Clone, PartialEq, Message)]
 pub struct SessionMeta {
     #[prost(bytes = "vec", tag = "1")]
@@ -107,17 +98,13 @@ fn set_num(obj: &Object, key: &str, value: f64) -> Result<(), JsValue> {
     set(obj, key, &JsValue::from_f64(value))
 }
 
-/// wacore `ChainKey.index` is the next-to-derive counter (fresh = 0); JS
-/// `chainKey.counter` is the last-used one (fresh = -1). Inverse of the +1 the
-/// migration applies on the way in.
+/// JS counter is last-used (fresh -1); wacore index is next-to-derive (fresh 0).
 #[inline]
 fn rust_index_to_js_counter(index: u32) -> f64 {
     index as f64 - 1.0
 }
 
-/// Rebuild the libsignal-node `{_sessions, version}` JSON object from a wacore
-/// `RecordStructure` plus its seed sidecar. Inverse of the migration in
-/// `storage_adapter`; together they round-trip a Baileys session losslessly.
+/// wacore record + sidecar -> libsignal-node `{_sessions, version}` JSON.
 #[wasm_bindgen(js_name = exportLegacySession)]
 pub fn export_legacy_session(record: &[u8], seeds: &[u8]) -> Result<JsValue, JsValue> {
     let record = RecordStructure::decode(record)
@@ -127,14 +114,11 @@ pub fn export_legacy_session(record: &[u8], seeds: &[u8]) -> Result<JsValue, JsV
     record_to_legacy_json(&record, &seeds)
 }
 
-/// Pure (non-wasm) core of `exportLegacySession`, callable from the storage
-/// adapter's write path so `store_session` can persist the Baileys on-disk
-/// format directly.
+/// Non-wasm core of `exportLegacySession`, reused by the store write path.
 pub fn record_to_legacy_json(
     record: &RecordStructure,
     seeds: &SessionSeeds,
 ) -> Result<JsValue, JsValue> {
-    // ratchet_key bytes -> (counter -> seed). Built once, shared across chains.
     let mut seed_map: HashMap<Vec<u8>, HashMap<u32, Vec<u8>>> = HashMap::new();
     for chain in &seeds.chains {
         let entry = seed_map.entry(chain.ratchet_key.clone()).or_default();
@@ -142,7 +126,6 @@ pub fn record_to_legacy_json(
             entry.insert(s.index, s.seed.clone());
         }
     }
-    // base_key bytes -> per-session meta (baseKeyType, lastRemoteEphemeral).
     let meta_map: HashMap<&[u8], &SessionMeta> = seeds
         .sessions
         .iter()
@@ -156,9 +139,8 @@ pub fn record_to_legacy_json(
         set(&sessions, &base_key, &entry)?;
     }
 
-    // Archived sessions: wacore drops the original `closed` timestamp, so
-    // synthesize a descending one (most-recently-archived first) — only its
-    // ordering matters to libsignal-node's removeOldSessions.
+    // Fallback `closed` (descending, newest first) for removeOldSessions order
+    // when meta carries none.
     for (i, prev) in record.previous_sessions.iter().enumerate() {
         let (base_key, entry) = session_to_entry(
             prev,
@@ -177,7 +159,7 @@ pub fn record_to_legacy_json(
     Ok(out.into())
 }
 
-/// Build one libsignal-node `SessionEntry`; returns `(baseKeyBase64, entry)`.
+/// One libsignal-node session entry; returns `(baseKeyBase64, entry)`.
 fn session_to_entry(
     session: &SessionStructure,
     seed_map: &HashMap<Vec<u8>, HashMap<u32, Vec<u8>>>,
@@ -196,11 +178,8 @@ fn session_to_entry(
         .and_then(|c| c.sender_ratchet_key_private.as_deref())
         .unwrap_or(&empty);
 
-    // lastRemoteEphemeralKey = the most recent peer ratchet = the tail receiver
-    // chain (wacore appends the newest), so derive it from the CURRENT record —
-    // this stays correct after the bridge ratchets. Only fall back to the imported
-    // meta when there's no receiver chain yet (an initiator before its first
-    // reply), where the record can't supply it.
+    // Current peer ratchet = tail receiver chain (stays correct after a bridge
+    // ratchet); meta fallback only for an initiator with no receiver chain yet.
     let last_remote = session
         .receiver_chains
         .last()
@@ -231,9 +210,8 @@ fn session_to_entry(
 
     let index_info = Object::new();
     set_str(&index_info, "baseKey", &b64(base_key))?;
-    // baseKeyType: prefer the captured value (the only source once `pendingPreKey`
-    // has been cleared by an ack); fall back to the pendingPreKey discriminator
-    // (present → we initiated → OURS).
+    // Captured value first (only source after an ack clears pendingPreKey);
+    // else the pendingPreKey discriminator (present => we initiated => OURS).
     let base_key_type = match meta.map(|m| m.base_key_type) {
         Some(1) => BASE_KEY_TYPE_OURS,
         Some(2) => BASE_KEY_TYPE_THEIRS,
@@ -241,9 +219,8 @@ fn session_to_entry(
         _ => BASE_KEY_TYPE_THEIRS,
     };
     set_num(&index_info, "baseKeyType", base_key_type)?;
-    // Preserve the original timestamps for an imported session (they drive
-    // libsignal-node's decrypt-attempt order + age-based pruning); synthesize for
-    // a bridge-native one (`closed` from the caller, used/created unknown → 0).
+    // Preserve imported timestamps (drive libsignal-node attempt order + pruning);
+    // synthesize for a bridge-native session.
     let with_meta = meta.filter(|m| m.has_index_info);
     set_num(
         &index_info,
@@ -271,10 +248,8 @@ fn session_to_entry(
         let chain = chain_to_js(c, CHAIN_TYPE_SENDING, sender_pub, seed_map, true)?;
         set(&chains, &b64(sender_pub), &chain)?;
     }
-    // Only the newest (tail) receiver chain is "live"; libsignal-node marks older
-    // ones closed by omitting `chainKey.key`. wacore keeps their keys to decrypt
-    // late messages, but a faithful revert must close them (their cached
-    // messageKeys are still emitted, so old skipped messages stay decryptable).
+    // Only the tail chain stays live; close older ones (libsignal-node drops their
+    // key on a ratchet) while still emitting their cached messageKeys.
     let last_rc = session.receiver_chains.len().saturating_sub(1);
     for (i, rc) in session.receiver_chains.iter().enumerate() {
         let ratchet_key = rc.sender_ratchet_key.as_deref().unwrap_or(&empty);
@@ -319,7 +294,6 @@ fn session_to_entry(
     Ok((b64(base_key), entry))
 }
 
-/// Build one `_chains` value: `{ chainKey: {counter, key}, chainType, messageKeys }`.
 fn chain_to_js(
     chain: &waproto::whatsapp::session_structure::Chain,
     chain_type: f64,
@@ -330,20 +304,14 @@ fn chain_to_js(
     let ck = Object::new();
     let index = chain.chain_key.as_ref().and_then(|c| c.index).unwrap_or(0);
     set_num(&ck, "counter", rust_index_to_js_counter(index))?;
-    // Emit `chainKey.key` only for a live chain that actually has a key. A closed
-    // chain (libsignal-node deletes its key) or an explicitly-closed older
-    // receiver chain leaves it absent — keeping it closed rather than reviving it.
+    // Omit the key unless the chain is live and non-empty — absence keeps it closed.
     let chain_key_bytes = chain.chain_key.as_ref().and_then(|c| c.key.as_deref());
     if let Some(key) = chain_key_bytes.filter(|k| live && !k.is_empty()) {
         set_str(&ck, "key", &b64(key))?;
     }
 
-    // Skipped message keys: re-emit the raw seed for each key still present in
-    // the record. A seed is emitted ONLY if it re-derives to the exact split
-    // (cipher/mac/iv) wacore stored for that key — this self-validates the
-    // sidecar, so a stale/forged/wrong-session seed is dropped (peer retries that
-    // one message) rather than exported as wrong key material. Keys the bridge
-    // never captured a seed for are likewise skipped.
+    // Emit a seed only if it re-derives to wacore's stored split — drops a
+    // stale/forged/wrong-session seed (peer retries) instead of bad key material.
     let message_keys = Object::new();
     let seeds = seed_map.get(ratchet_key);
     for mk in &chain.message_keys {
@@ -366,10 +334,8 @@ fn chain_to_js(
     Ok(chain)
 }
 
-/// Node's `Buffer.toJSON()` shape — `{type:'Buffer', data:[…bytes]}` with a
-/// numeric array — which is exactly what Baileys' sender-key store produces
-/// (`JSON.stringify(record.serialize())`, no BufferJSON replacer). Baileys'
-/// reviver and the bridge's own reader both expect this array form.
+/// Node `Buffer.toJSON()` shape `{type:'Buffer', data:[…]}` — what Baileys'
+/// sender-key store writes (plain `JSON.stringify`, no BufferJSON replacer).
 fn buffer_json(bytes: &[u8]) -> Result<JsValue, JsValue> {
     let o = Object::new();
     set_str(&o, "type", "Buffer")?;
@@ -381,9 +347,8 @@ fn buffer_json(bytes: &[u8]) -> Result<JsValue, JsValue> {
     Ok(o.into())
 }
 
-/// Reverse of `migrate_legacy_sender_key`: a wacore `SenderKeyRecordStructure`
-/// → the UTF-8 bytes of libsignal-node's `JSON.stringify(states)` (Baileys'
-/// on-disk sender-key format). Lets a group session revert to Baileys.
+/// Reverse of `migrate_legacy_sender_key` — wacore sender-key record -> Baileys'
+/// on-disk JSON, so a group session can revert.
 pub fn sender_key_record_to_legacy_json(record: &[u8]) -> Result<Vec<u8>, JsValue> {
     let rec = SenderKeyRecordStructure::decode(record)
         .map_err(|e| JsValue::from_str(&format!("exportLegacySenderKey: bad record: {e}")))?;
@@ -436,7 +401,6 @@ pub fn sender_key_record_to_legacy_json(record: &[u8]) -> Result<Vec<u8>, JsValu
     Ok(s.into_bytes())
 }
 
-/// wasm wrapper around `sender_key_record_to_legacy_json`.
 #[wasm_bindgen(js_name = exportLegacySenderKey)]
 pub fn export_legacy_sender_key(record: &[u8]) -> Result<Uint8Array, JsValue> {
     let bytes = sender_key_record_to_legacy_json(record)?;
