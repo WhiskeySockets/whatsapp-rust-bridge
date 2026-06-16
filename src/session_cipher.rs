@@ -7,7 +7,7 @@ use crate::{
     protocol_address::ProtocolAddress,
     storage_adapter::{JsStorageAdapter, SignalStorage},
 };
-use wacore_libsignal::protocol::{self as libsignal, SessionStore, UsePQRatchet};
+use wacore_libsignal::protocol::{self as libsignal, PreKeyStore, SessionStore, UsePQRatchet};
 
 #[inline]
 fn bytes_to_uint8array(bytes: &[u8]) -> Uint8Array {
@@ -78,12 +78,24 @@ impl SessionCipher {
                 JsValue::from_str(&msg)
             })?;
 
+        // Snapshot pre-decrypt state for skipped-key seed capture (cheap; reused
+        // session only — a pkmsg that creates a fresh session has no chain yet).
+        let inner = prekey_message.message();
+        let skip_snapshot = self
+            .storage_adapter
+            .snapshot_skip(
+                &self.remote_address.0,
+                inner.sender_ratchet_key(),
+                inner.counter(),
+            )
+            .await;
+
         let mut session_store = self.storage_adapter.clone();
         let mut identity_store = session_store.clone();
         let mut prekey_store = session_store.clone();
         let signed_prekey_store = session_store.clone();
 
-        let plaintext = libsignal::message_decrypt_prekey(
+        let result = libsignal::message_decrypt_prekey(
             &prekey_message,
             &self.remote_address.0,
             &mut session_store,
@@ -99,7 +111,31 @@ impl SessionCipher {
             JsValue::from_str(&msg)
         })?;
 
-        Ok(bytes_to_uint8array(&plaintext))
+        // The promoted session is already durable (message_decrypt_prekey stored it
+        // through to JS), so it's now safe to remove the consumed one-time prekey —
+        // the v0.6 API reports it instead of deleting it internally.
+        if let Some(prekey_id) = result.consumed_prekey_id {
+            prekey_store
+                .remove_pre_key(prekey_id)
+                .await
+                .map_err(|e| JsValue::from_str(&e.to_string()))?;
+        }
+
+        // Message authenticated → safe to compute the skipped seeds and rewrite
+        // the JSON wacore just stored (without them) so they survive a revert.
+        let mut captured = false;
+        for snapshot in skip_snapshot {
+            captured |= self
+                .storage_adapter
+                .commit_skip_snapshot(&self.remote_address.0, snapshot);
+        }
+        if captured {
+            self.storage_adapter
+                .repersist_session_json(&self.remote_address.0)
+                .await;
+        }
+
+        Ok(bytes_to_uint8array(&result.plaintext))
     }
 
     #[wasm_bindgen(js_name = decryptWhisperMessage)]
@@ -115,10 +151,21 @@ impl SessionCipher {
             JsValue::from_str(&msg)
         })?;
 
+        // Phase 1 (cheap, pre-decrypt): snapshot the state needed to compute the
+        // seeds for keys this decrypt will skip, before wacore advances the chain.
+        let skip_snapshot = self
+            .storage_adapter
+            .snapshot_skip(
+                &self.remote_address.0,
+                signal_message.sender_ratchet_key(),
+                signal_message.counter(),
+            )
+            .await;
+
         let mut session_store = self.storage_adapter.clone();
         let mut identity_store = session_store.clone();
 
-        let plaintext = libsignal::message_decrypt_signal(
+        let result = libsignal::message_decrypt_signal(
             &signal_message,
             &self.remote_address.0,
             &mut session_store,
@@ -131,7 +178,21 @@ impl SessionCipher {
             JsValue::from_str(&msg)
         })?;
 
-        Ok(bytes_to_uint8array(&plaintext))
+        // Phase 2 (post-auth): now that the MAC checked out, derive the skipped
+        // seeds and rewrite the JSON wacore stored without them.
+        let mut captured = false;
+        for snapshot in skip_snapshot {
+            captured |= self
+                .storage_adapter
+                .commit_skip_snapshot(&self.remote_address.0, snapshot);
+        }
+        if captured {
+            self.storage_adapter
+                .repersist_session_json(&self.remote_address.0)
+                .await;
+        }
+
+        Ok(bytes_to_uint8array(&result.plaintext))
     }
 
     #[wasm_bindgen(js_name = hasOpenSession)]
