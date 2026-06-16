@@ -7,7 +7,7 @@ use crate::{
     protocol_address::ProtocolAddress,
     storage_adapter::{JsStorageAdapter, SignalStorage},
 };
-use wacore_libsignal::protocol::{self as libsignal, SessionStore, UsePQRatchet};
+use wacore_libsignal::protocol::{self as libsignal, PreKeyStore, SessionStore, UsePQRatchet};
 
 #[inline]
 fn bytes_to_uint8array(bytes: &[u8]) -> Uint8Array {
@@ -78,12 +78,23 @@ impl SessionCipher {
                 JsValue::from_str(&msg)
             })?;
 
+        // Snapshot before decrypt advances the chain (no-op for a fresh session).
+        let inner = prekey_message.message();
+        let skip_snapshot = self
+            .storage_adapter
+            .snapshot_skip(
+                &self.remote_address.0,
+                inner.sender_ratchet_key(),
+                inner.counter(),
+            )
+            .await;
+
         let mut session_store = self.storage_adapter.clone();
         let mut identity_store = session_store.clone();
         let mut prekey_store = session_store.clone();
         let signed_prekey_store = session_store.clone();
 
-        let plaintext = libsignal::message_decrypt_prekey(
+        let result = libsignal::message_decrypt_prekey(
             &prekey_message,
             &self.remote_address.0,
             &mut session_store,
@@ -99,7 +110,18 @@ impl SessionCipher {
             JsValue::from_str(&msg)
         })?;
 
-        Ok(bytes_to_uint8array(&plaintext))
+        // v0.6 reports the consumed prekey instead of deleting it. Best-effort:
+        // the message is already decrypted, so a removal failure must not drop the
+        // delivered plaintext (a redelivered pkmsg reuses the promoted session).
+        if let Some(prekey_id) = result.consumed_prekey_id {
+            let _ = prekey_store.remove_pre_key(prekey_id).await;
+        }
+
+        self.storage_adapter
+            .commit_skipped(&self.remote_address.0, skip_snapshot)
+            .await;
+
+        Ok(bytes_to_uint8array(&result.plaintext))
     }
 
     #[wasm_bindgen(js_name = decryptWhisperMessage)]
@@ -115,10 +137,20 @@ impl SessionCipher {
             JsValue::from_str(&msg)
         })?;
 
+        // Snapshot before decrypt advances the chain (seeds committed post-auth).
+        let skip_snapshot = self
+            .storage_adapter
+            .snapshot_skip(
+                &self.remote_address.0,
+                signal_message.sender_ratchet_key(),
+                signal_message.counter(),
+            )
+            .await;
+
         let mut session_store = self.storage_adapter.clone();
         let mut identity_store = session_store.clone();
 
-        let plaintext = libsignal::message_decrypt_signal(
+        let result = libsignal::message_decrypt_signal(
             &signal_message,
             &self.remote_address.0,
             &mut session_store,
@@ -131,7 +163,12 @@ impl SessionCipher {
             JsValue::from_str(&msg)
         })?;
 
-        Ok(bytes_to_uint8array(&plaintext))
+        // MAC checked out → commit the skipped seeds (see commit_skipped).
+        self.storage_adapter
+            .commit_skipped(&self.remote_address.0, skip_snapshot)
+            .await;
+
+        Ok(bytes_to_uint8array(&result.plaintext))
     }
 
     #[wasm_bindgen(js_name = hasOpenSession)]

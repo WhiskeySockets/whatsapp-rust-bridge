@@ -1,10 +1,16 @@
-use js_sys::{Array, Reflect, Uint8Array};
+use js_sys::{Array, Object, Reflect, Uint8Array};
 use wacore_libsignal::protocol::SessionRecord as CoreSessionRecord;
 use wasm_bindgen::prelude::*;
 
 const INVALID_INPUT_ERROR: &str = "SessionRecord.deserialize: Invalid input type. Expected Uint8Array, Array, or Buffer-like object.";
 const SESSIONS_KEY: &str = "_sessions";
 const DATA_KEY: &str = "data";
+
+#[wasm_bindgen]
+extern "C" {
+    #[wasm_bindgen(extends = Object, typescript_type = "{ baseKey: Uint8Array; registrationId: number }")]
+    pub type SessionInfo;
+}
 
 #[wasm_bindgen(js_name = SessionRecord)]
 pub struct SessionRecord {
@@ -56,6 +62,38 @@ impl SessionRecord {
         CoreSessionRecord::deserialize(&self.serialized_data)
             .map(|record| record.session_state().is_some())
             .unwrap_or(false)
+    }
+
+    // The X3DH base key indexes the session and is shared by both peers, so it's a
+    // stable per-session id; remote registration id identifies the peer device.
+    // libsignal-node exposed both via getOpenSession().indexInfo.baseKey/registrationId,
+    // which Baileys' retry protections read. `undefined` when there's no open session.
+    #[wasm_bindgen(js_name = sessionInfo)]
+    pub fn session_info(&self) -> Result<Option<SessionInfo>, JsValue> {
+        let record = CoreSessionRecord::deserialize(&self.serialized_data)
+            .map_err(|e| JsValue::from_str(&e.to_string()))?;
+        if record.session_state().is_none() {
+            return Ok(None);
+        }
+        let base_key = record
+            .alice_base_key()
+            .map_err(|e| JsValue::from_str(&e.to_string()))?;
+        let registration_id = record
+            .remote_registration_id()
+            .map_err(|e| JsValue::from_str(&e.to_string()))?;
+
+        let obj = Object::new();
+        Reflect::set(
+            &obj,
+            &JsValue::from_str("baseKey"),
+            &Uint8Array::from(base_key),
+        )?;
+        Reflect::set(
+            &obj,
+            &JsValue::from_str("registrationId"),
+            &JsValue::from(registration_id),
+        )?;
+        Ok(Some(obj.unchecked_into()))
     }
 }
 
