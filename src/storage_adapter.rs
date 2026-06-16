@@ -395,6 +395,23 @@ impl JsStorageAdapter {
         captured
     }
 
+    /// Post-auth: commit every skip snapshot from a decrypt and, if any seeds were
+    /// captured, rewrite the session JSON so they survive a revert. Shared by both
+    /// decrypt paths.
+    pub(crate) async fn commit_skipped(
+        &self,
+        address: &libsignal::ProtocolAddress,
+        snapshots: Vec<SkipSnapshot>,
+    ) {
+        let mut captured = false;
+        for snapshot in snapshots {
+            captured |= self.commit_skip_snapshot(address, snapshot);
+        }
+        if captured {
+            self.repersist_session_json(address).await;
+        }
+    }
+
     /// Merge freshly-captured seeds into the per-address sidecar, keyed by chain.
     /// Bounds memory like wacore bounds its caches: at most `MAX_MESSAGE_KEYS`
     /// indices per chain and `MAX_CACHED_CHAINS` chains per address.

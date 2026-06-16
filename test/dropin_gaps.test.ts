@@ -8,6 +8,24 @@ import {
   exportLegacySession,
 } from "../dist";
 import { DropInStorage } from "./helpers/dropin_storage";
+import { makeRunningLibsignalPair } from "./helpers/libsignal_store";
+
+// First offset of `needle` within `hay`, or -1.
+function indexOfBytes(hay: Uint8Array, needle: Uint8Array): number {
+  outer: for (let i = 0; i + needle.length <= hay.length; i++) {
+    for (let j = 0; j < needle.length; j++) if (hay[i + j] !== needle[j]) continue outer;
+    return i;
+  }
+  return -1;
+}
+
+// The `_chains[ratchet]` entry of whichever session holds it.
+function findChain(exported: any, ratchet: string): any {
+  for (const s of Object.values<any>(exported._sessions)) {
+    if (s._chains[ratchet]) return s._chains[ratchet];
+  }
+  return undefined;
+}
 
 // Deterministic base64 of an n-filled buffer (33-byte pubkeys, 32-byte keys).
 const b64 = (fill: number, len = 33) => Buffer.alloc(len, fill).toString("base64");
@@ -159,18 +177,48 @@ describe("Drop-in compatibility gaps", () => {
     expect(ii.created).toBe(1_700_000_000_222);
   });
 
-  it("[validate] drops a tampered/wrong seed instead of exporting bad key material", () => {
-    // A real run can't inject a wrong seed, but the validation guards the export:
-    // a normal round-trip with no skipped keys must still produce empty
-    // messageKeys (the self-check never emits a seed that doesn't re-derive).
-    const bk = b64(34);
-    const out = roundTrip({
-      _sessions: { [bk]: makeEntry({ baseKey: bk, closed: -1 }) },
-      version: "v1",
-    });
-    for (const chain of Object.values<any>(out._sessions[bk]._chains)) {
-      expect(Object.keys(chain.messageKeys).length).toBe(0);
+  it("[validate] drops a tampered seed on export but keeps the untampered ones", async () => {
+    // Build a real session with cached skipped-key seeds (Bob jumps to m2, so 0
+    // and 1 are cached), then corrupt one seed's bytes in the sidecar and confirm
+    // the export's self-validation drops exactly that one.
+    const { aliceCipher, bobCipher, bobStore, aliceAddr } = await makeRunningLibsignalPair();
+    const msgs = [];
+    for (let i = 0; i < 3; i++) msgs.push(await aliceCipher.encrypt(Buffer.from(`v${i}`)));
+    await bobCipher.decryptWhisperMessage(msgs[2].body);
+
+    const serialized = bobStore.getSerializedSession(aliceAddr.toString());
+    // Locate a cached (ratchet, index) and its exact seed bytes.
+    let ratchet = "";
+    let index = "";
+    let seedB64 = "";
+    for (const s of Object.values<any>(serialized._sessions)) {
+      for (const [rk, ch] of Object.entries<any>(s._chains)) {
+        const keys = Object.keys(ch.messageKeys);
+        if (keys.length) {
+          ratchet = rk;
+          index = keys[0]!;
+          seedB64 = ch.messageKeys[index];
+          break;
+        }
+      }
+      if (ratchet) break;
     }
+    expect(seedB64).not.toBe("");
+
+    const { record, seeds } = importLegacySession(serialized) as {
+      record: Uint8Array;
+      seeds: Uint8Array;
+    };
+
+    // Control: the genuine seed re-derives and is emitted.
+    expect(findChain(exportLegacySession(record, seeds), ratchet).messageKeys[index]).toBeDefined();
+
+    // Flip a byte of that exact seed inside the sidecar; the export must drop it.
+    const tampered = new Uint8Array(seeds);
+    const at = indexOfBytes(tampered, Buffer.from(seedB64, "base64"));
+    expect(at).toBeGreaterThanOrEqual(0);
+    tampered[at]! ^= 0xff;
+    expect(findChain(exportLegacySession(record, tampered), ratchet).messageKeys[index]).toBeUndefined();
   });
 
   it("[32-byte] normalizes bare 32-byte public keys to 33-byte on import", () => {

@@ -112,28 +112,20 @@ impl SessionCipher {
         })?;
 
         // The promoted session is already durable (message_decrypt_prekey stored it
-        // through to JS), so it's now safe to remove the consumed one-time prekey —
-        // the v0.6 API reports it instead of deleting it internally.
+        // through to JS), so remove the consumed one-time prekey — the v0.6 API
+        // reports it instead of deleting it internally. Best-effort: the message is
+        // already decrypted, so a removal failure must NOT drop the delivered
+        // plaintext (a redelivered pkmsg just reuses the promoted session without
+        // re-consuming the prekey).
         if let Some(prekey_id) = result.consumed_prekey_id {
-            prekey_store
-                .remove_pre_key(prekey_id)
-                .await
-                .map_err(|e| JsValue::from_str(&e.to_string()))?;
+            let _ = prekey_store.remove_pre_key(prekey_id).await;
         }
 
-        // Message authenticated → safe to compute the skipped seeds and rewrite
-        // the JSON wacore just stored (without them) so they survive a revert.
-        let mut captured = false;
-        for snapshot in skip_snapshot {
-            captured |= self
-                .storage_adapter
-                .commit_skip_snapshot(&self.remote_address.0, snapshot);
-        }
-        if captured {
-            self.storage_adapter
-                .repersist_session_json(&self.remote_address.0)
-                .await;
-        }
+        // Message authenticated → compute the skipped seeds and rewrite the JSON
+        // wacore just stored (without them) so they survive a revert.
+        self.storage_adapter
+            .commit_skipped(&self.remote_address.0, skip_snapshot)
+            .await;
 
         Ok(bytes_to_uint8array(&result.plaintext))
     }
@@ -180,17 +172,9 @@ impl SessionCipher {
 
         // Phase 2 (post-auth): now that the MAC checked out, derive the skipped
         // seeds and rewrite the JSON wacore stored without them.
-        let mut captured = false;
-        for snapshot in skip_snapshot {
-            captured |= self
-                .storage_adapter
-                .commit_skip_snapshot(&self.remote_address.0, snapshot);
-        }
-        if captured {
-            self.storage_adapter
-                .repersist_session_json(&self.remote_address.0)
-                .await;
-        }
+        self.storage_adapter
+            .commit_skipped(&self.remote_address.0, skip_snapshot)
+            .await;
 
         Ok(bytes_to_uint8array(&result.plaintext))
     }

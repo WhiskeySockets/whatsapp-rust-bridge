@@ -1,6 +1,6 @@
 import { describe, it, expect } from "bun:test";
 import { ProtocolAddress, SessionCipher } from "../dist";
-import { FakeStorage } from "./helpers/fake_storage";
+import { DropInStorage } from "./helpers/dropin_storage";
 import { makeRunningLibsignalPair } from "./helpers/libsignal_store";
 
 describe("Skipped-key migration (libsignal-node → bridge)", () => {
@@ -29,9 +29,11 @@ describe("Skipped-key migration (libsignal-node → bridge)", () => {
     expect(messageKeyCount).toBeGreaterThanOrEqual(2); // 0 and 1 are cached
 
     // Migrate that exact session into a fresh bridge store and decrypt the
-    // earlier messages with the BRIDGE. Pre-fix this corrupted the cached keys
-    // (seed stuffed into cipherKey, mac/iv zeroed) and decryption failed.
-    const bridgeBob = new FakeStorage();
+    // earlier messages with the BRIDGE. A DropInStorage (no storeSessionRaw)
+    // exercises the drop-in path: migrate-on-load + JSON write-back on store.
+    // Pre-fix this corrupted the cached keys (seed stuffed into cipherKey,
+    // mac/iv zeroed) and decryption failed.
+    const bridgeBob = new DropInStorage();
     // A real drop-in shares the same device identity; the WhisperMessage MAC is
     // keyed on both parties' identity keys, so the bridge must reuse Bob's.
     bridgeBob.ourIdentityKeyPair = {
