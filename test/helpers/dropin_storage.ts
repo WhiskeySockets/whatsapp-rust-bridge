@@ -21,11 +21,15 @@ export class DropInStorage {
     this.ourIdentityKeyPair = identity ?? generateIdentityKeyPair();
     this.ourRegistrationId = regId ?? generateRegistrationId();
   }
+  // Clone on both boundaries so the in-memory map behaves like real on-disk
+  // (serialized) persistence: a caller can't mutate stored state without an
+  // explicit store, and a stored object can't be changed after the fact.
   async loadSession(address: string) {
-    return this.sessions.get(address); // the libsignal-node JSON object, as stored
+    const s = this.sessions.get(address); // the libsignal-node JSON object, as stored
+    return s === undefined ? undefined : structuredClone(s);
   }
   async storeSession(address: string, session: any) {
-    this.sessions.set(address, session);
+    this.sessions.set(address, structuredClone(session));
   }
   // intentionally no storeSessionRaw → drop-in (JSON) mode for sessions + sender keys
   async loadSenderKey(id: string) {
@@ -40,6 +44,9 @@ export class DropInStorage {
   async getOurRegistrationId() {
     return this.ourRegistrationId;
   }
+  // libsignal `SignalStorage` interface method (the bridge's SessionCipher calls
+  // it). TOFU: registers the identity on first sight (an intentional setup side
+  // effect), then verifies equality thereafter.
   async isTrustedIdentity(id: string, key: Uint8Array) {
     const e = this.identities.get(id);
     if (!e) {

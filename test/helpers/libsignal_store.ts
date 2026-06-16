@@ -34,6 +34,9 @@ export class LibsignalStore implements SignalStorage {
   getOurRegistrationId() {
     return this.ourRegistrationId;
   }
+  // libsignal `SignalStorage` interface method. TOFU: registers the identity on
+  // first sight (intentional — also used to pre-trust a peer in test setup), then
+  // verifies equality. Name is fixed by the interface, so it can't be renamed.
   isTrustedIdentity(id: string, key: Uint8Array) {
     const k = Buffer.from(key);
     const e = this.identities.get(id);
