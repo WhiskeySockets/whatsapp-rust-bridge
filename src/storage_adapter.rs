@@ -8,6 +8,9 @@ use sha2::Sha256;
 // Mirror wacore's skipped-key bounds (libsignal consts.rs).
 const MAX_FORWARD_JUMPS: u32 = 25_000;
 const MAX_MESSAGE_KEYS: usize = 2000;
+// wacore holds up to MAX_MESSAGE_KEYS + its prune threshold (50) before evicting;
+// keep the sidecar at the same ceiling so it never drops a key the record holds.
+const MAX_SIDECAR_KEYS: usize = MAX_MESSAGE_KEYS + 50;
 // Above wacore's worst case (5 receiver chains × ~41 sessions) so a legit
 // multi-session record never has valid seeds evicted.
 const MAX_CACHED_CHAINS: usize = 256;
@@ -40,8 +43,9 @@ fn message_key_seed(chain_key: &[u8; 32]) -> Vec<u8> {
     mac.finalize().into_bytes().to_vec()
 }
 
-/// A skip-seed candidate from one session state. `allow_new_chain` only for the
-/// current session — a new DH ratchet never lands on an archived one.
+/// A skip-seed candidate from one session state. `allow_new_chain` lets a
+/// new-DH-ratchet gap be captured (the export self-validation drops it if the
+/// session was the wrong one).
 fn skip_candidate(
     state: &libsignal::SessionState,
     sender_ratchet_key: &libsignal::PublicKey,
@@ -314,14 +318,18 @@ impl JsStorageAdapter {
         {
             snaps.push(snap);
         }
-        // Archived sessions: only if they already own this receiver chain (a new
-        // ratchet never targets an archived session).
-        for prev in record.previous_session_states() {
-            if let Ok(state) = prev
-                && let Some(snap) =
-                    skip_candidate(&state, sender_ratchet_key, &ratchet_bytes, counter, false)
-            {
-                snaps.push(snap);
+        // Archived sessions: wacore can decrypt a gap (even via a new DH ratchet)
+        // through a promoted previous session, so snapshot those too. Wrong-session
+        // candidates are dropped later by the export's `seed_matches_record`. Gated
+        // on the count so the common (no-archive) case skips the cloning iterator.
+        if record.previous_session_count() > 0 {
+            for prev in record.previous_session_states() {
+                if let Ok(state) = prev
+                    && let Some(snap) =
+                        skip_candidate(&state, sender_ratchet_key, &ratchet_bytes, counter, true)
+                {
+                    snaps.push(snap);
+                }
             }
         }
         snaps
@@ -410,15 +418,22 @@ impl JsStorageAdapter {
                 entry.chains.last_mut().expect("just pushed")
             }
         };
+        // O(n): a linear find per seed would be O(n²) on a big gap (up to
+        // MAX_FORWARD_JUMPS new indices). Existing indices in a set; new ones push.
+        let mut existing: std::collections::HashSet<u32> =
+            chain.seeds.iter().map(|e| e.index).collect();
         for s in seeds {
-            match chain.seeds.iter_mut().find(|e| e.index == s.index) {
-                Some(existing) => existing.seed = s.seed,
-                None => chain.seeds.push(s),
+            if existing.insert(s.index) {
+                chain.seeds.push(s);
+            } else if let Some(e) = chain.seeds.iter_mut().find(|e| e.index == s.index) {
+                e.seed = s.seed;
             }
         }
-        if chain.seeds.len() > MAX_MESSAGE_KEYS {
+        // Match wacore's cap (MAX_MESSAGE_KEYS + prune threshold) so the sidecar
+        // never drops a key the record still holds.
+        if chain.seeds.len() > MAX_SIDECAR_KEYS {
             chain.seeds.sort_unstable_by_key(|s| s.index);
-            let excess = chain.seeds.len() - MAX_MESSAGE_KEYS;
+            let excess = chain.seeds.len() - MAX_SIDECAR_KEYS;
             chain.seeds.drain(..excess);
         }
         if entry.chains.len() > MAX_CACHED_CHAINS {
@@ -462,7 +477,13 @@ impl JsStorageAdapter {
                 None => return,
             }
         };
-        let _ = self.write_session_json(&address_str, &record_bytes).await;
+        // Best-effort: the base session is already durably stored by wacore's own
+        // write; only the skipped-key enrichment is at stake here. Don't fail the
+        // (already successful) decrypt, but log so a dropped re-persist is visible
+        // — its sole effect is those skipped messages needing a retry on revert.
+        if let Err(e) = self.write_session_json(&address_str, &record_bytes).await {
+            log::warn!("repersist of skipped-key seeds for {address_str} failed: {e}");
+        }
     }
 
     /// Build the libsignal-node JSON for a record (+ sidecar seeds) and hand it to
@@ -577,31 +598,38 @@ fn legacy_entry_to_session(
     local_identity_public: &[u8],
     local_reg_id: u32,
 ) -> SignalResult<Option<(SessionStructure, Vec<ChainSeeds>, SessionMeta)>> {
-    let decode_b64 = |s: String| BASE64_STANDARD.decode(s).unwrap_or_default();
+    // Propagate (don't swallow) invalid base64 so a corrupt input fails AT
+    // migration instead of "succeeding" into an undecryptable session. An empty
+    // string still decodes to empty (absent fields stay absent).
+    let decode_b64 = |s: String| -> SignalResult<Vec<u8>> {
+        BASE64_STANDARD
+            .decode(s)
+            .map_err(|e| invalid_js_data("migrate", format!("invalid base64: {e}")))
+    };
 
     let registration_id = get_number(session_data, "registrationId").unwrap_or(0.0) as u32;
 
     let current_ratchet = get_object(session_data, "currentRatchet")
         .ok_or_else(|| invalid_js_data("migrate", "Missing currentRatchet"))?;
-    let root_key = decode_b64(get_string(&current_ratchet, "rootKey").unwrap_or_default());
+    let root_key = decode_b64(get_string(&current_ratchet, "rootKey").unwrap_or_default())?;
     let previous_counter = get_number(&current_ratchet, "previousCounter").unwrap_or(0.0) as u32;
 
     let ephemeral_key_pair = get_object(&current_ratchet, "ephemeralKeyPair")
         .ok_or_else(|| invalid_js_data("migrate", "Missing ephemeralKeyPair"))?;
     let sender_ratchet_pub = ensure_pubkey_33(decode_b64(
         get_string(&ephemeral_key_pair, "pubKey").unwrap_or_default(),
-    ));
+    )?);
     let sender_ratchet_priv =
-        decode_b64(get_string(&ephemeral_key_pair, "privKey").unwrap_or_default());
+        decode_b64(get_string(&ephemeral_key_pair, "privKey").unwrap_or_default())?;
 
     let index_info = get_object(session_data, "indexInfo")
         .ok_or_else(|| invalid_js_data("migrate", "Missing indexInfo"))?;
     let remote_identity = ensure_pubkey_33(decode_b64(
         get_string(&index_info, "remoteIdentityKey").unwrap_or_default(),
-    ));
+    )?);
     let base_key = ensure_pubkey_33(decode_b64(
         get_string(&index_info, "baseKey").unwrap_or_default(),
-    ));
+    )?);
 
     // Sidecar meta for fields wacore's proto can't hold (baseKeyType,
     // lastRemoteEphemeralKey, indexInfo timestamps).
@@ -610,7 +638,7 @@ fn legacy_entry_to_session(
         base_key_type: get_number(&index_info, "baseKeyType").unwrap_or(0.0) as u32,
         last_remote_ephemeral: ensure_pubkey_33(decode_b64(
             get_string(&current_ratchet, "lastRemoteEphemeralKey").unwrap_or_default(),
-        )),
+        )?),
         has_index_info: true,
         used: get_number(&index_info, "used").unwrap_or(0.0),
         created: get_number(&index_info, "created").unwrap_or(0.0),
@@ -652,6 +680,7 @@ fn legacy_entry_to_session(
         // key absent so it stays closed instead of becoming an empty-key live chain.
         let chain_key_bytes = get_string(&chain_key_obj, "key")
             .map(decode_b64)
+            .transpose()?
             .filter(|b| !b.is_empty());
 
         let message_keys_obj = get_object(&chain, "messageKeys").ok_or_else(|| {
@@ -675,16 +704,16 @@ fn legacy_entry_to_session(
                 })?
                 .as_string()
                 .unwrap_or_default();
-            message_keys.push((idx, decode_b64(msg_key_b64)));
+            message_keys.push((idx, decode_b64(msg_key_b64)?));
         }
 
         let ratchet_key = if chain_type == 1 {
             sender_ratchet_pub.clone()
         } else {
-            ensure_pubkey_33(decode_b64(key.as_string().unwrap_or_default()))
+            ensure_pubkey_33(decode_b64(key.as_string().unwrap_or_default())?)
         };
 
-        // Stash the raw seeds so the reverse (export) path is lossless.
+        // Stash the raw seeds so the reverse (export) path can re-emit them.
         if !message_keys.is_empty() {
             seed_chains.push(ChainSeeds {
                 ratchet_key: ratchet_key.clone(),
@@ -717,15 +746,16 @@ fn legacy_entry_to_session(
 
     // Filter to a real object: `get_object` returns `Some(undefined)` for an
     // absent key, and a forged empty pendingPreKey makes wacore reject the session.
-    let pending_pre_key = get_object(session_data, "pendingPreKey")
-        .filter(|ppk| ppk.is_object())
-        .map(|ppk| PendingPreKey {
+    let pending_pre_key = match get_object(session_data, "pendingPreKey").filter(|p| p.is_object()) {
+        Some(ppk) => Some(PendingPreKey {
             pre_key_id: get_number(&ppk, "preKeyId").map(|n| n as u32),
             signed_pre_key_id: get_number(&ppk, "signedKeyId").map(|n| n as i32),
             base_key: Some(ensure_pubkey_33(decode_b64(
                 get_string(&ppk, "baseKey").unwrap_or_default(),
-            ))),
-        });
+            )?)),
+        }),
+        None => None,
+    };
 
     let session = SessionStructure {
         session_version: Some(3),
@@ -840,6 +870,9 @@ fn legacy_value_to_record(
 
 /// Baileys session JSON -> the bridge's `{ record, seeds }` pair (both
 /// `Uint8Array`). Inverse of `exportLegacySession`; `null` if not migratable.
+/// For round-trip/export use only: the record omits the local identity + reg id
+/// (not part of the interchange), so it isn't directly usable for live decryption
+/// — the live `load_session` migration injects those from the store.
 #[wasm_bindgen(js_name = importLegacySession)]
 pub fn import_legacy_session(value: JsValue) -> Result<JsValue, JsValue> {
     let (record, seeds) = match legacy_value_to_record(&value, Vec::new(), 0)

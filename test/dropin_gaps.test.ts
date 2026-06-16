@@ -221,6 +221,15 @@ describe("Drop-in compatibility gaps", () => {
     expect(findChain(exportLegacySession(record, tampered), ratchet).messageKeys[index]).toBeUndefined();
   });
 
+  it("[bad-base64] fails migration on malformed base64 instead of a broken session", () => {
+    const bk = b64(36);
+    const entry = makeEntry({ baseKey: bk, closed: -1 });
+    entry.currentRatchet.rootKey = "!!! not base64 !!!"; // corrupt a critical field
+    // Pre-fix this silently migrated to an empty rootKey (undecryptable session);
+    // now it must throw so the corruption surfaces at import time.
+    expect(() => importLegacySession({ _sessions: { [bk]: entry }, version: "v1" })).toThrow();
+  });
+
   it("[32-byte] normalizes bare 32-byte public keys to 33-byte on import", () => {
     const bk32 = Buffer.alloc(32, 7).toString("base64"); // unprefixed base key
     const out = roundTrip({
