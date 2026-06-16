@@ -52,13 +52,13 @@ export class DropInStorage {
   async isTrustedIdentity(id: string, key: Uint8Array) {
     const e = this.identities.get(id);
     if (!e) {
-      this.identities.set(id, key);
+      this.identities.set(id, new Uint8Array(key)); // copy: caller may reuse the buffer
       return true;
     }
     return Buffer.from(e).equals(Buffer.from(key));
   }
   trustIdentity(id: string, key: Uint8Array) {
-    this.identities.set(id, key);
+    this.identities.set(id, new Uint8Array(key));
   }
   async loadPreKey(id: number) {
     return this.preKeys.get(id);

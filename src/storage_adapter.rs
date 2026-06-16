@@ -770,7 +770,8 @@ fn legacy_entry_to_session(
 
     // Filter to a real object: `get_object` returns `Some(undefined)` for an
     // absent key, and a forged empty pendingPreKey makes wacore reject the session.
-    let pending_pre_key = match get_object(session_data, "pendingPreKey").filter(|p| p.is_object()) {
+    let pending_pre_key = match get_object(session_data, "pendingPreKey").filter(|p| p.is_object())
+    {
         Some(ppk) => Some(PendingPreKey {
             pre_key_id: get_number(&ppk, "preKeyId").map(|n| n as u32),
             signed_pre_key_id: get_number(&ppk, "signedKeyId").map(|n| n as i32),

@@ -83,7 +83,11 @@ impl SessionRecord {
             .map_err(|e| JsValue::from_str(&e.to_string()))?;
 
         let obj = Object::new();
-        Reflect::set(&obj, &JsValue::from_str("baseKey"), &Uint8Array::from(base_key))?;
+        Reflect::set(
+            &obj,
+            &JsValue::from_str("baseKey"),
+            &Uint8Array::from(base_key),
+        )?;
         Reflect::set(
             &obj,
             &JsValue::from_str("registrationId"),

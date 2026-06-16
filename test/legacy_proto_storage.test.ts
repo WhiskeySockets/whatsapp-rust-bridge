@@ -37,13 +37,13 @@ class LegacyProtoStorage {
   isTrustedIdentity(id: string, key: Uint8Array) {
     const e = this.identities.get(id);
     if (!e) {
-      this.identities.set(id, key);
+      this.identities.set(id, new Uint8Array(key)); // copy: caller may reuse the buffer
       return true;
     }
     return Buffer.from(e).equals(Buffer.from(key));
   }
   trustIdentity(id: string, key: Uint8Array) {
-    this.identities.set(id, key);
+    this.identities.set(id, new Uint8Array(key));
   }
   async getOurIdentity() {
     return this.ourIdentityKeyPair;
@@ -89,15 +89,27 @@ describe("Default (proto) storage contract is preserved", () => {
 
     // If the bridge regressed to passing a plain object, this encrypt's
     // store_session would throw `session.serialize is not a function`.
-    const ct = await new SessionCipher(aliceStore as any, bobAddr).encrypt(Buffer.from("hi bob"));
-    const pt = await new SessionCipher(bobStore as any, aliceAddr).decryptPreKeyWhisperMessage(
-      new Uint8Array(ct.body),
-    );
+    const aliceCipher = new SessionCipher(aliceStore as any, bobAddr);
+    const bobCipher = new SessionCipher(bobStore as any, aliceAddr);
+
+    const ct = await aliceCipher.encrypt(Buffer.from("hi bob"));
+    const pt = await bobCipher.decryptPreKeyWhisperMessage(new Uint8Array(ct.body));
     expect(Buffer.from(pt).toString()).toBe("hi bob");
+
+    // Reply completes the ratchet; then replay both ciphers off their persisted
+    // (re-loaded) proto sessions with a non-UTF8 binary payload.
+    const reply = await bobCipher.encrypt(Buffer.from("ack"));
+    const replyPt = await aliceCipher.decryptWhisperMessage(new Uint8Array(reply.body));
+    expect(Buffer.from(replyPt).toString()).toBe("ack");
+
+    const bin = new Uint8Array([0, 1, 2, 255, 254, 128, 13, 10, 0]);
+    const ctBin = await aliceCipher.encrypt(bin);
+    const ptBin = await bobCipher.decryptWhisperMessage(new Uint8Array(ctBin.body));
+    expect(Buffer.from(ptBin).equals(Buffer.from(bin))).toBe(true);
 
     // Stored value is native proto bytes (a real SessionRecord, not Baileys JSON).
     const stored = aliceStore.sessions.get(bobAddr.toString())!;
     expect(stored).toBeInstanceOf(Uint8Array);
-    expect(await SessionRecord.deserialize(stored).haveOpenSession()).toBe(true);
+    expect(SessionRecord.deserialize(stored).haveOpenSession()).toBe(true);
   });
 });
